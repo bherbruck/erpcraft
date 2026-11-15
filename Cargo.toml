@@ -1,0 +1,57 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "modules/*", "apps/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.86"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+erpcraft-core = { path = "crates/erpcraft-core" }
+erpcraft-db = { path = "crates/erpcraft-db" }
+erpcraft-kernel = { path = "crates/erpcraft-kernel" }
+erpcraft-gl = { path = "crates/erpcraft-gl" }
+erpcraft-api = { path = "crates/erpcraft-api" }
+erpcraft-auth = { path = "crates/erpcraft-auth" }
+erpcraft-mcp = { path = "crates/erpcraft-mcp" }
+erpcraft-rules = { path = "crates/erpcraft-rules" }
+erpcraft-accounting = { path = "modules/accounting" }
+
+argon2 = "0.5"
+async-trait = "0.1"
+axum = "0.8"
+# Used only by erpcraft-rules. Nothing else may depend on the rule engine.
+cel = { version = "0.16", default-features = false }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+http-body-util = "0.1"
+rust_decimal = "1"
+schemars = { version = "1", features = ["uuid1", "chrono04", "rust_decimal1"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = [
+    "derive",
+    "runtime-tokio",
+    "tls-rustls-ring-webpki",
+    "postgres",
+    "uuid",
+    "chrono",
+    "rust_decimal",
+    "json",
+] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+
+# Password hashing is far too slow unoptimized; this keeps tests quick.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

@@ -1,0 +1,13 @@
+[package]
+name = "erpcraft-mcp"
+description = "Model Context Protocol server for erpcraft"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+erpcraft-kernel.workspace = true
+axum.workspace = true
+serde_json.workspace = true
+tracing.workspace = true

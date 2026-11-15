@@ -1,0 +1,42 @@
+# Standalone on purpose: not part of the erpcraft workspace.
+[workspace]
+
+[package]
+name = "rule-engine-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+cel = { version = "0.16", optional = true }
+cedar-policy = { version = "4.14", features = ["tpe"], optional = true }
+rhai = { version = "1.27", features = ["serde", "internals"], optional = true }
+monty = { version = "1.6", optional = true }
+monty-types = { version = "1.6", optional = true }
+serde_json = "1"
+
+[features]
+cel = ["dep:cel"]
+cedar = ["dep:cedar-policy"]
+rhai = ["dep:rhai"]
+monty = ["dep:monty", "dep:monty-types"]
+
+[[bin]]
+name = "s_cel"
+path = "src/bin/s_cel.rs"
+required-features = ["cel"]
+[[bin]]
+name = "s_cedar"
+path = "src/bin/s_cedar.rs"
+required-features = ["cedar"]
+[[bin]]
+name = "s_rhai"
+path = "src/bin/s_rhai.rs"
+required-features = ["rhai"]
+[[bin]]
+name = "s_monty"
+path = "src/bin/s_monty.rs"
+required-features = ["monty"]
+
+[profile.release]
+strip = true

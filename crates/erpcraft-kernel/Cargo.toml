@@ -1,0 +1,21 @@
+[package]
+name = "erpcraft-kernel"
+description = "The erpcraft kernel: registry, commands, documents, postings, identity, authorization"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+erpcraft-core.workspace = true
+erpcraft-db.workspace = true
+erpcraft-rules.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+tracing.workspace = true
+uuid.workspace = true

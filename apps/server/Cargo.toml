@@ -1,0 +1,32 @@
+[package]
+name = "erpcraft-server"
+description = "The erpcraft server: HTTP API and MCP endpoint"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "erpcraft"
+path = "src/main.rs"
+
+[dependencies]
+erpcraft-accounting.workspace = true
+erpcraft-api.workspace = true
+erpcraft-auth.workspace = true
+erpcraft-db.workspace = true
+erpcraft-gl.workspace = true
+erpcraft-kernel.workspace = true
+erpcraft-mcp.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tower.workspace = true
+uuid.workspace = true
