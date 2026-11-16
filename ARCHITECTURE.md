@@ -25,7 +25,7 @@ crates/
   erpcraft-core     errors, identifiers, money rounding
   erpcraft-db       Postgres pool, module-scoped migrations
   erpcraft-rules    rule expressions: check, evaluate, compile to SQL
-  erpcraft-kernel   registry, commands, documents, postings,
+  erpcraft-kernel   registry, commands, documents, postings, lists,
                     user directory, authorization, audit, outbox
   erpcraft-auth     identity: passwords, tokens, sign-in routes
   erpcraft-gl       general ledger: accounts, periods, entries
@@ -53,12 +53,38 @@ The executor gives every command:
 - an authorization check before the handler runs;
 - an idempotency key (optional): the same key and input return the first result, the same key with different input is refused;
 - a preview mode: run, return the outcome, roll back. A preview reserves nothing; the real run validates again;
-- an audit record of who ran what with which input;
+- an audit record of who ran what with which input, and which records it touched. A command that fails or is refused is recorded too, with the reason;
 - an outbox event, written in the same transaction, for delivery after commit.
 
 Queries are commands marked read-only. A module publishes its reads (`gl.trial_balance`) the same way as its writes, so other modules and reporting tools do not need to know its tables.
 
 Entity metadata describes the data. Commands define what the system may do.
+
+### Lists
+
+Every list of entity records or documents takes the same parameters and returns one page as `items` plus the size of the whole list as `total`:
+
+- `q`: text to find in the fields the entity declares as its search fields (a code, a name);
+- `where`: a condition in the rule language, for example `record.debit > 100 && record.account_type == 'asset'`;
+- `sort`: field names, `-` for descending;
+- `limit` and `offset`.
+
+All of it runs in the database, in the same query as the caller's row permissions. So a total never counts a record the caller may not see, and a field withheld from the caller cannot be searched, sorted by, or named in a condition.
+
+### Audit and history
+
+The audit log is written only by the command executor and cannot be changed, even with direct database access. Each entry names the records the command touched, so every record has a history (`audit.history`): who ran which command on it and when, failed attempts included. Whoever may read a record may read its history; the inputs of the commands are shown only with the permission `audit:read`, because an input can contain fields the reader is not allowed to see.
+
+### Outbox
+
+A module can register **subscribers** that react to committed changes: an integration, a notification, a projection. A worker in the server hands each event to every subscriber that wants it.
+
+- Delivery is at least once. A subscriber that succeeded is not called again when another one fails and the event is retried, except if the server stops at the wrong moment; handlers must tolerate a repeat.
+- A failed delivery is retried after 10 seconds, then with a doubling delay up to an hour, without limit. `outbox.list` shows failing events and their last error.
+- There is no ordering guarantee: a failing event does not hold back the ones behind it.
+- Several servers can run the worker at once; each event is taken by one of them.
+
+Delivered events are deleted after 30 days and idempotency keys after 24 hours. The audit log and the ledgers are never cleaned.
 
 ### Documents and postings
 
@@ -90,10 +116,12 @@ Every document, posting and entry belongs to exactly one company. Each company h
 | An idempotency key is reused with other input | Refused | Stored input hash |
 | A period closes while a journal posts | They wait for each other; a closed period never receives an entry | Share lock taken by each entry, exclusive lock taken by the close |
 | Two users edit the same draft | The stale edit is refused | Version number on the document |
+| Two users edit the same plain record | The stale edit is refused, if the caller sends the `_version` it read | The row's `xmin`, which Postgres changes on every update |
+| Two servers deliver the outbox | Each event is taken by one | Row lock, skipping locked rows |
 | A number series under load | No gaps, no duplicates | Counter row locked until commit |
 | A change triggers an integration | The event exists if and only if the change committed | Outbox row in the same transaction |
 
-Each row has a test in `apps/server/tests/ledger.rs`.
+Each row has a test in `apps/server/tests/`.
 
 ### Identity and authorization
 
@@ -120,13 +148,13 @@ Built:
 - **User attributes** are free-form facts on the user (`{"warehouses": ["W1"]}`) that rules read as `user.<name>`, so one role serves every warehouse.
 - **Nothing undecidable helps the caller.** A rule that cannot be evaluated never allows and always denies. An action checked without a record, such as a total over a ledger, treats conditional rules the same way.
 - Rules are checked when a role is saved: the syntax, the fields they name, and that they can be compiled to SQL.
+- `/api/meta` describes, under `access`, what the caller could do: per entity whether they can read, create and update, and which fields are limited (`all`, `some`, `none`); per document type the actions open to them; and the commands they could run. An interface uses it to decide what to show. It is a courtesy: every command still checks for itself.
 
 Limits of what is built:
 
 - An administrator is not subject to rules.
 - Rules on a document see its header (company, status, dates, creator), not its lines.
 - Field rules apply to entities, not to documents.
-- `/api/meta` does not yet tell a client which fields the current user may see.
 - Rules are parsed on every request; nothing is cached yet.
 
 Planned:
@@ -136,7 +164,7 @@ Planned:
 
 ### Rules
 
-A rule condition is one expression over `record` and `user`. The syntax is CEL. `erpcraft-rules` is the only crate that knows the engine; the kernel sees a `Rule` that can be checked, evaluated against a record, and compiled to a SQL condition with bound parameters. Only the part of CEL that maps to SQL is accepted: comparisons, `in`, `&&`, `||`, `!`, literals, record fields and user attributes. The same crate is meant to serve list filters, validations and workflow conditions later.
+A rule condition is one expression over `record` and `user`. The syntax is CEL. `erpcraft-rules` is the only crate that knows the engine; the kernel sees a `Rule` that can be checked, evaluated against a record, and compiled to a SQL condition with bound parameters. Only the part of CEL that maps to SQL is accepted: comparisons, `in`, `&&`, `||`, `!`, literals, record fields and user attributes. The same crate serves the `where` parameter of lists, and is meant to serve validations and workflow conditions later.
 
 ## Contracts for later
 
@@ -162,18 +190,19 @@ Four engines were compared hands-on in November 2026 (CEL, Rhai, Cedar, Monty). 
 
 ## Known gaps in what is built
 
-- The outbox has no delivery worker; events accumulate.
-- Idempotency keys are never cleaned up.
-- Only documents detect stale edits; plain records such as accounts do not.
+- Outbox subscribers run inside the server. Delivery to the outside (webhooks, a message broker) is not built; it would be a subscriber.
+- A refused stale edit does not say what the other person changed.
+- A caller that sends no `_version` when updating or deleting a plain record is not checked for staleness.
+- A plain record can be deleted only while nothing refers to it. There is no way yet to retire a record that is in use, such as an account that should take no new entries, except where its entity has a field for it.
+- Documents cannot yet refer to the documents they came from. This comes with the purchasing flow, which is the first to need it.
 - Exchange rates are supplied by the caller. There are no rate tables, no revaluation, and a rounding difference needs an explicit line.
-- Failed commands are not audited.
 - Intercompany postings are not modeled.
 - The MCP endpoint supports tools over stateless HTTP only.
 
 ## Milestones
 
 1. Done: the headless ledger slice. Kernel, general ledger, journal entries, HTTP and MCP.
-   Also done: identity in its own crate, row and field permission rules.
+   Also done: identity in its own crate, row and field permission rules, list search and filters, record history, outbox delivery, per-user access in the description.
 2. Admin UI generated from the registry.
 3. Stock ledger and the purchasing flow across modules.
 4. Single sign-on. (Row and field permission rules are done.)

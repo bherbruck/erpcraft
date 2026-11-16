@@ -9,10 +9,12 @@
 //! row conditions become part of the query, and withheld fields are removed
 //! from every record that leaves.
 
+use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use erpcraft_core::{Error, Result, new_id};
-use erpcraft_rules::Bind;
+use erpcraft_rules::{Bind, ColumnType, Rule, SqlScope};
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 use sqlx::Arguments;
 use sqlx::postgres::PgArguments;
@@ -39,20 +41,86 @@ pub(crate) fn arguments(binds: &[Bind]) -> Result<PgArguments> {
     Ok(arguments)
 }
 
+/// The key under which every record carries its version token.
+pub const VERSION_KEY: &str = "_version";
+
+/// What a list is asked for.
+#[derive(Debug, Clone, Default)]
+pub struct ListQuery {
+    /// Field name and the exact value it must have.
+    pub filters: Vec<(String, String)>,
+    /// Text to look for in the entity's search fields.
+    pub q: Option<String>,
+    /// A condition over `record` and `user`, in the language of permission
+    /// rules: `record.account_type == 'asset' && !record.is_group`.
+    pub condition: Option<String>,
+    /// Field names; a leading `-` sorts descending. Empty: the entity's
+    /// own order.
+    pub sort: Vec<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+/// One page of a list, with the number of records the whole list has.
+#[derive(Debug, Clone, Serialize)]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    pub total: i64,
+}
+
+/// A `LIKE` pattern matching text that contains `q` literally.
+pub(crate) fn like_pattern(q: &str) -> String {
+    let mut pattern = String::with_capacity(q.len() + 2);
+    pattern.push('%');
+    for c in q.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            pattern.push('\\');
+        }
+        pattern.push(c);
+    }
+    pattern.push('%');
+    pattern
+}
+
+/// Compile a condition the caller wrote into SQL over the row aliased `t`.
+/// It can refer only to `columns`; leave out any the caller may not see.
+pub(crate) fn caller_condition(
+    actor: &Actor,
+    source: &str,
+    columns: &BTreeMap<String, ColumnType>,
+    binds: &mut Vec<Bind>,
+) -> Result<String> {
+    let rule = Rule::parse(source)?;
+    rule.check(columns)?;
+    let user = actor.rule_user();
+    let scope = SqlScope {
+        alias: "t",
+        columns,
+        user: &user,
+    };
+    rule.to_sql(&scope, binds)
+}
+
+/// Split `-name` into the field and whether it sorts descending.
+pub(crate) fn sort_key(key: &str) -> (&str, &'static str) {
+    match key.strip_prefix('-') {
+        Some(field) => (field, "DESC"),
+        None => (key, "ASC"),
+    }
+}
+
 /// JSON for one row aliased `t`. Decimals are returned as strings so that
-/// no client rounds them through a float.
+/// no client rounds them through a float. The version token is the row's
+/// `xmin`: Postgres changes it on every update, whoever makes it.
 fn select_expr(meta: &EntityMeta) -> String {
-    let decimals: Vec<String> = meta
+    let mut extra: Vec<String> = meta
         .fields
         .iter()
         .filter(|f| matches!(f.ty, FieldType::Decimal))
         .map(|f| format!("'{0}', t.{0}::text", f.name))
         .collect();
-    if decimals.is_empty() {
-        "to_jsonb(t)".into()
-    } else {
-        format!("to_jsonb(t) || jsonb_build_object({})", decimals.join(", "))
-    }
+    extra.push(format!("'{VERSION_KEY}', t.xmin::text"));
+    format!("to_jsonb(t) || jsonb_build_object({})", extra.join(", "))
 }
 
 /// A record as rules see it: decimals are numbers, so a rule can compare
@@ -104,7 +172,7 @@ fn present(actor: &Actor, meta: &EntityMeta, row: Value) -> Value {
     match row {
         Value::Object(map) => Value::Object(
             map.into_iter()
-                .filter(|(key, _)| access.allows(key))
+                .filter(|(key, _)| key == VERSION_KEY || access.allows(key))
                 .collect(),
         ),
         other => other,
@@ -174,13 +242,7 @@ fn withheld(field: &str) -> Error {
     Error::forbidden(format!("you may not set field '{field}'"))
 }
 
-pub async fn list(
-    ctx: &mut Ctx<'_>,
-    entity: &str,
-    filters: &[(String, String)],
-    limit: Option<i64>,
-    offset: Option<i64>,
-) -> Result<Vec<Value>> {
+pub async fn list(ctx: &mut Ctx<'_>, entity: &str, query: &ListQuery) -> Result<Page<Value>> {
     let (kernel, actor) = (ctx.kernel, ctx.actor);
     let meta = kernel.registry().entity(entity)?;
     let permission = format!("{entity}:read");
@@ -190,50 +252,113 @@ pub async fn list(
         columns: &columns,
         company_column: meta.company_field.as_deref(),
     };
+    let field = |name: &str| meta.fields.iter().find(|f| f.name == name);
 
     let mut binds = vec![];
-    let mut sql = format!(
-        "SELECT {} FROM {} AS t WHERE true",
-        select_expr(meta),
-        meta.table
-    );
-    for (field, value) in filters {
-        if !meta.fields.iter().any(|f| &f.name == field) {
-            return Err(Error::validation(format!("unknown filter field '{field}'")));
+    let mut conditions = String::from("true");
+    for (name, value) in &query.filters {
+        if field(name).is_none() {
+            return Err(Error::validation(format!("unknown filter field '{name}'")));
         }
         // Filtering by a field would reveal its values.
-        if actor.may_withhold(&permission, field) {
+        if actor.may_withhold(&permission, name) {
             return Err(Error::forbidden(format!(
-                "you may not filter by field '{field}'"
+                "you may not filter by field '{name}'"
             )));
         }
         binds.push(Bind::Text(Some(value.clone())));
-        let _ = write!(sql, " AND t.{field}::text = ${}", binds.len());
+        let _ = write!(conditions, " AND t.{name}::text = ${}", binds.len());
+    }
+    if let Some(q) = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+        // A field that may be withheld is not searched, or a search would
+        // reveal its values.
+        let fields: Vec<&String> = meta
+            .search
+            .iter()
+            .filter(|name| !actor.may_withhold(&permission, name))
+            .collect();
+        if fields.is_empty() {
+            return Err(Error::validation(format!(
+                "{entity} records cannot be searched by text"
+            )));
+        }
+        binds.push(Bind::Text(Some(like_pattern(q))));
+        let n = binds.len();
+        let parts: Vec<String> = fields
+            .iter()
+            .map(|name| format!("t.{name}::text ILIKE ${n}"))
+            .collect();
+        let _ = write!(conditions, " AND ({})", parts.join(" OR "));
+    }
+    if let Some(source) = &query.condition {
+        // A field that may be withheld cannot be named, or the condition
+        // would reveal its values.
+        let visible: BTreeMap<String, ColumnType> = columns
+            .iter()
+            .filter(|(name, _)| !actor.may_withhold(&permission, name))
+            .map(|(name, ty)| (name.clone(), *ty))
+            .collect();
+        let sql = caller_condition(actor, source, &visible, &mut binds)?;
+        let _ = write!(conditions, " AND ({sql})");
     }
     if let Some(filter) = actor.row_filter(&permission, &scope, false, &mut binds)? {
-        let _ = write!(sql, " AND {filter}");
+        let _ = write!(conditions, " AND {filter}");
     }
-    let order: Vec<String> = meta.order_by.iter().map(|f| format!("t.{f}")).collect();
-    let _ = write!(
-        sql,
-        " ORDER BY {} LIMIT ${} OFFSET ${}",
+
+    let mut order = vec![];
+    for key in &query.sort {
+        let (name, direction) = sort_key(key);
+        match field(name) {
+            Some(f) if !matches!(f.ty, FieldType::Json) => {}
+            _ => return Err(Error::validation(format!("cannot sort by '{name}'"))),
+        }
+        // Sorting by a field would reveal the order of its values.
+        if actor.may_withhold(&permission, name) {
+            return Err(Error::forbidden(format!(
+                "you may not sort by field '{name}'"
+            )));
+        }
+        order.push(format!("t.{name} {direction}"));
+    }
+    if order.is_empty() {
+        order.extend(meta.order_by.iter().map(|f| format!("t.{f}")));
+    }
+    // The id makes the order total, so pages never overlap.
+    order.push("t.id".into());
+
+    let total: i64 = sqlx::query_scalar_with(
+        &format!(
+            "SELECT count(*) FROM {} AS t WHERE {conditions}",
+            meta.table
+        ),
+        arguments(&binds)?,
+    )
+    .fetch_one(&mut *ctx.conn)
+    .await?;
+
+    let sql = format!(
+        "SELECT {} FROM {} AS t WHERE {conditions} ORDER BY {} LIMIT ${} OFFSET ${}",
+        select_expr(meta),
+        meta.table,
         order.join(", "),
         binds.len() + 1,
         binds.len() + 2
     );
-
     let mut arguments = arguments(&binds)?;
     arguments
-        .add(limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT))
-        .and_then(|()| arguments.add(offset.unwrap_or(0).max(0)))
+        .add(query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT))
+        .and_then(|()| arguments.add(query.offset.unwrap_or(0).max(0)))
         .map_err(Error::internal)?;
     let rows = sqlx::query_scalar_with::<_, Value, _>(&sql, arguments)
         .fetch_all(&mut *ctx.conn)
         .await?;
-    Ok(rows
-        .into_iter()
-        .map(|row| present(actor, meta, row))
-        .collect())
+    Ok(Page {
+        items: rows
+            .into_iter()
+            .map(|row| present(actor, meta, row))
+            .collect(),
+        total,
+    })
 }
 
 pub async fn get(ctx: &mut Ctx<'_>, entity: &str, id: Uuid) -> Result<Value> {
@@ -293,6 +418,7 @@ pub async fn create(ctx: &mut Ctx<'_>, entity: &str, data: Value) -> Result<Valu
     }
 
     let id = new_id();
+    ctx.touch(entity, id);
     data.insert("id".into(), json!(id));
     let columns: Vec<&str> = meta
         .fields
@@ -325,10 +451,19 @@ pub async fn create(ctx: &mut Ctx<'_>, entity: &str, data: Value) -> Result<Valu
     })
 }
 
-pub async fn update(ctx: &mut Ctx<'_>, entity: &str, id: Uuid, data: Value) -> Result<Value> {
+/// Change fields of one record. With `version`, the token the caller last
+/// read, the change is refused if the record has changed since.
+pub async fn update(
+    ctx: &mut Ctx<'_>,
+    entity: &str,
+    id: Uuid,
+    data: Value,
+    version: Option<&str>,
+) -> Result<Value> {
     let (kernel, actor) = (ctx.kernel, ctx.actor);
     let meta = kernel.registry().entity(entity)?;
     writable(meta)?;
+    ctx.touch(entity, id);
     let data = into_object(data)?;
     if data.is_empty() {
         return Err(Error::validation("no fields to update"));
@@ -358,6 +493,13 @@ pub async fn update(ctx: &mut Ctx<'_>, entity: &str, id: Uuid, data: Value) -> R
         .fetch_optional(&mut *ctx.conn)
         .await?
         .ok_or_else(|| Error::not_found(entity))?;
+    if let Some(version) = version {
+        if current.get(VERSION_KEY).and_then(Value::as_str) != Some(version) {
+            return Err(Error::conflict(format!(
+                "this {entity} was changed by someone else after you read it"
+            )));
+        }
+    }
 
     let access = actor.fields(
         &permission,
@@ -402,4 +544,62 @@ pub async fn update(ctx: &mut Ctx<'_>, entity: &str, id: Uuid, data: Value) -> R
         ));
     }
     Ok(present(actor, meta, changed))
+}
+
+/// Delete one record. Refused while anything still refers to it. With
+/// `version`, also refused if the record changed since the caller read it.
+pub async fn delete(
+    ctx: &mut Ctx<'_>,
+    entity: &str,
+    id: Uuid,
+    version: Option<&str>,
+) -> Result<()> {
+    let (kernel, actor) = (ctx.kernel, ctx.actor);
+    let meta = kernel.registry().entity(entity)?;
+    writable(meta)?;
+    ctx.touch(entity, id);
+
+    let permission = format!("{entity}:delete");
+    let columns = meta.rule_columns();
+    let scope = RowScope {
+        alias: "t",
+        columns: &columns,
+        company_column: meta.company_field.as_deref(),
+    };
+    let mut binds = vec![Bind::Text(Some(id.to_string()))];
+    let mut sql = format!(
+        "SELECT {} FROM {} AS t WHERE t.id = $1::uuid",
+        select_expr(meta),
+        meta.table
+    );
+    // Shared records, and companies themselves, need a grant for all companies.
+    let shared = matches!(meta.company_field.as_deref(), None | Some("id"));
+    if let Some(filter) = actor.row_filter(&permission, &scope, shared, &mut binds)? {
+        let _ = write!(sql, " AND {filter}");
+    }
+    sql.push_str(" FOR UPDATE");
+    let current = sqlx::query_scalar_with::<_, Value, _>(&sql, arguments(&binds)?)
+        .fetch_optional(&mut *ctx.conn)
+        .await?
+        .ok_or_else(|| Error::not_found(entity))?;
+    if let Some(version) = version {
+        if current.get(VERSION_KEY).and_then(Value::as_str) != Some(version) {
+            return Err(Error::conflict(format!(
+                "this {entity} was changed by someone else after you read it"
+            )));
+        }
+    }
+
+    let deleted = sqlx::query(&format!("DELETE FROM {} WHERE id = $1", meta.table))
+        .bind(id)
+        .execute(&mut *ctx.conn)
+        .await;
+    match deleted {
+        Ok(_) => Ok(()),
+        // A foreign key still points at the record.
+        Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("23503") => Err(
+            Error::conflict(format!("this {entity} is in use and cannot be deleted")),
+        ),
+        Err(error) => Err(error.into()),
+    }
 }

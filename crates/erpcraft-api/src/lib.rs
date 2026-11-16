@@ -36,7 +36,7 @@ pub fn router(kernel: Kernel) -> Router {
         )
         .route(
             "/api/entities/{entity}/{id}",
-            get(entity_get).patch(entity_update),
+            get(entity_get).patch(entity_update).delete(entity_delete),
         )
         .route(
             "/api/documents/{doc_type}",
@@ -166,17 +166,32 @@ fn idempotency_key(headers: &HeaderMap) -> Option<String> {
 
 type Fields = Map<String, Value>;
 
-/// Split paging parameters from the rest of a query string.
+/// Split the parameters every list takes (`limit`, `offset`, `q`, `where`, `sort`)
+/// from the rest of a query string. `sort` is a comma-separated list.
 fn paging(query: Vec<(String, String)>) -> Result<(Fields, Fields), Error> {
     let (mut page, mut rest) = (Map::new(), Map::new());
     for (key, value) in query {
-        if key == "limit" || key == "offset" {
-            let number: i64 = value
-                .parse()
-                .map_err(|_| Error::validation(format!("'{key}' must be a whole number")))?;
-            page.insert(key, json!(number));
-        } else {
-            rest.insert(key, json!(value));
+        match key.as_str() {
+            "limit" | "offset" => {
+                let number: i64 = value
+                    .parse()
+                    .map_err(|_| Error::validation(format!("'{key}' must be a whole number")))?;
+                page.insert(key, json!(number));
+            }
+            "q" | "where" => {
+                page.insert(key, json!(value));
+            }
+            "sort" => {
+                let fields: Vec<&str> = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|f| !f.is_empty())
+                    .collect();
+                page.insert(key, json!(fields));
+            }
+            _ => {
+                rest.insert(key, json!(value));
+            }
         }
     }
     Ok((page, rest))
@@ -303,8 +318,27 @@ async fn entity_update(
     headers: HeaderMap,
     body: Bytes,
 ) -> ApiResult {
-    let input = json!({ "entity": entity, "id": id, "data": parse_body(&body)? });
+    // A record sent back as it was read carries its version token.
+    let mut data = parse_object(&body)?;
+    let version = data.remove("_version");
+    let input = json!({ "entity": entity, "id": id, "data": data, "version": version });
     ok(run(&kernel, &actor, "entity.update", input, &headers).await?)
+}
+
+#[derive(Deserialize)]
+struct VersionQuery {
+    version: Option<String>,
+}
+
+async fn entity_delete(
+    State(kernel): State<Kernel>,
+    Auth(actor): Auth,
+    Path((entity, id)): Path<(String, String)>,
+    Query(query): Query<VersionQuery>,
+    headers: HeaderMap,
+) -> ApiResult {
+    let input = json!({ "entity": entity, "id": id, "version": query.version });
+    ok(run(&kernel, &actor, "entity.delete", input, &headers).await?)
 }
 
 async fn document_list(

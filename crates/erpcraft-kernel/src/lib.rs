@@ -9,12 +9,15 @@
 //! Compiled modules are trusted server code. The module API is an
 //! architectural boundary, not a security sandbox.
 
+pub mod audit;
 pub mod authz;
 mod builtin;
 pub mod command;
 pub mod document;
 pub mod entity;
+pub mod maintenance;
 pub mod numbering;
+pub mod outbox;
 pub mod registry;
 
 use std::sync::Arc;
@@ -29,6 +32,7 @@ pub use schemars::{self, JsonSchema};
 pub use authz::{Actor, Authenticator};
 pub use command::{Command, CommandSpec, Ctx, DynCommand, Options, command};
 pub use document::{Document, DocumentHandler, DocumentView, Ledger, Posting};
+pub use outbox::{Event, Subscriber};
 pub use registry::{
     CollectionMeta, DocTypeMeta, EntityMeta, FieldMeta, FieldType, Module, Registry, StateMeta,
 };

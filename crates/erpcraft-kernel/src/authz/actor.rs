@@ -197,6 +197,20 @@ impl FieldAccess {
     }
 }
 
+/// How far an actor's use of one field goes, across all records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reach {
+    /// On every record the actor can reach.
+    All,
+    /// On some records: it depends on the record or on its company.
+    #[serde(rename = "some")]
+    Partial,
+    /// On no record.
+    #[serde(rename = "none")]
+    Never,
+}
+
 /// What a row filter is compiled against.
 pub struct RowScope<'a> {
     pub alias: &'a str,
@@ -407,6 +421,44 @@ impl Actor {
                     _ => false,
                 }
             })
+    }
+
+    /// How far the actor's use of `field` goes for `permission`. Meant for
+    /// deciding what to show; it errs towards [`Reach::Partial`], and the
+    /// precise answer is the one [`Actor::fields`] gives for a record.
+    pub fn field_reach(&self, permission: &str, field: &str) -> Reach {
+        if !self.can_any(permission) {
+            return Reach::Never;
+        }
+        if self.is_admin || field == "id" {
+            return Reach::All;
+        }
+        let (mut granted, mut limited) = (false, false);
+        for (grant, rule) in self.rules(permission, Target::Any) {
+            let named = rule
+                .fields
+                .as_ref()
+                .is_some_and(|fields| fields.iter().any(|f| f == field));
+            match (rule.effect, &rule.fields) {
+                (Effect::Allow, _) if rule.broken => {}
+                (Effect::Allow, None) => granted = true,
+                (Effect::Allow, Some(_)) if named => granted = true,
+                (Effect::Allow, Some(_)) => limited = true,
+                (Effect::Deny, Some(_)) if named => {
+                    // Withheld on every record of every company.
+                    if grant.company_id.is_none() && (rule.broken || rule.condition.is_none()) {
+                        return Reach::Never;
+                    }
+                    limited = true;
+                }
+                (Effect::Deny, _) => {}
+            }
+        }
+        match (granted, limited) {
+            (false, _) => Reach::Never,
+            (true, true) => Reach::Partial,
+            (true, false) => Reach::All,
+        }
     }
 
     /// A SQL condition selecting the rows the actor may use `permission`

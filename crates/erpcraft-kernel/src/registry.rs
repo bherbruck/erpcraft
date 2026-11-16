@@ -11,6 +11,7 @@ use serde::Serialize;
 use crate::authz::Authenticator;
 use crate::command::{CommandMeta, DynCommand};
 use crate::document::{DocumentHandler, Ledger};
+use crate::outbox::Subscriber;
 
 /// A unit of functionality. In-tree and outside modules implement the same
 /// trait and get nothing else from the kernel.
@@ -41,6 +42,11 @@ pub trait Module: Send + Sync + 'static {
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
+        vec![]
+    }
+
+    /// What reacts to committed changes. See [`Subscriber`].
+    fn subscribers(&self) -> Vec<Arc<dyn Subscriber>> {
         vec![]
     }
 
@@ -149,6 +155,10 @@ pub struct EntityMeta {
     pub label: String,
     pub fields: Vec<FieldMeta>,
     pub order_by: Vec<String>,
+    /// The text fields a person finds a record by, most telling first: a
+    /// code, a name. Lists search them, and they are what a reference to
+    /// the record displays.
+    pub search: Vec<String>,
     /// Never written through the generic layer.
     pub read_only: bool,
     /// The column holding the owning company, used to scope access. `None`
@@ -173,6 +183,7 @@ impl EntityMeta {
             label: label.into(),
             fields: vec![FieldMeta::new("id", "ID", FieldType::Uuid).readonly()],
             order_by: vec!["id".into()],
+            search: vec![],
             read_only: false,
             company_field: None,
             validator: None,
@@ -186,6 +197,11 @@ impl EntityMeta {
 
     pub fn order_by(mut self, fields: &[&str]) -> Self {
         self.order_by = fields.iter().map(|f| f.to_string()).collect();
+        self
+    }
+
+    pub fn search(mut self, fields: &[&str]) -> Self {
+        self.search = fields.iter().map(|f| f.to_string()).collect();
         self
     }
 
@@ -317,6 +333,7 @@ pub struct Registry {
     commands: BTreeMap<String, CommandEntry>,
     tools: BTreeMap<String, String>,
     ledgers: Vec<Arc<dyn Ledger>>,
+    subscribers: Vec<Arc<dyn Subscriber>>,
     authenticator: Option<Arc<dyn Authenticator>>,
 }
 
@@ -340,6 +357,7 @@ impl Registry {
             commands: BTreeMap::new(),
             tools: BTreeMap::new(),
             ledgers: vec![],
+            subscribers: vec![],
             authenticator: None,
         };
         let mut seen = BTreeSet::new();
@@ -417,6 +435,20 @@ impl Registry {
             }
 
             reg.ledgers.extend(module.ledgers());
+            for subscriber in module.subscribers() {
+                let subscriber_name = subscriber.name();
+                if !is_ident(subscriber_name) {
+                    return Err(bad(format!(
+                        "subscriber name '{subscriber_name}' is not a lowercase identifier"
+                    )));
+                }
+                if reg.subscribers.iter().any(|s| s.name() == subscriber_name) {
+                    return Err(bad(format!(
+                        "subscriber '{subscriber_name}' is registered twice"
+                    )));
+                }
+                reg.subscribers.push(subscriber);
+            }
             if let Some(authenticator) = module.authenticator() {
                 if reg.authenticator.is_some() {
                     return Err(bad(format!(
@@ -478,6 +510,10 @@ impl Registry {
         &self.ledgers
     }
 
+    pub fn subscribers(&self) -> &[Arc<dyn Subscriber>] {
+        &self.subscribers
+    }
+
     pub fn authenticator(&self) -> Option<&Arc<dyn Authenticator>> {
         self.authenticator.as_ref()
     }
@@ -535,6 +571,17 @@ fn check_entity(entity: &EntityMeta) -> Result<()> {
         if !has(field) {
             return Err(bad(format!(
                 "entity '{name}' orders by unknown field '{field}'"
+            )));
+        }
+    }
+    for field in &entity.search {
+        let text = entity
+            .fields
+            .iter()
+            .any(|f| &f.name == field && matches!(f.ty, FieldType::Text));
+        if !text {
+            return Err(bad(format!(
+                "entity '{name}' searches '{field}', which is not a text field"
             )));
         }
     }

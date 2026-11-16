@@ -415,3 +415,101 @@ async fn a_rule_is_checked_when_its_role_is_saved() {
 
     t.stop().await;
 }
+
+#[tokio::test]
+async fn the_description_says_what_the_caller_could_do() {
+    let t = TestApp::start().await;
+    let c = t.company("ACME", "USD").await;
+
+    // An administrator could do everything that can be done at all.
+    let (status, meta) = t.get(&t.admin, "/api/meta").await;
+    assert_eq!(status, StatusCode::OK, "{meta}");
+    let account = &meta["access"]["entities"]["account"];
+    assert_eq!(account["read"], true);
+    assert_eq!(account["create"], true);
+    assert_eq!(account["fields"], json!({}));
+    assert_eq!(
+        meta["access"]["entities"]["gl_entry"]["create"], false,
+        "ledger entries are never written directly"
+    );
+    assert_eq!(
+        meta["access"]["doc_types"]["journal_entry"],
+        json!(["read", "create", "update", "delete", "post", "reverse"])
+    );
+
+    // A clerk for one company.
+    let (clerk, _) = t
+        .user_with_rules(
+            "clerk@example.com",
+            json!([
+                "account:read",
+                { "deny": "account:read", "fields": ["is_group"] },
+                { "allow": "account:update", "fields": ["name"] },
+                "journal_entry:read",
+                "journal_entry:post",
+            ]),
+            Some(&c.id),
+        )
+        .await;
+    let (_, meta) = t.get(&clerk, "/api/meta").await;
+    let access = &meta["access"];
+    let account = &access["entities"]["account"];
+    assert_eq!(account["read"], true);
+    assert_eq!(account["create"], false);
+    assert_eq!(account["update"], true);
+    // Withheld in this company; the answer could differ in another.
+    assert_eq!(account["fields"]["is_group"]["read"], "some");
+    assert_eq!(account["fields"]["name"]["read"], "all");
+    assert_eq!(account["fields"]["name"]["update"], "all");
+    assert_eq!(account["fields"]["code"]["update"], "none");
+    assert_eq!(account["fields"]["code"]["create"], "none");
+    // Nothing at all on companies, so no field detail either.
+    assert_eq!(
+        access["entities"]["company"],
+        json!({ "read": false, "create": false, "update": false, "delete": false, "fields": {} })
+    );
+    assert_eq!(
+        access["doc_types"]["journal_entry"],
+        json!(["read", "post"])
+    );
+    let commands: Vec<&str> = access["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect();
+    assert!(commands.contains(&"journal_entry.post"));
+    assert!(commands.contains(&"entity.list"));
+    assert!(!commands.contains(&"journal_entry.reverse"));
+    assert!(!commands.contains(&"audit.list"));
+    assert!(!commands.contains(&"user.create"));
+
+    // The same withholding for every company is a plain no.
+    let (auditor, _) = t
+        .user_with_rules(
+            "auditor@example.com",
+            json!(["account:read", { "deny": "account:read", "fields": ["is_group"] }]),
+            None,
+        )
+        .await;
+    let (_, meta) = t.get(&auditor, "/api/meta").await;
+    assert_eq!(
+        meta["access"]["entities"]["account"]["fields"]["is_group"]["read"],
+        "none"
+    );
+
+    // A token's scopes cap the description too.
+    let (status, scoped) = t
+        .command(
+            &clerk,
+            "auth.create_token",
+            json!({ "name": "agent", "scopes": ["account:read"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{scoped}");
+    let (_, meta) = t.get(scoped["token"].as_str().unwrap(), "/api/meta").await;
+    assert_eq!(meta["access"]["entities"]["account"]["update"], false);
+    assert_eq!(meta["access"]["doc_types"]["journal_entry"], json!([]));
+
+    t.stop().await;
+}

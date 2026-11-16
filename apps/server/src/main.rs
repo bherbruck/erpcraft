@@ -22,6 +22,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    let background = tokio::spawn(erpcraft_server::background(kernel.clone()));
+
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!(%bind, "erpcraft is listening");
     axum::serve(listener, erpcraft_server::app(kernel))
@@ -29,5 +31,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await?;
+    background.abort();
     Ok(())
 }

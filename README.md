@@ -27,6 +27,8 @@ curl -s localhost:8600/api/meta -H "Authorization: Bearer $TOKEN"
 - `GET /api/meta` describes every entity, document type and command.
 - `POST /api/commands/{name}` runs any command. Add `?preview=true` to see the outcome without saving, and an `Idempotency-Key` header to make a retry safe.
 - `/api/entities/{entity}` and `/api/documents/{doc_type}` are REST shortcuts.
+- Lists take `q` (text search), `where` (a condition such as `record.debit > 100`), `sort`, `limit` and `offset`, and return `items` and `total`.
+- `audit.history` gives the history of one record; `GET /api/meta` includes what the caller is allowed to do.
 - `POST /mcp` is the MCP endpoint, with the same bearer token.
 
 ## Test

@@ -286,6 +286,7 @@ impl Command for UserCreate {
         let user =
             authz::create_user(&mut *ctx.conn, &input.email, &input.name, input.is_admin).await?;
         set_password(&mut *ctx.conn, user.id, &input.password).await?;
+        ctx.touch("user", user.id);
         Ok(user)
     }
 }

@@ -8,7 +8,7 @@ use std::str::FromStr;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use erpcraft_kernel::Kernel;
+use erpcraft_kernel::{Kernel, KernelBuilder};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -41,6 +41,12 @@ pub struct Company {
 
 impl TestApp {
     pub async fn start() -> TestApp {
+        TestApp::start_with(|builder| builder).await
+    }
+
+    /// Like [`TestApp::start`], with extra modules registered after the
+    /// in-tree ones.
+    pub async fn start_with(extend: impl FnOnce(KernelBuilder) -> KernelBuilder) -> TestApp {
         let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_URL.into());
         let options =
             PgConnectOptions::from_str(&url).expect("DATABASE_URL is not a valid Postgres URL");
@@ -60,7 +66,9 @@ impl TestApp {
             .connect_with(options.database(&database))
             .await
             .unwrap();
-        let kernel = erpcraft_server::kernel(pool.clone()).unwrap();
+        let kernel = extend(erpcraft_server::modules(pool.clone()))
+            .build()
+            .unwrap();
         kernel.migrate().await.unwrap();
         assert!(
             erpcraft_auth::bootstrap_admin(&kernel, ADMIN_EMAIL, PASSWORD)

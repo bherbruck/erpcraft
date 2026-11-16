@@ -62,6 +62,7 @@ impl Module for GlModule {
                 .field(FieldMeta::new("active", "Active", FieldType::Bool))
                 .field(created())
                 .order_by(&["code"])
+                .search(&["code", "name"])
                 .company_field("company_id"),
             EntityMeta::new("fiscal_period", "Fiscal period")
                 .field(company())
@@ -75,6 +76,7 @@ impl Module for GlModule {
                 )
                 .field(created())
                 .order_by(&["start_date"])
+                .search(&["name"])
                 .company_field("company_id"),
             EntityMeta::new("gl_entry", "Ledger entry")
                 .field(company())

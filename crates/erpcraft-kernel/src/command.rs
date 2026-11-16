@@ -4,11 +4,12 @@
 //! in one database transaction and adds what every command needs:
 //! authorization, idempotency, the audit record and the outbox event.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use erpcraft_core::{Error, Result, new_id};
-use erpcraft_db::PgConnection;
+use erpcraft_db::{PgConnection, PgPool};
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -18,6 +19,7 @@ use uuid::Uuid;
 
 use crate::Kernel;
 use crate::authz::{Actor, Target};
+use crate::registry::CommandEntry;
 
 /// What a command handler works with. `conn` is the command's transaction.
 pub struct Ctx<'a> {
@@ -27,7 +29,11 @@ pub struct Ctx<'a> {
     /// Name of the command being run.
     pub command: &'a str,
     changed: bool,
+    touched: Subjects,
 }
+
+/// The records a command touched, as `(resource, id)`.
+type Subjects = BTreeSet<(String, Uuid)>;
 
 impl Ctx<'_> {
     /// Declare that this run changed nothing, for example because it
@@ -35,6 +41,14 @@ impl Ctx<'_> {
     /// published for it, so subscribers see each change once.
     pub fn no_change(&mut self) {
         self.changed = false;
+    }
+
+    /// Note that this command creates, changes or acts on a record, so the
+    /// command appears in that record's history. `resource` is an entity
+    /// name, a document type, or `user`. The kernel's own functions for
+    /// entities and documents already do this.
+    pub fn touch(&mut self, resource: &str, id: Uuid) {
+        self.touched.insert((resource.to_owned(), id));
     }
 
     /// Fail unless the actor holds `permission` for `company_id`, whatever
@@ -193,11 +207,11 @@ pub async fn execute(
 ) -> Result<Value> {
     let entry = kernel.registry().command(name)?;
     let meta = &entry.meta;
-    if let Some(permission) = &meta.permission {
-        actor.require_any(permission)?;
-    }
 
     if meta.read_only {
+        if let Some(permission) = &meta.permission {
+            actor.require_any(permission)?;
+        }
         let mut conn = kernel.pool().acquire().await?;
         let mut ctx = Ctx {
             conn: &mut conn,
@@ -205,8 +219,99 @@ pub async fn execute(
             kernel,
             command: name,
             changed: false,
+            touched: Subjects::new(),
         };
         return entry.handler.run_json(&mut ctx, input).await;
+    }
+
+    let preview = options.preview;
+    let mut touched = Subjects::new();
+    let result = run_action(kernel, actor, entry, &input, options, &mut touched).await;
+    // A refused or failed attempt to change something is part of the
+    // record. A preview attempts nothing.
+    if let (Err(error), false) = (&result, preview) {
+        let recorded_input = (!meta.sensitive).then_some(&input);
+        if let Err(audit_error) = record_failure(
+            kernel.pool(),
+            actor.user_id,
+            name,
+            recorded_input,
+            error,
+            &touched,
+        )
+        .await
+        {
+            tracing::error!(%audit_error, command = name, "could not audit a failed command");
+        }
+    }
+    result
+}
+
+/// Write the audit record of a failed command. The command's transaction
+/// is gone, so this is a transaction of its own.
+async fn record_failure(
+    pool: &PgPool,
+    user_id: Uuid,
+    name: &str,
+    input: Option<&Value>,
+    error: &Error,
+    touched: &Subjects,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    let audit_id = new_id();
+    sqlx::query(
+        "INSERT INTO audit_log (id, user_id, command, input, outcome, error_code, error_message)
+         VALUES ($1, $2, $3, $4, 'error', $5, $6)",
+    )
+    .bind(audit_id)
+    .bind(user_id)
+    .bind(name)
+    .bind(input)
+    .bind(error.code())
+    .bind(error.to_string())
+    .execute(&mut *tx)
+    .await?;
+    record_subjects(&mut tx, audit_id, touched).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn record_subjects(
+    conn: &mut PgConnection,
+    audit_id: Uuid,
+    touched: &Subjects,
+) -> Result<()> {
+    if touched.is_empty() {
+        return Ok(());
+    }
+    let (resources, ids): (Vec<&str>, Vec<Uuid>) = touched
+        .iter()
+        .map(|(resource, id)| (resource.as_str(), *id))
+        .unzip();
+    sqlx::query(
+        "INSERT INTO audit_subject (audit_id, resource, record_id)
+         SELECT $1, * FROM unnest($2::text[], $3::uuid[])",
+    )
+    .bind(audit_id)
+    .bind(resources)
+    .bind(ids)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+async fn run_action(
+    kernel: &Kernel,
+    actor: &Actor,
+    entry: &CommandEntry,
+    input: &Value,
+    options: Options,
+    touched: &mut Subjects,
+) -> Result<Value> {
+    let meta = &entry.meta;
+    let name = meta.name.as_str();
+    if let Some(permission) = &meta.permission {
+        actor.require_any(permission)?;
     }
 
     let mut tx = kernel.pool().begin().await?;
@@ -258,9 +363,11 @@ pub async fn execute(
             kernel,
             command: name,
             changed: true,
+            touched: Subjects::new(),
         };
-        let output = entry.handler.run_json(&mut ctx, input.clone()).await?;
-        (output, ctx.changed)
+        let outcome = entry.handler.run_json(&mut ctx, input.clone()).await;
+        *touched = std::mem::take(&mut ctx.touched);
+        (outcome?, ctx.changed)
     };
 
     if options.preview {
@@ -268,14 +375,16 @@ pub async fn execute(
         return Ok(output);
     }
 
-    let recorded_input = (!meta.sensitive).then_some(&input);
+    let recorded_input = (!meta.sensitive).then_some(input);
+    let audit_id = new_id();
     sqlx::query("INSERT INTO audit_log (id, user_id, command, input) VALUES ($1, $2, $3, $4)")
-        .bind(new_id())
+        .bind(audit_id)
         .bind(actor.user_id)
         .bind(name)
         .bind(recorded_input)
         .execute(&mut *tx)
         .await?;
+    record_subjects(&mut tx, audit_id, touched).await?;
 
     if changed {
         let payload = if meta.sensitive {

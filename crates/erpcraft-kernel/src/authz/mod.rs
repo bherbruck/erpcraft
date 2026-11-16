@@ -6,10 +6,13 @@
 //! into an [`Actor`].
 //!
 //! - `actor`: the actor, its rules, and every permission check.
+//! - `access`: what an actor could do, described for an interface.
 //! - `directory`: the users, and loading an actor from their roles.
 
+mod access;
 mod actor;
 mod directory;
 
-pub use actor::{Actor, Effect, FieldAccess, Grant, PermissionRule, RowScope, Target};
+pub use access::{Access, EntityAccess, FieldReach};
+pub use actor::{Actor, Effect, FieldAccess, Grant, PermissionRule, Reach, RowScope, Target};
 pub use directory::{Authenticator, User, create_user, load_actor};

@@ -22,7 +22,9 @@ use uuid::Uuid;
 use crate::Kernel;
 use crate::authz::RowScope;
 use crate::command::Ctx;
-use crate::entity::{DEFAULT_LIMIT, MAX_LIMIT, arguments};
+use crate::entity::{
+    DEFAULT_LIMIT, MAX_LIMIT, Page, arguments, caller_condition, like_pattern, sort_key,
+};
 use crate::numbering;
 use crate::registry::DocTypeMeta;
 
@@ -198,6 +200,7 @@ pub async fn create(ctx: &mut Ctx<'_>, new: NewDocument) -> Result<DocumentView>
     .bind(ctx.actor.user_id)
     .fetch_one(&mut *ctx.conn)
     .await?;
+    ctx.touch(&doc.doc_type, doc.id);
     entry.handler.save_body(ctx, &doc, &new.body).await?;
     view(ctx.conn, kernel, doc).await
 }
@@ -208,6 +211,7 @@ pub async fn create(ctx: &mut Ctx<'_>, new: NewDocument) -> Result<DocumentView>
 /// commands on one document run one after the other.
 pub async fn lock(ctx: &mut Ctx<'_>, doc_type: &str, id: Uuid, action: &str) -> Result<Document> {
     ctx.kernel.registry().doc_type(doc_type)?;
+    ctx.touch(doc_type, id);
     let doc: Document =
         sqlx::query_as("SELECT * FROM document WHERE id = $1 AND doc_type = $2 FOR UPDATE")
             .bind(id)
@@ -259,9 +263,9 @@ pub async fn update(ctx: &mut Ctx<'_>, change: DocumentChange) -> Result<Documen
     view(ctx.conn, kernel, doc).await
 }
 
-pub async fn get(ctx: &mut Ctx<'_>, doc_type: &str, id: Uuid) -> Result<DocumentView> {
-    let kernel = ctx.kernel;
-    kernel.registry().doc_type(doc_type)?;
+/// Read the header of a document the actor may read.
+pub async fn header(ctx: &mut Ctx<'_>, doc_type: &str, id: Uuid) -> Result<Document> {
+    ctx.kernel.registry().doc_type(doc_type)?;
     let doc: Document = sqlx::query_as("SELECT * FROM document WHERE id = $1 AND doc_type = $2")
         .bind(id)
         .bind(doc_type)
@@ -273,17 +277,38 @@ pub async fn get(ctx: &mut Ctx<'_>, doc_type: &str, id: Uuid) -> Result<Document
         doc.company_id,
         &rule_record(&doc),
     )?;
-    view(ctx.conn, kernel, doc).await
+    Ok(doc)
 }
+
+pub async fn get(ctx: &mut Ctx<'_>, doc_type: &str, id: Uuid) -> Result<DocumentView> {
+    let doc = header(ctx, doc_type, id).await?;
+    view(ctx.conn, ctx.kernel, doc).await
+}
+
+/// What a list of documents is asked for.
+#[derive(Debug, Clone, Default)]
+pub struct DocumentQuery {
+    pub company_id: Option<Uuid>,
+    pub status: Option<String>,
+    /// Text to look for in the number and the memo.
+    pub q: Option<String>,
+    /// A condition over the header as `record`, and `user`, in the language
+    /// of permission rules: `record.doc_date >= '2026-01-01'`.
+    pub condition: Option<String>,
+    /// Header fields; a leading `-` sorts descending. Empty: newest first.
+    pub sort: Vec<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+/// The header fields a list of documents can be sorted by.
+pub const SORTABLE: &[&str] = &["number", "status", "doc_date", "created_at", "updated_at"];
 
 pub async fn list(
     ctx: &mut Ctx<'_>,
     doc_type: &str,
-    company_id: Option<Uuid>,
-    status: Option<&str>,
-    limit: Option<i64>,
-    offset: Option<i64>,
-) -> Result<Vec<Document>> {
+    query: &DocumentQuery,
+) -> Result<Page<Document>> {
     ctx.kernel.registry().doc_type(doc_type)?;
     let columns = rule_columns();
     let scope = RowScope {
@@ -293,37 +318,74 @@ pub async fn list(
     };
 
     let mut binds = vec![Bind::Text(Some(doc_type.to_owned()))];
-    let mut sql = String::from("SELECT t.* FROM document AS t WHERE t.doc_type = $1::text");
-    if let Some(company) = company_id {
+    let mut conditions = String::from("t.doc_type = $1::text");
+    if let Some(company) = query.company_id {
         binds.push(Bind::Text(Some(company.to_string())));
-        let _ = write!(sql, " AND t.company_id = ${}::uuid", binds.len());
+        let _ = write!(conditions, " AND t.company_id = ${}::uuid", binds.len());
     }
-    if let Some(status) = status {
-        binds.push(Bind::Text(Some(status.to_owned())));
-        let _ = write!(sql, " AND t.status = ${}::text", binds.len());
+    if let Some(status) = &query.status {
+        binds.push(Bind::Text(Some(status.clone())));
+        let _ = write!(conditions, " AND t.status = ${}::text", binds.len());
+    }
+    if let Some(q) = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+        binds.push(Bind::Text(Some(like_pattern(q))));
+        let n = binds.len();
+        let _ = write!(
+            conditions,
+            " AND (t.number ILIKE ${n} OR t.memo ILIKE ${n})"
+        );
+    }
+    if let Some(source) = &query.condition {
+        let sql = caller_condition(ctx.actor, source, &columns, &mut binds)?;
+        let _ = write!(conditions, " AND ({sql})");
     }
     let permission = format!("{doc_type}:read");
     if let Some(filter) = ctx
         .actor
         .row_filter(&permission, &scope, false, &mut binds)?
     {
-        let _ = write!(sql, " AND {filter}");
+        let _ = write!(conditions, " AND {filter}");
     }
-    let _ = write!(
-        sql,
-        " ORDER BY t.created_at DESC, t.id DESC LIMIT ${} OFFSET ${}",
+
+    let mut order = vec![];
+    for key in &query.sort {
+        let (name, direction) = sort_key(key);
+        if !SORTABLE.contains(&name) {
+            return Err(Error::validation(format!(
+                "cannot sort by '{name}'; use one of: {}",
+                SORTABLE.join(", ")
+            )));
+        }
+        order.push(format!("t.{name} {direction} NULLS LAST"));
+    }
+    if order.is_empty() {
+        order.push("t.created_at DESC".into());
+    }
+    // The id makes the order total, so pages never overlap.
+    order.push("t.id DESC".into());
+
+    let total: i64 = sqlx::query_scalar_with(
+        &format!("SELECT count(*) FROM document AS t WHERE {conditions}"),
+        arguments(&binds)?,
+    )
+    .fetch_one(&mut *ctx.conn)
+    .await?;
+
+    let sql = format!(
+        "SELECT t.* FROM document AS t WHERE {conditions} ORDER BY {} LIMIT ${} OFFSET ${}",
+        order.join(", "),
         binds.len() + 1,
         binds.len() + 2
     );
     let mut arguments = arguments(&binds)?;
     arguments
-        .add(limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT))
-        .and_then(|()| arguments.add(offset.unwrap_or(0).max(0)))
+        .add(query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT))
+        .and_then(|()| arguments.add(query.offset.unwrap_or(0).max(0)))
         .map_err(Error::internal)?;
-    let docs = sqlx::query_as_with::<_, Document, _>(&sql, arguments)
+    let items = sqlx::query_as_with::<_, Document, _>(&sql, arguments)
         .fetch_all(&mut *ctx.conn)
         .await?;
-    Ok(docs)
+    Ok(Page { items, total })
 }
 
 /// Delete a document that is not locked and has never posted.

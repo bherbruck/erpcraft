@@ -9,14 +9,16 @@ use chrono::NaiveDate;
 use erpcraft_core::{Error, Result};
 use erpcraft_db::Migration;
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
-use crate::authz::PermissionRule;
+use crate::audit;
+use crate::authz::{Access, PermissionRule};
 use crate::command::{Command, CommandSpec, Ctx, DynCommand, command};
-use crate::document::{self, DocumentChange, DocumentView, NewDocument};
-use crate::entity;
+use crate::document::{self, Document, DocumentChange, DocumentQuery, DocumentView, NewDocument};
+use crate::entity::{self, ListQuery, Page};
+use crate::outbox;
 use crate::registry::{Description, EntityMeta, FieldMeta, FieldType, Module, Registry};
 
 pub(crate) struct KernelModule;
@@ -27,11 +29,23 @@ impl Module for KernelModule {
     }
 
     fn migrations(&self) -> Vec<Migration> {
-        vec![Migration {
-            version: 1,
-            name: "kernel",
-            sql: include_str!("../migrations/0001_kernel.sql"),
-        }]
+        vec![
+            Migration {
+                version: 1,
+                name: "kernel",
+                sql: include_str!("../migrations/0001_kernel.sql"),
+            },
+            Migration {
+                version: 2,
+                name: "audit",
+                sql: include_str!("../migrations/0002_audit.sql"),
+            },
+            Migration {
+                version: 3,
+                name: "outbox_delivery",
+                sql: include_str!("../migrations/0003_outbox_delivery.sql"),
+            },
+        ]
     }
 
     fn entities(&self) -> Vec<EntityMeta> {
@@ -46,7 +60,8 @@ impl Module for KernelModule {
                 .field(FieldMeta::new("name", "Name", FieldType::Text).required())
                 .field(FieldMeta::new("decimals", "Decimal places", FieldType::Int).immutable())
                 .field(created())
-                .order_by(&["code"]),
+                .order_by(&["code"])
+                .search(&["code", "name"]),
             EntityMeta::new("company", "Company")
                 .field(FieldMeta::new("code", "Code", FieldType::Text).required())
                 .field(FieldMeta::new("name", "Name", FieldType::Text).required())
@@ -61,6 +76,7 @@ impl Module for KernelModule {
                 )
                 .field(created())
                 .order_by(&["code"])
+                .search(&["code", "name"])
                 .company_field("id"),
             EntityMeta::new("role", "Role")
                 .field(FieldMeta::new("name", "Name", FieldType::Text).required())
@@ -71,17 +87,19 @@ impl Module for KernelModule {
                 ))
                 .field(created())
                 .order_by(&["name"])
+                .search(&["name"])
                 .validator(validate_role),
         ]
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
-        vec![
+        let mut commands = vec![
             command(Describe),
             command(EntityList),
             command(EntityGet),
             command(EntityCreate),
             command(EntityUpdate),
+            command(EntityDelete),
             command(DocumentList),
             command(DocumentGet),
             command(DocumentCreate),
@@ -89,7 +107,10 @@ impl Module for KernelModule {
             command(DocumentDelete),
             command(UserAssignRole),
             command(UserSetAttributes),
-        ]
+        ];
+        commands.extend(audit::commands());
+        commands.extend(outbox::commands());
+        commands
     }
 }
 
@@ -102,23 +123,37 @@ struct DescribeInput {
     module: Option<String>,
 }
 
+/// The system, and what the caller could do in it.
+#[derive(Serialize)]
+struct Described {
+    #[serde(flatten)]
+    description: Description,
+    access: Access,
+}
+
 struct Describe;
 
 #[async_trait]
 impl Command for Describe {
     type Input = DescribeInput;
-    type Output = Description;
+    type Output = Described;
 
     fn spec(&self) -> CommandSpec {
         CommandSpec::query(
             "meta.describe",
-            "List the installed modules with their entities, document types and commands. \
-             Pass a module name to see only that module.",
+            "List the installed modules with their entities, document types and commands, and \
+             under `access` what you could do with each: actions, fields and commands. Pass a \
+             module name to see only that module.",
         )
     }
 
-    async fn run(&self, ctx: &mut Ctx<'_>, input: DescribeInput) -> Result<Description> {
-        Ok(ctx.kernel.registry().describe(input.module.as_deref()))
+    async fn run(&self, ctx: &mut Ctx<'_>, input: DescribeInput) -> Result<Described> {
+        let description = ctx.kernel.registry().describe(input.module.as_deref());
+        let access = Access::of(ctx.actor, &description);
+        Ok(Described {
+            description,
+            access,
+        })
     }
 }
 
@@ -132,6 +167,18 @@ struct EntityListInput {
     /// Field name to the exact value it must have.
     #[serde(default)]
     filters: BTreeMap<String, String>,
+    /// Text to look for in the fields the entity is searched by (see
+    /// `search` in `meta.describe`), ignoring case.
+    q: Option<String>,
+    /// A condition each record must meet, as an expression over `record`:
+    /// `record.account_type == 'asset' && !record.is_group`. Supports
+    /// comparisons, `in`, `&&`, `||`, `!` and `user.<attribute>`.
+    #[serde(rename = "where")]
+    condition: Option<String>,
+    /// Field names to sort by; prefix one with `-` for descending.
+    #[serde(default)]
+    sort: Vec<String>,
+    /// At most 500; 50 when omitted.
     limit: Option<i64>,
     offset: Option<i64>,
 }
@@ -141,19 +188,26 @@ struct EntityList;
 #[async_trait]
 impl Command for EntityList {
     type Input = EntityListInput;
-    type Output = Value;
+    type Output = Page<Value>;
 
     fn spec(&self) -> CommandSpec {
         CommandSpec::query(
             "entity.list",
-            "List records of an entity, optionally filtered by field values.",
+            "List records of an entity: filter by field values, search by text, sort and page. \
+             Returns the page as `items` and the size of the whole list as `total`.",
         )
     }
 
-    async fn run(&self, ctx: &mut Ctx<'_>, input: EntityListInput) -> Result<Value> {
-        let filters: Vec<(String, String)> = input.filters.into_iter().collect();
-        let items = entity::list(ctx, &input.entity, &filters, input.limit, input.offset).await?;
-        Ok(json!({ "items": items }))
+    async fn run(&self, ctx: &mut Ctx<'_>, input: EntityListInput) -> Result<Page<Value>> {
+        let query = ListQuery {
+            filters: input.filters.into_iter().collect(),
+            q: input.q,
+            condition: input.condition,
+            sort: input.sort,
+            limit: input.limit,
+            offset: input.offset,
+        };
+        entity::list(ctx, &input.entity, &query).await
     }
 }
 
@@ -211,6 +265,9 @@ struct EntityUpdateInput {
     id: Uuid,
     /// Only the fields to change.
     data: Value,
+    /// The `_version` of the record as last read. When given, the update is
+    /// refused if the record has changed since.
+    version: Option<String>,
 }
 
 struct EntityUpdate;
@@ -225,7 +282,44 @@ impl Command for EntityUpdate {
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: EntityUpdateInput) -> Result<Value> {
-        entity::update(ctx, &input.entity, input.id, input.data).await
+        entity::update(
+            ctx,
+            &input.entity,
+            input.id,
+            input.data,
+            input.version.as_deref(),
+        )
+        .await
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EntityDeleteInput {
+    entity: String,
+    id: Uuid,
+    /// The `_version` of the record as last read. When given, the delete is
+    /// refused if the record has changed since.
+    version: Option<String>,
+}
+
+struct EntityDelete;
+
+#[async_trait]
+impl Command for EntityDelete {
+    type Input = EntityDeleteInput;
+    type Output = Value;
+
+    fn spec(&self) -> CommandSpec {
+        CommandSpec::action(
+            "entity.delete",
+            "Delete one record of an entity. Refused while anything still refers to the record.",
+        )
+    }
+
+    async fn run(&self, ctx: &mut Ctx<'_>, input: EntityDeleteInput) -> Result<Value> {
+        entity::delete(ctx, &input.entity, input.id, input.version.as_deref()).await?;
+        Ok(json!({ "deleted": input.id }))
     }
 }
 
@@ -237,6 +331,20 @@ struct DocumentListInput {
     doc_type: String,
     company_id: Option<Uuid>,
     status: Option<String>,
+    /// Text to look for in the number and the memo, ignoring case.
+    q: Option<String>,
+    /// A condition over the document header, as an expression over
+    /// `record`: `record.doc_date >= '2026-01-01' && record.status == 'draft'`.
+    /// The header fields are id, company_id, number, status, locked,
+    /// version, doc_date, memo, created_by, created_at and updated_at.
+    #[serde(rename = "where")]
+    condition: Option<String>,
+    /// Sort by `number`, `status`, `doc_date`, `created_at` or
+    /// `updated_at`; prefix one with `-` for descending. Newest first when
+    /// omitted.
+    #[serde(default)]
+    sort: Vec<String>,
+    /// At most 500; 50 when omitted.
     limit: Option<i64>,
     offset: Option<i64>,
 }
@@ -246,26 +354,27 @@ struct DocumentList;
 #[async_trait]
 impl Command for DocumentList {
     type Input = DocumentListInput;
-    type Output = Value;
+    type Output = Page<Document>;
 
     fn spec(&self) -> CommandSpec {
         CommandSpec::query(
             "document.list",
-            "List documents of one type, newest first, without their bodies.",
+            "List documents of one type without their bodies: filter, search by text, sort and \
+             page. Returns the page as `items` and the size of the whole list as `total`.",
         )
     }
 
-    async fn run(&self, ctx: &mut Ctx<'_>, input: DocumentListInput) -> Result<Value> {
-        let items = document::list(
-            ctx,
-            &input.doc_type,
-            input.company_id,
-            input.status.as_deref(),
-            input.limit,
-            input.offset,
-        )
-        .await?;
-        Ok(json!({ "items": items }))
+    async fn run(&self, ctx: &mut Ctx<'_>, input: DocumentListInput) -> Result<Page<Document>> {
+        let query = DocumentQuery {
+            company_id: input.company_id,
+            status: input.status,
+            q: input.q,
+            condition: input.condition,
+            sort: input.sort,
+            limit: input.limit,
+            offset: input.offset,
+        };
+        document::list(ctx, &input.doc_type, &query).await
     }
 }
 
@@ -430,6 +539,7 @@ impl Command for UserAssignRole {
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: UserAssignRoleInput) -> Result<Value> {
         ctx.actor.require_global("user:assign_role")?;
+        ctx.touch("user", input.user_id);
         sqlx::query(
             "INSERT INTO role_assignment (id, user_id, role_id, company_id) VALUES ($1, $2, $3, $4)
              ON CONFLICT DO NOTHING",
@@ -470,6 +580,7 @@ impl Command for UserSetAttributes {
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: UserSetAttributesInput) -> Result<Value> {
         ctx.actor.require_global("user:update")?;
+        ctx.touch("user", input.user_id);
         let attributes = Value::Object(input.attributes);
         let updated = sqlx::query("UPDATE app_user SET attributes = $2 WHERE id = $1")
             .bind(input.user_id)
