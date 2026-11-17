@@ -45,6 +45,11 @@ impl Module for KernelModule {
                 name: "outbox_delivery",
                 sql: include_str!("../migrations/0003_outbox_delivery.sql"),
             },
+            Migration {
+                version: 4,
+                name: "document_link",
+                sql: include_str!("../migrations/0004_document_link.sql"),
+            },
         ]
     }
 

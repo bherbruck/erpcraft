@@ -918,9 +918,14 @@ async fn the_registry_describes_the_system() {
             .map(|item| item["name"].as_str().unwrap().to_owned())
             .collect()
     };
-    assert_eq!(names("modules"), ["kernel", "auth", "gl", "accounting"]);
+    // The kernel's own module comes first, then the others in the order
+    // their dependencies require.
+    assert_eq!(
+        names("modules")[..4],
+        ["kernel", "auth", "gl", "accounting"]
+    );
     assert!(names("entities").contains(&"account".to_owned()));
-    assert_eq!(names("doc_types"), ["journal_entry"]);
+    assert_eq!(names("doc_types")[0], "journal_entry");
     assert!(names("commands").contains(&"journal_entry.post".to_owned()));
     let journal = &meta["doc_types"][0];
     assert_eq!(journal["states"].as_array().unwrap().len(), 3);
@@ -955,6 +960,105 @@ async fn the_registry_describes_the_system() {
         )
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn a_rate_on_record_is_used_when_none_is_stated() {
+    let t = TestApp::start().await;
+    let c = t.company("ACME", "USD").await;
+    for (date, rate) in [
+        ("2026-01-01", "1.05"),
+        ("2026-03-01", "1.10"),
+        ("2026-04-01", "1.20"),
+    ] {
+        t.create(
+            "exchange_rate",
+            json!({ "from_currency": "EUR", "to_currency": "USD", "rate_date": date, "rate": rate }),
+        )
+        .await;
+    }
+    let post = |doc_date: &'static str, credit: &'static str, rate: Value| {
+        let (t, c) = (&t, &c);
+        async move {
+            let (status, doc) = t
+                .post(
+                    &t.admin,
+                    "/api/documents/journal_entry",
+                    json!({
+                        "company_id": c.id, "doc_date": doc_date,
+                        "body": { "lines": [
+                            { "account_id": c.cash, "debit": "100.00", "currency": "EUR", "fx_rate": rate },
+                            { "account_id": c.revenue, "credit": credit },
+                        ]},
+                    }),
+                )
+                .await;
+            if status != StatusCode::CREATED {
+                return (status, doc);
+            }
+            t.command(&t.admin, "journal_entry.post", json!({ "id": doc["id"] }))
+                .await
+        }
+    };
+
+    // 15 March: the rate that applies is the one from 1 March.
+    let (status, posted) = post("2026-03-15", "110.00", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{posted}");
+    let lines = entries(&t, posted["postings"][0]["id"].as_str().unwrap()).await;
+    let euro = lines.iter().find(|e| e["currency"] == "EUR").unwrap();
+    assert_eq!(dec(&euro["fx_rate"]), 1.10);
+    assert_eq!(dec(&euro["debit"]), 110.0);
+
+    // A rate stated on the line wins over the one on record.
+    let (status, posted) = post("2026-03-15", "125.00", json!("1.25")).await;
+    assert_eq!(status, StatusCode::OK, "{posted}");
+
+    // Changing the rate on record afterwards changes nothing already posted.
+    let (_, rates) = t
+        .get(&t.admin, "/api/entities/exchange_rate?rate_date=2026-03-01")
+        .await;
+    let (status, body) = t
+        .patch(
+            &t.admin,
+            &format!(
+                "/api/entities/exchange_rate/{}",
+                common::id(&rates["items"][0])
+            ),
+            json!({ "rate": "9.99" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let lines = entries(&t, posted["postings"][0]["id"].as_str().unwrap()).await;
+    assert!(lines.iter().all(|e| dec(&e["fx_rate"]) != 9.99));
+    let (_, tb) = t
+        .command(&t.admin, "gl.trial_balance", json!({ "company_id": c.id }))
+        .await;
+    assert_eq!(dec(&tb["total_debit"]), 235.0);
+
+    // A rate finer than the ledger stores is refused rather than rounded.
+    let (status, body) = post("2026-03-15", "110.00", json!("1.10000000001")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("at most 10 decimal places"),
+        "{body}"
+    );
+
+    // Before the first rate on record there is none to use, and the
+    // opposite direction is not inferred.
+    let (status, body) = post("2025-12-31", "105.00", Value::Null).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("an exchange rate from EUR to USD is required"),
+        "{body}"
+    );
 
     t.stop().await;
 }

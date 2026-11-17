@@ -13,11 +13,15 @@ erpcraft-core = { path = "crates/erpcraft-core" }
 erpcraft-db = { path = "crates/erpcraft-db" }
 erpcraft-kernel = { path = "crates/erpcraft-kernel" }
 erpcraft-gl = { path = "crates/erpcraft-gl" }
+erpcraft-stock = { path = "crates/erpcraft-stock" }
 erpcraft-api = { path = "crates/erpcraft-api" }
 erpcraft-auth = { path = "crates/erpcraft-auth" }
 erpcraft-mcp = { path = "crates/erpcraft-mcp" }
 erpcraft-rules = { path = "crates/erpcraft-rules" }
 erpcraft-accounting = { path = "modules/accounting" }
+erpcraft-inventory = { path = "modules/inventory" }
+erpcraft-purchasing = { path = "modules/purchasing" }
+erpcraft-sales = { path = "modules/sales" }
 
 argon2 = "0.5"
 async-trait = "0.1"

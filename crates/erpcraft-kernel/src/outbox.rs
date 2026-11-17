@@ -107,12 +107,13 @@ pub async fn deliver_batch(kernel: &Kernel, limit: i64) -> Result<Delivered> {
             }
             Err(error) => {
                 tracing::warn!(event = %event.id, topic = %event.topic, %error, "outbox delivery failed");
-                // 10 seconds, doubling, at most an hour.
+                // 10 seconds, doubling, at most an hour, counted from now
+                // and not from when this pass began.
                 sqlx::query(
                     "UPDATE outbox_event SET
                         attempts = attempts + 1,
                         last_error = $2,
-                        next_attempt_at = now()
+                        next_attempt_at = clock_timestamp()
                             + make_interval(secs => LEAST(3600, 10 * power(2, LEAST(attempts, 10))))
                      WHERE id = $1",
                 )

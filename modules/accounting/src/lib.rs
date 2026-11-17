@@ -146,6 +146,16 @@ impl DocumentHandler for JournalEntry {
                     "line {n}: give an amount on one side only, debit or credit"
                 )));
             }
+            // Finer than the ledger stores: refuse it here, or the draft
+            // would keep a rounded rate without saying so.
+            if line
+                .fx_rate
+                .is_some_and(|rate| rate.normalize().scale() > 10)
+            {
+                return Err(Error::validation(format!(
+                    "line {n}: an exchange rate has at most 10 decimal places"
+                )));
+            }
         }
 
         let mut accounts: Vec<Uuid> = body.lines.iter().map(|l| l.account_id).collect();
@@ -219,13 +229,12 @@ impl Command for PostJournalEntry {
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: PostInput) -> Result<DocumentView> {
-        let kernel = ctx.kernel;
         let mut doc = document::lock(ctx, JOURNAL_ENTRY, input.id, "post").await?;
         // Whoever gets the row lock second finds the entry posted and
         // receives the same result as the first.
         if doc.status == "posted" {
             ctx.no_change();
-            return document::view(ctx.conn, kernel, doc).await;
+            return document::view(ctx, doc).await;
         }
         if doc.status != "draft" {
             return Err(Error::conflict(format!(
@@ -257,7 +266,7 @@ impl Command for PostJournalEntry {
         let posting = document::create_posting(ctx, &doc, doc.doc_date, doc.memo.clone()).await?;
         erpcraft_gl::post(&mut *ctx.conn, &posting, &entries).await?;
         document::transition(ctx, &mut doc, "posted").await?;
-        document::view(ctx.conn, kernel, doc).await
+        document::view(ctx, doc).await
     }
 }
 
@@ -289,11 +298,10 @@ impl Command for ReverseJournalEntry {
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: ReverseInput) -> Result<DocumentView> {
-        let kernel = ctx.kernel;
         let mut doc = document::lock(ctx, JOURNAL_ENTRY, input.id, "reverse").await?;
         if doc.status == "reversed" {
             ctx.no_change();
-            return document::view(ctx.conn, kernel, doc).await;
+            return document::view(ctx, doc).await;
         }
         if doc.status != "posted" {
             return Err(Error::conflict(format!(
@@ -311,6 +319,6 @@ impl Command for ReverseJournalEntry {
             .or_else(|| doc.number.as_ref().map(|n| format!("Reversal of {n}")));
         document::reverse_posting(ctx, original.id, input.posting_date, memo).await?;
         document::transition(ctx, &mut doc, "reversed").await?;
-        document::view(ctx.conn, kernel, doc).await
+        document::view(ctx, doc).await
     }
 }

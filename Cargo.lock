@@ -482,6 +482,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "erpcraft-inventory"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "erpcraft-gl",
+ "erpcraft-kernel",
+ "erpcraft-stock",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
 name = "erpcraft-kernel"
 version = "0.1.0"
 dependencies = [
@@ -510,12 +525,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "erpcraft-purchasing"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "erpcraft-gl",
+ "erpcraft-kernel",
+ "erpcraft-stock",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
 name = "erpcraft-rules"
 version = "0.1.0"
 dependencies = [
  "cel",
  "erpcraft-core",
  "serde_json",
+]
+
+[[package]]
+name = "erpcraft-sales"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "erpcraft-gl",
+ "erpcraft-kernel",
+ "erpcraft-stock",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "uuid",
 ]
 
 [[package]]
@@ -528,8 +573,12 @@ dependencies = [
  "erpcraft-auth",
  "erpcraft-db",
  "erpcraft-gl",
+ "erpcraft-inventory",
  "erpcraft-kernel",
  "erpcraft-mcp",
+ "erpcraft-purchasing",
+ "erpcraft-sales",
+ "erpcraft-stock",
  "http-body-util",
  "serde_json",
  "sqlx",
@@ -538,6 +587,19 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "erpcraft-stock"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "erpcraft-kernel",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sqlx",
  "uuid",
 ]
 

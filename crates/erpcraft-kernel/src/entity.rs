@@ -321,7 +321,14 @@ pub async fn list(ctx: &mut Ctx<'_>, entity: &str, query: &ListQuery) -> Result<
         order.push(format!("t.{name} {direction}"));
     }
     if order.is_empty() {
-        order.extend(meta.order_by.iter().map(|f| format!("t.{f}")));
+        // The entity's own order, leaving out any field whose order the
+        // caller may not learn.
+        order.extend(
+            meta.order_by
+                .iter()
+                .filter(|f| !actor.may_withhold(&permission, f))
+                .map(|f| format!("t.{f}")),
+        );
     }
     // The id makes the order total, so pages never overlap.
     order.push("t.id".into());
@@ -438,17 +445,23 @@ pub async fn create(ctx: &mut Ctx<'_>, entity: &str, data: Value) -> Result<Valu
         .fetch_one(&mut *ctx.conn)
         .await?;
 
-    // Someone who may create a record is not thereby allowed to read it.
+    Ok(written(actor, meta, row))
+}
+
+/// What a create or an update returns. Someone who may write a record is
+/// not thereby allowed to read it: without that right they get its id and
+/// version only.
+fn written(actor: &Actor, meta: &EntityMeta, row: Value) -> Value {
     let readable = actor.can_on(
-        &format!("{entity}:read"),
+        &format!("{}:read", meta.name),
         target_of(meta, &row, false),
         &rule_record(meta, &row),
     );
-    Ok(if readable {
+    if readable {
         present(actor, meta, row)
     } else {
-        json!({ "id": id })
-    })
+        json!({ "id": row["id"], VERSION_KEY: row[VERSION_KEY] })
+    }
 }
 
 /// Change fields of one record. With `version`, the token the caller last
@@ -543,7 +556,7 @@ pub async fn update(
             "this change would put the record out of your reach",
         ));
     }
-    Ok(present(actor, meta, changed))
+    Ok(written(actor, meta, changed))
 }
 
 /// Delete one record. Refused while anything still refers to it. With

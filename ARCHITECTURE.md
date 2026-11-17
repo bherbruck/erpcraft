@@ -13,6 +13,9 @@ Status: the first slice works end to end. A journal entry can be drafted, posted
 | Language | Rust |
 | Database | PostgreSQL only. Its transactions, row locks and triggers carry the invariants. |
 | Scope | Kernel plus a full reference ERP, in one repository |
+| Target | Small and medium companies, the range of SAP Business One or a minimal Dynamics 365: a manufacturer in Ohio or in Germany. United States, Canada and the European Union first. |
+| Localization | Country-specific rules (tax, reporting, formats) are modules, meant to be opened to the community. Nothing country-specific goes into the kernel or the ledgers. |
+| Structure | High cohesion, low coupling. A module owns its tables, documents and rules, and reaches others only through their public API. |
 | Extension model | Rust crates implementing the `Module` trait, registered at compile time |
 | Interfaces | HTTP and MCP, both generated from one registry |
 | Tenancy | One database per tenant; many companies inside it |
@@ -29,17 +32,21 @@ crates/
                     user directory, authorization, audit, outbox
   erpcraft-auth     identity: passwords, tokens, sign-in routes
   erpcraft-gl       general ledger: accounts, periods, entries
+  erpcraft-stock    stock ledger: items, warehouses, quantity and value on hand
   erpcraft-api      HTTP
   erpcraft-mcp      MCP server
 modules/
   accounting        journal entries
+  inventory         stock adjustments, transfers between warehouses
+  purchasing        purchase orders, receipts, vendor invoices
+  sales             sales orders, deliveries, customer invoices
 apps/
   server            the `erpcraft` binary
 ```
 
-Planned: `erpcraft-stock` (stock ledger, its own crate because valuation and costing are a subsystem of their own), single sign-on inside `erpcraft-auth` (OIDC, SAML, SCIM), then the modules inventory, purchasing, sales, manufacturing, and the admin UI in `ui/`.
+Planned: single sign-on inside `erpcraft-auth` (OIDC, SAML, SCIM), then manufacturing, payments, tax and localization modules per country, and the admin UI in `ui/`.
 
-Dependencies point one way: `core` ← `db`, `rules` ← `kernel` ← `gl` ← modules. The kernel knows nothing about accounting, and nothing about passwords or tokens.
+Dependencies point one way: `core` ← `db`, `rules` ← `kernel` ← `gl`, `stock` ← modules. The kernel knows nothing about accounting, and nothing about passwords or tokens. The two ledgers know nothing about each other: a module that moves stock posts its value to the general ledger itself, in the same posting.
 
 ## The model
 
@@ -94,6 +101,12 @@ A **posting** is the immutable record that a document changed a ledger. A docume
 
 Ledger entries hang off a posting. Each entry records the document line that caused it and the command that created its posting. Three dates are kept apart: when the event happened (`doc_date`), its accounting date (`posting_date`), and when the system recorded it (`created_at`).
 
+### Documents that follow from each other
+
+A document can be linked to the document it follows from: a receipt to its purchase order, an invoice to that order. The link is kept by the kernel and shown on both documents, to readers who may read the other one.
+
+Sales orders work the same way, with deliveries and invoices. A purchase order shows the pattern for a document that stays open while others are posted against it. The order itself posts nothing. Each receipt and each invoice is its own document with its own posting, and locks the order before it does anything. That lock is what stops two receipts from together receiving more than was ordered. How far each order line has got is kept beside the order, because it changes while the order's content is locked. An order closes by itself when everything on it is received and invoiced, can be closed short by a person, and reopens if a reversal leaves it with goods received and not invoiced.
+
 ### Ledgers own their rules
 
 The kernel coordinates transactions, permissions, audit and reversal. Each ledger enforces its own invariants. The general ledger's are database triggers, so they hold for every module and for raw SQL:
@@ -103,6 +116,21 @@ The kernel coordinates transactions, permissions, audit and reversal. Each ledge
 - the account belongs to the company, is active, and is not a group account;
 - amounts fit the currency's decimals, and the accounting amount equals the transaction amount times the captured rate;
 - entries and postings cannot be updated, deleted or truncated.
+
+The stock ledger's, also triggers:
+
+- stock on hand never goes below zero, per item and warehouse;
+- valuation is moving average: a receipt comes in at the cost the caller states, an issue goes out at the average cost of what is on hand. The ledger works out the value of an issue; the caller cannot state it;
+- the last of the stock takes the last of the value with it, so rounding never leaves value on an empty shelf;
+- a reversal takes back exactly the quantity and value of the original entry, and is refused if the stock has since moved on;
+- the level on hand changes only through entries.
+
+Decisions in the stock ledger that are choices, not necessities, and can be revisited:
+
+- Moving average, not FIFO or standard cost. It needs no cost layers and suits interchangeable goods.
+- Entries are valued when they are recorded. A back-dated entry does not revalue what was recorded after it.
+- Items are shared by all companies; warehouses belong to one.
+- The stock ledger does not check fiscal periods. A document that also posts to the general ledger is held to them through that.
 
 ### Company and currency
 
@@ -117,6 +145,7 @@ Every document, posting and entry belongs to exactly one company. Each company h
 | A period closes while a journal posts | They wait for each other; a closed period never receives an entry | Share lock taken by each entry, exclusive lock taken by the close |
 | Two users edit the same draft | The stale edit is refused | Version number on the document |
 | Two users edit the same plain record | The stale edit is refused, if the caller sends the `_version` it read | The row's `xmin`, which Postgres changes on every update |
+| Two people take the last stock at once | One is refused; stock never goes negative | Row lock on the level of that item and warehouse, taken in a fixed order |
 | Two servers deliver the outbox | Each event is taken by one | Row lock, skipping locked rows |
 | A number series under load | No gaps, no duplicates | Counter row locked until commit |
 | A change triggers an integration | The event exists if and only if the change committed | Outbox row in the same transaction |
@@ -176,7 +205,7 @@ Recorded now so that later work does not break them.
 
 **Configuration is not code.** New behavior is a Rust crate. A custom field, an approval threshold, a numbering series or a print template must not need a rebuild: these will live in the database and extend the registry at startup.
 
-**Cross-module flows are the real test.** After this slice, the next proof is one flow that crosses modules: purchase order → partial receipt → vendor invoice → return.
+**Cross-module flows are the real test.** The purchasing flow is the first: purchase order → partial receipts → vendor invoices, across three documents, two ledgers and three modules, with each step reversible. It needed one addition to the kernel, document links. Still missing from it is the return of goods after they were invoiced.
 
 **Agents at scale.** A full ERP will have hundreds of commands. `meta.describe` already takes a module name so an agent can load one module at a time, and the MCP tool list already leaves out commands the caller can never run. A fuller discovery tool comes when the count requires it.
 
@@ -190,13 +219,19 @@ Four engines were compared hands-on in November 2026 (CEL, Rhai, Cedar, Monty). 
 
 ## Known gaps in what is built
 
+- An outbox pass keeps one database connection for its whole length while each handler may use others, so a slow subscriber with a small pool can make requests wait.
+- The guard on stock levels stops plain SQL from changing them, but not another database trigger.
 - Outbox subscribers run inside the server. Delivery to the outside (webhooks, a message broker) is not built; it would be a subscriber.
 - A refused stale edit does not say what the other person changed.
 - A caller that sends no `_version` when updating or deleting a plain record is not checked for staleness.
 - A plain record can be deleted only while nothing refers to it. There is no way yet to retire a record that is in use, such as an account that should take no new entries, except where its entity has a field for it.
-- Documents cannot yet refer to the documents they came from. This comes with the purchasing flow, which is the first to need it.
-- Exchange rates are supplied by the caller. There are no rate tables, no revaluation, and a rounding difference needs an explicit line.
+- Sales: accounting currency only; no tax; no payment; no return of goods once invoiced; nothing compares the invoice price with the order price. Its inventory account is set separately from purchasing's, and nothing forces the two to agree.
+- Purchasing and sales share about 250 lines of near-identical order-progress code. It should move into a shared crate once a third order-like document shows what is really common.
+- Purchasing: accounting currency only; no tax; no freight or other charges; no payment of the invoice; no return of goods once invoiced (a receipt can be reversed only before its invoice); an invoice always refers to an order. Accounts come from one settings record per company.
+- Exchange rates: a posting uses the rate it states, or else the latest rate on record for that date. Rates are entered by hand; the opposite direction and cross rates are not inferred. There is no revaluation of open balances, and a rounding difference needs an explicit line.
 - Intercompany postings are not modeled.
+- Stock: no units of measure beyond one per item, no lots or serial numbers, no reserved stock. A receipt cannot be reversed once part of it has been issued; that needs a return or a revaluation document, which do not exist yet.
+- A stock adjustment names its two accounts itself. There is no setup yet that says which accounts an item or warehouse posts to. For the same reason a transfer posts nothing to the general ledger: it assumes one inventory account per company.
 - The MCP endpoint supports tools over stateless HTTP only.
 
 ## Milestones
@@ -204,6 +239,6 @@ Four engines were compared hands-on in November 2026 (CEL, Rhai, Cedar, Monty). 
 1. Done: the headless ledger slice. Kernel, general ledger, journal entries, HTTP and MCP.
    Also done: identity in its own crate, row and field permission rules, list search and filters, record history, outbox delivery, per-user access in the description.
 2. Admin UI generated from the registry.
-3. Stock ledger and the purchasing flow across modules.
+3. Done: the stock ledger, and the purchasing and sales flows across modules. Next in this line: returns, payments, tax.
 4. Single sign-on. (Row and field permission rules are done.)
-5. Remaining reference modules: sales, manufacturing.
+5. Remaining reference modules: manufacturing.

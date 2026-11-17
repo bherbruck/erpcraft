@@ -32,6 +32,8 @@ pub struct AuditEntry {
     /// `ok` or `error`.
     pub outcome: String,
     pub error_code: Option<String>,
+    /// What the caller was told. It can quote the input, so it is absent
+    /// for callers without `audit:read`, like the input.
     pub error_message: Option<String>,
     /// What the command was given. Absent for commands that handle secrets,
     /// and for callers without `audit:read`.
@@ -39,7 +41,7 @@ pub struct AuditEntry {
 }
 
 const COLUMNS: &str = "a.id, a.at, a.user_id, u.name AS user_name, a.command, a.outcome, \
-                       a.error_code, a.error_message";
+                       a.error_code";
 
 fn page(limit: Option<i64>, offset: Option<i64>) -> (i64, i64) {
     (
@@ -84,7 +86,8 @@ pub async fn history(
     .fetch_one(&mut *ctx.conn)
     .await?;
     let items = sqlx::query_as(&format!(
-        "SELECT {COLUMNS}, CASE WHEN $3 THEN a.input END AS input
+        "SELECT {COLUMNS}, CASE WHEN $3 THEN a.error_message END AS error_message,
+                CASE WHEN $3 THEN a.input END AS input
          FROM audit_subject s
          JOIN audit_log a ON a.id = s.audit_id
          JOIN app_user u ON u.id = a.user_id
@@ -127,7 +130,7 @@ pub async fn list(ctx: &mut Ctx<'_>, query: &AuditQuery) -> Result<Page<AuditEnt
         .fetch_one(&mut *ctx.conn)
         .await?;
     let items = sqlx::query_as(&format!(
-        "SELECT {COLUMNS}, a.input
+        "SELECT {COLUMNS}, a.error_message, a.input
          FROM audit_log a JOIN app_user u ON u.id = a.user_id
          WHERE {WHERE}
          ORDER BY a.id DESC LIMIT $4 OFFSET $5"

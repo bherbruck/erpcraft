@@ -26,11 +26,18 @@ impl Module for GlModule {
     }
 
     fn migrations(&self) -> Vec<Migration> {
-        vec![Migration {
-            version: 1,
-            name: "gl",
-            sql: include_str!("../migrations/0001_gl.sql"),
-        }]
+        vec![
+            Migration {
+                version: 1,
+                name: "gl",
+                sql: include_str!("../migrations/0001_gl.sql"),
+            },
+            Migration {
+                version: 2,
+                name: "exchange_rate",
+                sql: include_str!("../migrations/0002_exchange_rate.sql"),
+            },
+        ]
     }
 
     fn entities(&self) -> Vec<EntityMeta> {
@@ -78,6 +85,31 @@ impl Module for GlModule {
                 .order_by(&["start_date"])
                 .search(&["name"])
                 .company_field("company_id"),
+            // Shared by all companies, so changing rates needs a grant for
+            // all companies.
+            EntityMeta::new("exchange_rate", "Exchange rate")
+                .field(
+                    FieldMeta::new(
+                        "from_currency",
+                        "From",
+                        FieldType::link_by("currency", "code"),
+                    )
+                    .required()
+                    .immutable(),
+                )
+                .field(
+                    FieldMeta::new("to_currency", "To", FieldType::link_by("currency", "code"))
+                        .required()
+                        .immutable(),
+                )
+                .field(
+                    FieldMeta::new("rate_date", "Applies from", FieldType::Date)
+                        .required()
+                        .immutable(),
+                )
+                .field(FieldMeta::new("rate", "Rate", FieldType::Decimal).required())
+                .field(created())
+                .order_by(&["from_currency", "to_currency", "rate_date"]),
             EntityMeta::new("gl_entry", "Ledger entry")
                 .field(company())
                 .field(FieldMeta::new("posting_id", "Posting", FieldType::Uuid))
@@ -158,8 +190,10 @@ pub struct GlLine {
     pub credit: Decimal,
     /// Defaults to the company's accounting currency.
     pub currency: Option<String>,
-    /// Accounting-currency units per unit of `currency`. Required for a
-    /// foreign currency; captured on the entry and never recomputed.
+    /// Accounting-currency units per unit of `currency`. When absent for a
+    /// foreign currency, the latest rate on record dated on or before the
+    /// posting date is used. Either way it is captured on the entry and
+    /// never recomputed.
     pub fx_rate: Option<Decimal>,
     pub memo: Option<String>,
     /// The document line this entry comes from.
@@ -220,13 +254,37 @@ pub async fn post(conn: &mut PgConnection, posting: &Posting, lines: &[GlLine]) 
                     .fetch_optional(&mut *conn)
                     .await?;
             let decimals = decimals.ok_or_else(|| fail(format!("unknown currency {currency}")))?;
-            let rate = line.fx_rate.ok_or_else(|| {
-                fail(format!(
-                    "an exchange rate from {currency} to {base} is required"
-                ))
-            })?;
+            let rate = match line.fx_rate {
+                Some(rate) => rate,
+                None => {
+                    let on_record: Option<Decimal> = sqlx::query_scalar(
+                        "SELECT rate FROM exchange_rate
+                         WHERE from_currency = $1 AND to_currency = $2 AND rate_date <= $3
+                         ORDER BY rate_date DESC LIMIT 1",
+                    )
+                    .bind(&currency)
+                    .bind(&base)
+                    .bind(posting.posting_date)
+                    .fetch_optional(&mut *conn)
+                    .await?;
+                    on_record.ok_or_else(|| {
+                        fail(format!(
+                            "an exchange rate from {currency} to {base} is required: state one, \
+                             or record one that applies on {}",
+                            posting.posting_date
+                        ))
+                    })?
+                }
+            };
             if rate <= Decimal::ZERO {
                 return Err(fail("the exchange rate must be positive".into()));
+            }
+            // The rate is stored with 10 decimals. A finer one would be
+            // rounded on the entry and no longer explain its own amount.
+            if rate.normalize().scale() > 10 {
+                return Err(fail(
+                    "an exchange rate has at most 10 decimal places".into(),
+                ));
             }
             (rate, decimals as u32)
         };

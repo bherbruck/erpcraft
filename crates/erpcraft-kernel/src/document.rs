@@ -19,8 +19,7 @@ use serde_json::{Value, json};
 use sqlx::Arguments;
 use uuid::Uuid;
 
-use crate::Kernel;
-use crate::authz::RowScope;
+use crate::authz::{RowScope, Target};
 use crate::command::Ctx;
 use crate::entity::{
     DEFAULT_LIMIT, MAX_LIMIT, Page, arguments, caller_condition, like_pattern, sort_key,
@@ -57,13 +56,31 @@ pub struct Posting {
     pub created_at: DateTime<Utc>,
 }
 
-/// A document with its type-specific body and everything it has posted.
+/// A document with its type-specific body, everything it has posted, and
+/// the documents it came from or led to.
 #[derive(Debug, Clone, Serialize)]
 pub struct DocumentView {
     #[serde(flatten)]
     pub header: Document,
     pub body: Value,
     pub postings: Vec<Posting>,
+    /// Only the linked documents the reader may read.
+    pub links: Vec<LinkedDocument>,
+}
+
+/// A document linked to the one being viewed.
+#[derive(Debug, Clone, Serialize)]
+pub struct LinkedDocument {
+    /// `source`: the viewed document follows from this one. `result`: this
+    /// one follows from the viewed document.
+    pub relation: &'static str,
+    /// What the later document is to the earlier one: `receipt`, `invoice`.
+    pub kind: String,
+    pub id: Uuid,
+    pub doc_type: String,
+    pub number: Option<String>,
+    pub status: String,
+    pub doc_date: NaiveDate,
 }
 
 /// What a module supplies for a document type: its description and how its
@@ -145,19 +162,73 @@ fn clean_memo(memo: Option<String>) -> Option<String> {
     memo.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty())
 }
 
-pub async fn view(
-    conn: &mut PgConnection,
-    kernel: &Kernel,
-    header: Document,
-) -> Result<DocumentView> {
-    let entry = kernel.registry().doc_type(&header.doc_type)?;
-    let body = entry.handler.load_body(&mut *conn, &header).await?;
-    let postings = postings_for(&mut *conn, header.id).await?;
+pub async fn view(ctx: &mut Ctx<'_>, header: Document) -> Result<DocumentView> {
+    let entry = ctx.kernel.registry().doc_type(&header.doc_type)?;
+    let body = entry.handler.load_body(&mut *ctx.conn, &header).await?;
+    let postings = postings_for(&mut *ctx.conn, header.id).await?;
+    let links = links_of(ctx, header.id).await?;
     Ok(DocumentView {
         header,
         body,
         postings,
+        links,
     })
+}
+
+/// Record that document `to_id` follows from document `from_id`. Both must
+/// belong to the same company. Linking twice changes nothing.
+pub async fn link(ctx: &mut Ctx<'_>, from_id: Uuid, to_id: Uuid, kind: &str) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO document_link (from_id, to_id, kind) VALUES ($1, $2, $3)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(from_id)
+    .bind(to_id)
+    .bind(kind)
+    .execute(&mut *ctx.conn)
+    .await?;
+    Ok(())
+}
+
+/// The documents linked to `id`, sources first, that the actor may read.
+pub async fn links_of(ctx: &mut Ctx<'_>, id: Uuid) -> Result<Vec<LinkedDocument>> {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        is_source: bool,
+        kind: String,
+        #[sqlx(flatten)]
+        doc: Document,
+    }
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT true AS is_source, l.kind, d.* FROM document_link l
+         JOIN document d ON d.id = l.from_id WHERE l.to_id = $1
+         UNION ALL
+         SELECT false, l.kind, d.* FROM document_link l
+         JOIN document d ON d.id = l.to_id WHERE l.from_id = $1
+         ORDER BY is_source DESC, created_at, id",
+    )
+    .bind(id)
+    .fetch_all(&mut *ctx.conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| {
+            ctx.actor.can_on(
+                &format!("{}:read", row.doc.doc_type),
+                Target::Company(row.doc.company_id),
+                &rule_record(&row.doc),
+            )
+        })
+        .map(|row| LinkedDocument {
+            relation: if row.is_source { "source" } else { "result" },
+            kind: row.kind,
+            id: row.doc.id,
+            doc_type: row.doc.doc_type,
+            number: row.doc.number,
+            status: row.doc.status,
+            doc_date: row.doc.doc_date,
+        })
+        .collect())
 }
 
 pub async fn create(ctx: &mut Ctx<'_>, new: NewDocument) -> Result<DocumentView> {
@@ -202,7 +273,7 @@ pub async fn create(ctx: &mut Ctx<'_>, new: NewDocument) -> Result<DocumentView>
     .await?;
     ctx.touch(&doc.doc_type, doc.id);
     entry.handler.save_body(ctx, &doc, &new.body).await?;
-    view(ctx.conn, kernel, doc).await
+    view(ctx, doc).await
 }
 
 /// Load a document and lock its row until the transaction ends, after
@@ -260,7 +331,7 @@ pub async fn update(ctx: &mut Ctx<'_>, change: DocumentChange) -> Result<Documen
     if let Some(body) = &change.body {
         entry.handler.save_body(ctx, &doc, body).await?;
     }
-    view(ctx.conn, kernel, doc).await
+    view(ctx, doc).await
 }
 
 /// Read the header of a document the actor may read.
@@ -282,7 +353,7 @@ pub async fn header(ctx: &mut Ctx<'_>, doc_type: &str, id: Uuid) -> Result<Docum
 
 pub async fn get(ctx: &mut Ctx<'_>, doc_type: &str, id: Uuid) -> Result<DocumentView> {
     let doc = header(ctx, doc_type, id).await?;
-    view(ctx.conn, ctx.kernel, doc).await
+    view(ctx, doc).await
 }
 
 /// What a list of documents is asked for.

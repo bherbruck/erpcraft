@@ -14,6 +14,10 @@ pub fn modules(pool: PgPool) -> KernelBuilder {
         .module(erpcraft_auth::AuthModule)
         .module(erpcraft_gl::GlModule)
         .module(erpcraft_accounting::AccountingModule)
+        .module(erpcraft_stock::StockModule)
+        .module(erpcraft_inventory::InventoryModule)
+        .module(erpcraft_purchasing::PurchasingModule)
+        .module(erpcraft_sales::SalesModule)
 }
 
 /// The kernel with every in-tree module.
