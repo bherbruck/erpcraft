@@ -775,5 +775,65 @@ async fn a_year_of_monthly_periods_is_closed_in_one_step() {
         .command(&t.admin, "journal_entry.post", json!({ "id": doc }))
         .await;
     assert_ne!(status, StatusCode::OK, "{body}");
+
+    // June reopened and closed again on its own, or with the half year:
+    // the close of the whole year covers it still, so it is refused, and
+    // June's income is not moved twice.
+    let (status, body) = t
+        .command(&t.admin, "fiscal_period.reopen", json!({ "id": months[5] }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let year_close = id(&posted);
+    for first in [None, Some(&months[0])] {
+        let mut body = json!({ "fiscal_period_id": months[5],
+                               "retained_earnings_account_id": retained });
+        if let Some(first) = first {
+            body["first_period_id"] = json!(first);
+        }
+        let (status, draft) = t
+            .post(
+                &t.admin,
+                "/api/documents/year_end_close",
+                json!({ "company_id": c, "doc_date": "2025-06-30", "body": body }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{draft}");
+        let (status, refused) = t
+            .command(&t.admin, "year_end_close.post", json!({ "id": id(&draft) }))
+            .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+        assert!(
+            message(&refused).contains("already closes fiscal period 2025-01 to 2025-12")
+                && message(&refused).contains("year_end_close.reverse"),
+            "{refused}"
+        );
+    }
+    assert_eq!(at_now(&t, &c, &retained).await, -1700.0);
+    assert_eq!(at_now(&t, &c, &company.revenue).await, 0.0);
+
+    // Once the year's close is reversed, June can be closed on its own:
+    // its income moves once.
+    let (status, body) = t
+        .command(&t.admin, "fiscal_period.reopen", json!({ "id": months[11] }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = t
+        .command(&t.admin, "year_end_close.reverse", json!({ "id": year_close }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(at_now(&t, &c, &retained).await, 0.0);
+    journal(&t, &c, "2025-06-05", &cash, &company.revenue, "1000.00").await;
+    let june = close(&t, &c, "2025-06-30", &months[5], &retained).await;
+    assert_eq!(dec(&june["summary"]["result"]), 1000.0, "{june}");
+    assert_eq!(at_now(&t, &c, &retained).await, -1000.0);
     t.stop().await;
+}
+
+/// An account's balance in the trial balance now.
+async fn at_now(t: &TestApp, company: &str, account: &str) -> f64 {
+    trial_balance(t, company)
+        .await
+        .iter()
+        .find(|(a, _)| a == account)
+        .map_or(0.0, |(_, b)| *b)
 }

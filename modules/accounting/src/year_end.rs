@@ -391,6 +391,41 @@ impl Command for PostYearEndClose {
                 number.unwrap_or_default()
             )));
         }
+        // A close covers the dates from its first period's start to its
+        // last period's end. Two closes in effect never cover the same
+        // date: the balances read below stop at this close's last day, so
+        // they would not see a later close's entry, and income already
+        // moved to retained earnings would be moved again. An earlier
+        // close over any of these dates is reversed first.
+        let overlapping: Option<(Option<String>, String, String)> = sqlx::query_as(
+            "SELECT d.number, f.name, l.name
+             FROM year_end_closing c
+             JOIN document d ON d.id = c.document_id
+             JOIN year_end_close y ON y.document_id = c.document_id
+             JOIN fiscal_period l ON l.id = c.fiscal_period_id
+             JOIN fiscal_period f ON f.id = COALESCE(y.first_period_id, c.fiscal_period_id)
+             WHERE d.company_id = $1 AND c.reversal_posting_id IS NULL
+               AND f.start_date <= $3 AND l.end_date >= $2
+             ORDER BY l.end_date LIMIT 1",
+        )
+        .bind(doc.company_id)
+        .bind(first.start_date)
+        .bind(period.end_date)
+        .fetch_optional(&mut *ctx.conn)
+        .await?;
+        if let Some((number, from, to)) = overlapping {
+            let covered = if from == to {
+                from
+            } else {
+                format!("{from} to {to}")
+            };
+            return Err(Error::duplicate(format!(
+                "the year-end close {} already closes fiscal period {covered}, which this close \
+                 covers too; reverse that one (year_end_close.reverse) before closing these \
+                 periods again",
+                number.unwrap_or_default()
+            )));
+        }
         if period.status != "open" {
             return Err(Error::state(format!(
                 "fiscal period {} is closed, so the year-end close cannot be posted into it; \
