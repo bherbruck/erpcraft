@@ -4,6 +4,7 @@
 //! knows open items and the general ledger, and nothing about purchasing
 //! or sales: whatever module opened an item, a payment can settle it.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::NaiveDate;
@@ -81,6 +82,11 @@ impl Module for PaymentsModule {
                 name: "instalment",
                 sql: include_str!("../migrations/0007_instalment.sql"),
             },
+            Migration {
+                version: 8,
+                name: "write_off_only_and_parts",
+                sql: include_str!("../migrations/0008_write_off_only_and_parts.sql"),
+            },
         ]
     }
 
@@ -126,8 +132,9 @@ impl Module for PaymentsModule {
             PolicyPoint::new(
                 WRITE_OFF,
                 "Asked for every allocation of a payment that writes off what is left of an item \
-                 (a customer short-paid by a few cents, a bank charge kept from a transfer), \
-                 when the payment is posted: may this much be written off? Unless configured \
+                 or of one of its parts (a customer short-paid by a few cents, a bank charge \
+                 kept from a transfer, a few cents a customer overpaid), when the payment is \
+                 posted: may this much be written off? Unless configured \
                  otherwise nothing is: a company sets its tolerance with an allow rule, for \
                  example when `facts.amount <= 1`, or `facts.percent <= 0.5`. What is written \
                  off goes to the account for `write_off`, tax included as it was charged.",
@@ -141,6 +148,11 @@ impl Module for PaymentsModule {
             .as_money(Some("currency"))
             .number("percent", "What is written off as a percentage of the item")
             .as_percent()
+            .boolean(
+                "credit",
+                "Whether what is written off is left of a credit (money the company owes back) \
+                 rather than of a debt",
+            )
             .refuse_when("facts.amount > 0")
             .refusal("this difference is more than the company writes off"),
             PolicyPoint::new(
@@ -493,12 +505,14 @@ impl DocumentHandler for Payment {
     async fn save_body(&self, ctx: &mut Ctx<'_>, doc: &Document, body: &Value) -> Result<()> {
         let body: Body = erpcraft_kernel::input::parse(body.clone(), "payment body")?;
         for (index, allocation) in body.allocations.iter().enumerate() {
-            if allocation.amount.is_zero() {
+            // Nothing paid is right only for what is written off alone.
+            if allocation.amount.is_zero() && allocation.write_off.is_zero() {
                 return Err(Error::line(
                     "allocations",
                     index + 1,
                     Some("amount"),
-                    "the amount must be more than zero, or less than zero for a credit",
+                    "the amount must be more than zero, or less than zero for a credit, unless \
+                     the allocation only writes off what is left",
                 ));
             }
             if allocation.write_off.is_sign_negative() {
@@ -555,14 +569,27 @@ impl DocumentHandler for Payment {
             check_party(party_type, body.direction)?;
         }
 
+        // An item appears once, or once for each of its parts the payment
+        // pays by name.
+        let mut named: Vec<(Uuid, Option<i32>)> = body
+            .allocations
+            .iter()
+            .map(|a| (a.open_item_id, a.instalment))
+            .collect();
+        named.sort();
+        for pair in named.windows(2) {
+            if pair[0].0 == pair[1].0
+                && (pair[0].1.is_none() || pair[1].1.is_none() || pair[0].1 == pair[1].1)
+            {
+                return Err(Error::validation(
+                    "an open item can appear only once in a payment, or once for each of its \
+                     parts the payment pays, each naming its part (instalment)",
+                ));
+            }
+        }
         let mut ids: Vec<Uuid> = body.allocations.iter().map(|a| a.open_item_id).collect();
         ids.sort();
         ids.dedup();
-        if ids.len() != body.allocations.len() {
-            return Err(Error::validation(
-                "an open item can appear only once in a payment",
-            ));
-        }
         let items: Vec<(Uuid, Decimal, String, Uuid, Uuid)> = sqlx::query_as(
             "SELECT id, amount, party_type, party_id, account_id FROM open_item
              WHERE id = ANY($1) AND company_id = $2 AND kind = $3",
@@ -601,7 +628,9 @@ impl DocumentHandler for Payment {
             else {
                 continue;
             };
-            if amount.is_sign_negative() != allocation.amount.is_sign_negative() {
+            if !allocation.amount.is_zero()
+                && amount.is_sign_negative() != allocation.amount.is_sign_negative()
+            {
                 return Err(Error::line(
                     "allocations",
                     index + 1,
@@ -611,14 +640,6 @@ impl DocumentHandler for Payment {
                     } else {
                         "the amount must be more than zero"
                     },
-                ));
-            }
-            if amount.is_sign_negative() && !allocation.write_off.is_zero() {
-                return Err(Error::line(
-                    "allocations",
-                    index + 1,
-                    Some("write_off"),
-                    "what is left of a debt is written off, not of a credit",
                 ));
             }
             if amount.is_sign_negative() && !allocation.discount.is_zero() {
@@ -932,14 +953,48 @@ fn check_party(party_type: &str, direction: Direction) -> Result<()> {
     Ok(())
 }
 
+/// What an allocation writes off, the way its item runs: below zero for
+/// a credit, as what is taken of a credit is.
+fn written_off(line: &AllocationLine, item: &erpcraft_openitems::OpenItem) -> Decimal {
+    if item.amount.is_sign_negative() {
+        -line.write_off
+    } else {
+        line.write_off
+    }
+}
+
+/// What an allocation settles of its item: the money, the discount kept
+/// back and what it writes off.
+fn settled_by(line: &AllocationLine, item: &erpcraft_openitems::OpenItem) -> Decimal {
+    line.amount + line.discount + written_off(line, item)
+}
+
+/// What is still open of one part of an item due in parts, in its
+/// currency; `None` when it has no such part.
+fn part_open(item: &erpcraft_openitems::OpenItem, part: i32) -> Option<Decimal> {
+    item.instalments
+        .as_ref()
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|p| p["seq"].as_i64() == Some(i64::from(part)))
+        .map(|p| {
+            p["open"]
+                .as_str()
+                .and_then(|o| o.parse().ok())
+                .unwrap_or_default()
+        })
+}
+
 /// An early-payment discount is the item's to give: no more than its terms
 /// offer, with the money paying the rest of the item, and by its discount
-/// date unless the company's policy allows it later.
+/// date unless the company's policy allows it later. What is open and what
+/// is offered is told only to someone who may read open items.
 async fn check_discount(
     ctx: &mut Ctx<'_>,
     doc: &Document,
     line: &AllocationLine,
     item: &erpcraft_openitems::OpenItem,
+    reads_items: bool,
 ) -> Result<()> {
     let refuse =
         |why: String| Error::line("allocations", line.line_no as usize, Some("discount"), why);
@@ -954,18 +1009,30 @@ async fn check_discount(
         ));
     };
     if line.discount > offered {
-        return Err(refuse(format!(
-            "the discount on this item paid on {} is at most {}",
-            doc.doc_date,
-            offered.normalize()
-        )));
+        return Err(refuse(if reads_items {
+            format!(
+                "the discount on this item paid on {} is at most {}",
+                doc.doc_date,
+                offered.normalize()
+            )
+        } else {
+            format!(
+                "{} is more than this item's discount paid on {}",
+                line.discount.normalize(),
+                doc.doc_date
+            )
+        }));
     }
-    if line.amount + line.discount + line.write_off != item.txn_open {
-        return Err(refuse(format!(
-            "a discount is taken when the rest of the item is paid: {} with a discount of {}",
-            (item.txn_open - line.discount).normalize(),
-            line.discount.normalize()
-        )));
+    if settled_by(line, item) != item.txn_open {
+        return Err(refuse(if reads_items {
+            format!(
+                "a discount is taken when the rest of the item is paid: {} with a discount of {}",
+                (item.txn_open - line.discount).normalize(),
+                line.discount.normalize()
+            )
+        } else {
+            "a discount is taken when the rest of the item is paid".to_owned()
+        }));
     }
     let facts = json!({
         "kind": item.kind,
@@ -982,15 +1049,13 @@ async fn check_discount(
     Ok(())
 }
 
-/// A write-off settles what is left of a debt, as far as the company's
-/// policy accepts: the amount, the discount and the write-off together are
-/// the rest of the item.
 /// An allocation that names a part of its item pays no more than is open
-/// of that part.
+/// of that part, together with the payment's other allocations of it.
 fn check_instalment(
     line: &AllocationLine,
     item: &erpcraft_openitems::OpenItem,
     part: i32,
+    reads_items: bool,
 ) -> Result<()> {
     let refuse = |why: String| {
         Error::line(
@@ -1004,59 +1069,76 @@ fn check_instalment(
         .instalments
         .as_ref()
         .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let Some(found) = parts
-        .iter()
-        .find(|p| p["seq"].as_i64() == Some(i64::from(part)))
-    else {
-        return Err(refuse(if parts.is_empty() {
+        .map_or(0, Vec::len);
+    let Some(open) = part_open(item, part) else {
+        return Err(refuse(if parts == 0 {
             "this item is not due in parts".into()
         } else {
-            format!("this item is due in {} parts, not {part}", parts.len())
+            format!("this item is due in {parts} parts, not {part}")
         }));
     };
-    let open: Decimal = found["open"]
-        .as_str()
-        .and_then(|o| o.parse().ok())
-        .unwrap_or_default();
     let paid = line.amount + line.discount + line.write_off;
     if paid > open {
-        return Err(refuse(format!(
-            "only {} is still open of part {part}, not {}",
-            open.normalize(),
-            paid.normalize()
-        )));
+        return Err(refuse(if reads_items {
+            format!(
+                "only {} is still open of part {part}, not {}",
+                open.normalize(),
+                paid.normalize()
+            )
+        } else {
+            format!(
+                "{} is more than is still open of part {part}",
+                paid.normalize()
+            )
+        }));
     }
     Ok(())
 }
 
+/// A write-off settles what is left, as far as the company's policy
+/// accepts: of the part the allocation names, else of the item, the amount,
+/// the discount and the write-off together are the rest. It may be left of
+/// a debt or of a credit. How much is left is told only to someone who may
+/// read open items.
 async fn check_write_off(
     ctx: &mut Ctx<'_>,
     doc: &Document,
     line: &AllocationLine,
     item: &erpcraft_openitems::OpenItem,
+    reads_items: bool,
 ) -> Result<()> {
     let refuse =
         |why: String| Error::line("allocations", line.line_no as usize, Some("write_off"), why);
-    if line.amount + line.discount + line.write_off != item.txn_open {
-        return Err(refuse(format!(
-            "a write-off settles what is left of the item: {} is left after the amount and \
-             the discount, not {}",
-            (item.txn_open - line.amount - line.discount).normalize(),
-            line.write_off.normalize()
-        )));
+    let (left, of) = match line.instalment {
+        Some(part) => (
+            part_open(item, part).unwrap_or_default(),
+            format!("part {part}"),
+        ),
+        None => (item.txn_open, "the item".to_owned()),
+    };
+    if settled_by(line, item) != left {
+        return Err(refuse(if reads_items {
+            format!(
+                "a write-off settles what is left of {of}: {} is left after the amount and the \
+                 discount, not {}",
+                (left - line.amount - line.discount).abs().normalize(),
+                line.write_off.normalize()
+            )
+        } else {
+            format!("a write-off settles what is left of {of}, after the amount and the discount")
+        }));
     }
     let percent = if item.txn_amount.is_zero() {
         Decimal::ZERO
     } else {
-        (line.write_off * Decimal::ONE_HUNDRED / item.txn_amount).round_dp(6)
+        (line.write_off * Decimal::ONE_HUNDRED / item.txn_amount.abs()).round_dp(6)
     };
     let facts = json!({
         "kind": item.kind,
         "currency": item.currency,
         "amount": line.write_off.normalize().to_string(),
         "percent": percent.normalize().to_string(),
+        "credit": item.amount.is_sign_negative(),
     });
     let policy = ctx.policy(WRITE_OFF, doc.company_id).await?;
     if let Decision::Refused(refusal) = policy.evaluate(facts)? {
@@ -1311,6 +1393,9 @@ impl Command for PostPayment {
         // payment's: someone who may post a payment but not read open
         // items learns only that it is too much.
         let reads_items = ctx.actor.can("open_item:read", doc.company_id);
+        // What the payment's earlier allocations settle of each item: an
+        // item appears again only for another of its parts.
+        let mut settling: HashMap<Uuid, Decimal> = HashMap::new();
         for (line, item) in lines.iter().zip(&items) {
             // Checked again here: the draft may be older than the rule, and
             // only now are the items locked.
@@ -1328,25 +1413,27 @@ impl Command for PostPayment {
                     ),
                 ));
             }
-            let wrong_way = line.amount.is_sign_negative() != item.amount.is_sign_negative();
+            let wrong_way = !line.amount.is_zero()
+                && line.amount.is_sign_negative() != item.amount.is_sign_negative();
             if !line.discount.is_zero() {
-                check_discount(ctx, &doc, line, item).await?;
+                check_discount(ctx, &doc, line, item, reads_items).await?;
             }
             if !line.write_off.is_zero() {
-                check_write_off(ctx, &doc, line, item).await?;
+                check_write_off(ctx, &doc, line, item, reads_items).await?;
             }
             if let Some(part) = line.instalment {
-                check_instalment(line, item, part)?;
+                check_instalment(line, item, part, reads_items)?;
             }
-            if wrong_way
-                || (line.amount + line.discount + line.write_off).abs() > item.txn_open.abs()
-            {
+            let before = settling.get(&item.id).copied().unwrap_or_default();
+            let after = before + settled_by(line, item);
+            settling.insert(item.id, after);
+            if wrong_way || after.abs() > item.txn_open.abs() {
                 let why = if wrong_way {
                     "this item is a credit: what is taken of it is below zero".to_owned()
                 } else if reads_items {
                     format!(
                         "only {} is still open on this item, not {}",
-                        item.txn_open.normalize(),
+                        (item.txn_open - before).normalize(),
                         line.amount.normalize()
                     )
                 } else {
@@ -1413,9 +1500,10 @@ impl Command for PostPayment {
         // A discount settles the item with the money paid.
         let allocations: Vec<Allocation> = lines
             .iter()
-            .map(|l| Allocation {
+            .zip(&items)
+            .map(|(l, item)| Allocation {
                 open_item_id: l.open_item_id,
-                amount: l.amount + l.discount + l.write_off,
+                amount: settled_by(l, item),
                 discount: l.discount,
                 instalment: l.instalment,
             })
@@ -1448,7 +1536,7 @@ impl Command for PostPayment {
                     erpcraft_gl::account_for(&mut *ctx.conn, doc.company_id, "write_off", &[])
                         .await
                         .map_err(|e| e.with_field("write_off"))?;
-                let value = erpcraft_kernel::round_money(line.write_off * rate, decimals);
+                let value = erpcraft_kernel::round_money(written_off(line, item) * rate, decimals);
                 if !value.is_zero() {
                     gl.push(settling_line(account, -value, direction, Some(line.id)));
                 }
