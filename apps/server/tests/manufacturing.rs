@@ -983,3 +983,141 @@ async fn an_order_absorbs_labor_and_overhead_into_the_product() {
     assert_eq!(p.books(&t).await, (70.0, 0.0));
     t.stop().await;
 }
+
+/// A routing: operations at work centers, standard hours absorbed into the
+/// product, the actual hours recorded and the difference posted as a
+/// production variance, and each work center's load day by day.
+#[tokio::test]
+async fn a_routing_absorbs_standard_time_and_posts_the_variance() {
+    let t = TestApp::start().await;
+    let p = setup(&t).await;
+    p.stock_up(&t).await;
+    let account = |code: &'static str, name: &'static str| {
+        let t = &t;
+        let company = p.c.id.clone();
+        async move {
+            t.create(
+                "account",
+                json!({ "company_id": company, "code": code, "name": name,
+                        "account_type": "expense" }),
+            )
+            .await
+        }
+    };
+    let absorbed = account("5900", "Absorbed cost").await;
+    let variance = account("5950", "Production variance").await;
+    for (purpose, id) in [
+        ("absorbed_cost", &absorbed),
+        ("production_variance", &variance),
+    ] {
+        t.create(
+            "account_rule",
+            json!({ "company_id": p.c.id, "purpose": purpose, "account_id": id }),
+        )
+        .await;
+    }
+    let assembly = t
+        .create(
+            "cost_activity",
+            json!({ "code": "ASSY", "name": "Assembly", "kind": "labor" }),
+        )
+        .await;
+    t.create(
+        "cost_activity_rate",
+        json!({ "company_id": p.c.id, "activity_id": assembly, "rate": "30.00" }),
+    )
+    .await;
+    // One hour to set up, half an hour per cake, on line 1.
+    t.create(
+        "bom_operation",
+        json!({ "bom_id": p.bom, "seq": 10, "work_center_code": "LINE1",
+                "setup_hours": "1", "run_hours": "0.5", "description": "Bake" }),
+    )
+    .await;
+    // The company has no line 1 yet: the order cannot be released.
+    let draft = p.draft(&t, "3").await;
+    let (status, body) = step(&t, "release", &draft).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(message(&body).contains("LINE1"), "{body}");
+    let line1 = t
+        .create(
+            "work_center",
+            json!({ "company_id": p.c.id, "code": "LINE1", "name": "Line 1",
+                    "activity_id": assembly, "hours_per_day": "8" }),
+        )
+        .await;
+
+    // Three cakes: 1 + 1.5 = 2.5 standard hours at 30.00.
+    let order = p.released(&t, "3").await;
+    let operations = order["body"]["operations"].as_array().unwrap();
+    assert_eq!(operations.len(), 1);
+    assert_eq!(dec(&operations[0]["hours"]), 2.5);
+    assert_eq!(operations[0]["work_center_id"], line1.as_str());
+
+    let load = |from: &'static str| {
+        let t = &t;
+        let company = p.c.id.clone();
+        async move {
+            let (status, out) = t
+                .command(
+                    &t.admin,
+                    "work_center.load",
+                    json!({ "company_id": company, "from": from, "to": "2026-03-16" }),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{out}");
+            out["rows"].as_array().unwrap().clone()
+        }
+    };
+    let rows = load("2026-03-15").await;
+    assert_eq!(rows.len(), 2, "two days of one work center");
+    assert_eq!(dec(&rows[0]["load_hours"]), 2.5);
+    assert_eq!(dec(&rows[0]["load_percent"]), 31.3);
+    assert_eq!(dec(&rows[1]["load_hours"]), 0.0);
+
+    // It took three hours.
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "production_order.record_time",
+            json!({ "id": order["id"], "line_no": 1, "hours": "3", "worked_on": "2026-03-15" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(dec(&body["body"]["operations"][0]["actual_hours"]), 3.0);
+    assert_eq!(dec(&load("2026-03-15").await[0]["load_hours"]), 0.0);
+
+    // The cakes carry standard: 18.00 of flour, 10.00 of sugar, 75.00 of
+    // time. The half hour more is a variance of 15.00.
+    let (status, done) = step(&t, "complete", &order).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(dec(&done["summary"]["total_value"]), 103.0, "{done}");
+    let balance = |id: &String| {
+        let t = &t;
+        let id = id.clone();
+        async move {
+            sqlx::query_scalar::<_, f64>(
+                "SELECT COALESCE(sum(debit - credit), 0)::float8 FROM gl_entry
+                 WHERE account_id = $1::uuid",
+            )
+            .bind(id)
+            .fetch_one(&t.pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(balance(&variance).await, 15.0);
+    assert_eq!(balance(&absorbed).await, -90.0, "what the time was worth");
+    let (_, finished) = p.books(&t).await;
+    assert_eq!(finished, 103.0);
+    // Time is recorded only while the order is released.
+    let (status, _) = t
+        .command(
+            &t.admin,
+            "production_order.record_time",
+            json!({ "id": order["id"], "line_no": 1, "hours": "1" }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK);
+    t.stop().await;
+}

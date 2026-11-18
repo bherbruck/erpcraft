@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
+mod routing;
+
 const PRODUCTION_ORDER: &str = "production_order";
 
 pub struct ManufacturingModule;
@@ -57,6 +59,11 @@ impl Module for ManufacturingModule {
                 name: "activities",
                 sql: include_str!("../migrations/0003_activities.sql"),
             },
+            Migration {
+                version: 4,
+                name: "routing",
+                sql: include_str!("../migrations/0004_routing.sql"),
+            },
         ]
     }
 
@@ -78,7 +85,7 @@ impl Module for ManufacturingModule {
 
     fn entities(&self) -> Vec<EntityMeta> {
         let created = || FieldMeta::new("created_at", "Created", FieldType::Timestamp).readonly();
-        vec![
+        let mut all = vec![
             EntityMeta::new("bom", "Bill of materials")
                 // The product. Orders released against the bill would
                 // otherwise make something else.
@@ -183,7 +190,9 @@ impl Module for ManufacturingModule {
                 .display(&["activity_id"])
                 .child_of("bom", "bom_id")
                 .validator(validate_bom_line),
-        ]
+        ];
+        all.extend(routing::entities());
+        all
     }
 
     fn doc_types(&self) -> Vec<Arc<dyn DocumentHandler>> {
@@ -196,6 +205,8 @@ impl Module for ManufacturingModule {
             command(Cancel),
             command(Complete),
             command(Reverse),
+            command(routing::RecordTime),
+            command(routing::Load),
         ]
     }
 }
@@ -396,6 +407,31 @@ impl DocumentHandler for ProductionOrder {
                             .help("The company's rate when the order was released."),
                     ],
                 },
+                CollectionMeta {
+                    name: "operations".into(),
+                    label: "Operations".into(),
+                    fields: vec![
+                        FieldMeta::line_id(),
+                        FieldMeta::line_no(),
+                        FieldMeta::new("seq", "Step", FieldType::Int).readonly(),
+                        FieldMeta::new(
+                            "work_center_id",
+                            "Work center",
+                            FieldType::link("work_center"),
+                        )
+                        .readonly(),
+                        FieldMeta::new("description", "Description", FieldType::Text).readonly(),
+                        FieldMeta::new("hours", "Standard hours", FieldType::Decimal)
+                            .quantity()
+                            .readonly(),
+                        FieldMeta::new("rate", "Rate", FieldType::Decimal)
+                            .unit_price()
+                            .readonly(),
+                        FieldMeta::new("actual_hours", "Hours recorded", FieldType::Decimal)
+                            .quantity()
+                            .readonly(),
+                    ],
+                },
             ],
             states: vec![
                 StateMeta::editable("draft", "Draft"),
@@ -492,6 +528,7 @@ impl DocumentHandler for ProductionOrder {
             "item_id": order.item_id,
             "components": load_components(conn, doc.id).await?,
             "activities": load_activities(conn, doc.id).await?,
+            "operations": routing::operations(conn, doc.id).await?,
         }))
     }
 }
@@ -642,6 +679,15 @@ impl Command for Release {
             .await?;
         }
 
+        // Its routing, at the company's work centers and rates now.
+        routing::release(
+            &mut *ctx.conn,
+            doc.company_id,
+            doc.id,
+            order.bom_id,
+            order.qty,
+        )
+        .await?;
         // The components are set aside for it, as far as free stock goes.
         let needs: Vec<erpcraft_stock::Need> = load_components(&mut *ctx.conn, doc.id)
             .await?
@@ -805,6 +851,41 @@ impl Command for Complete {
             .await?;
             absorbed.push((account, amount, activity.id));
         }
+        // The routing's standard hours are absorbed the same way, at the
+        // work center's activity; the difference from the hours recorded
+        // is a variance, posted below, outside the product's value.
+        let operations = routing::operations(&mut *ctx.conn, doc.id).await?;
+        let mut variances: Vec<(Uuid, Decimal, Uuid, Uuid)> = vec![];
+        for operation in &operations {
+            let account = erpcraft_gl::account_for(
+                &mut *ctx.conn,
+                doc.company_id,
+                "absorbed_cost",
+                &[("cost_activity", operation.activity_id)],
+            )
+            .await?;
+            let amount = round_money(operation.hours * operation.rate, decimals);
+            if !amount.is_zero() {
+                absorbed.push((account, amount, operation.id));
+            }
+            let recorded: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM production_operation_time WHERE operation_id = $1)",
+            )
+            .bind(operation.id)
+            .fetch_one(&mut *ctx.conn)
+            .await?;
+            if recorded {
+                let actual = round_money(operation.actual_hours * operation.rate, decimals);
+                if actual != amount {
+                    variances.push((
+                        account,
+                        actual - amount,
+                        operation.id,
+                        operation.work_center_id,
+                    ));
+                }
+            }
+        }
         // What was consumed and absorbed is what the product is worth, to
         // the cent.
         let total: Decimal = consumed.iter().map(|entry| -entry.value).sum::<Decimal>()
@@ -878,6 +959,22 @@ impl Command for Complete {
                 (-variance).max(Decimal::ZERO),
                 None,
             ));
+        }
+        // More time than standard: the difference is a cost of production
+        // the product does not carry, and the absorbed cost account takes
+        // what the time was really worth. Less time: the other way round.
+        for (absorbed_account, difference, source, center) in variances {
+            let account = erpcraft_gl::account_for(
+                &mut *ctx.conn,
+                doc.company_id,
+                "production_variance",
+                &[("work_center", center), ("item", order.item_id)],
+            )
+            .await?;
+            let more = difference.max(Decimal::ZERO);
+            let less = (-difference).max(Decimal::ZERO);
+            gl.push(line(account, more, less, Some(source)));
+            gl.push(line(absorbed_account, less, more, Some(source)));
         }
         if !gl.is_empty() {
             erpcraft_gl::post(&mut *ctx.conn, &posting, &gl).await?;
