@@ -81,6 +81,11 @@ impl Module for KernelModule {
                 name: "approval_delegation",
                 sql: include_str!("../migrations/0010_approval_delegation.sql"),
             },
+            Migration {
+                version: 11,
+                name: "list_indexes",
+                sql: include_str!("../migrations/0011_list_indexes.sql"),
+            },
         ]
     }
 

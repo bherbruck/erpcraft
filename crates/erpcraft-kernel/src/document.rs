@@ -265,6 +265,12 @@ pub fn withhold(actor: &crate::authz::Actor, permission: &str, rows: &mut [Value
     }
 }
 
+/// The documents of one type (`$1`) whose summary is missing or was worked
+/// out by another version (`$2`) of the type's summary. Written so that the
+/// indexes of kernel migration 0011 answer it: `<>` would not use them.
+pub const STALE_SUMMARIES: &str = "FROM document d WHERE d.doc_type = $1::text \
+     AND (d.summary_version < $2::int4 OR d.summary_version > $2::int4 OR d.summary = '{}'::jsonb)";
+
 /// What [`refresh_missing_summaries`] did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct SummariesRefreshed {
@@ -305,28 +311,35 @@ pub async fn refresh_missing_summaries(
             (!entry.meta.summary.is_empty()).then_some((name, entry.meta.summary_version))
         })
         .unzip();
-    // Missing, or worked out by another version of the type's summary.
-    const STALE: &str = "FROM document d
-         JOIN unnest($1::text[], $2::int4[]) AS t(name, version) ON t.name = d.doc_type
-         WHERE d.summary = '{}' OR d.summary_version <> t.version";
-    let docs: Vec<Document> = sqlx::query_as(&format!(
-        "SELECT d.* {STALE} ORDER BY d.id LIMIT $3 FOR UPDATE OF d SKIP LOCKED"
-    ))
-    .bind(&types)
-    .bind(&versions)
-    .bind(limit.clamp(1, SUMMARY_BATCH_MAX))
-    .fetch_all(&mut *ctx.conn)
-    .await?;
+    // Missing, or worked out by another version of the type's summary:
+    // asked type by type, in a form the indexes `document_summary_version`
+    // and `document_summary_missing` answer, so that when nothing is stale
+    // (every start of the server) no document is read.
+    let limit = limit.clamp(1, SUMMARY_BATCH_MAX);
     let mut refreshed = 0;
-    for mut doc in docs {
-        refresh_summary(ctx, &mut doc).await?;
-        refreshed += 1;
+    let mut remaining = 0;
+    for (name, version) in types.iter().zip(&versions) {
+        if refreshed < limit {
+            let docs: Vec<Document> = sqlx::query_as(&format!(
+                "SELECT d.* {STALE_SUMMARIES} LIMIT $3 FOR UPDATE OF d SKIP LOCKED"
+            ))
+            .bind(name)
+            .bind(version)
+            .bind(limit - refreshed)
+            .fetch_all(&mut *ctx.conn)
+            .await?;
+            for mut doc in docs {
+                refresh_summary(ctx, &mut doc).await?;
+                refreshed += 1;
+            }
+        }
+        let left: i64 = sqlx::query_scalar(&format!("SELECT count(*) {STALE_SUMMARIES}"))
+            .bind(name)
+            .bind(version)
+            .fetch_one(&mut *ctx.conn)
+            .await?;
+        remaining += left;
     }
-    let remaining: i64 = sqlx::query_scalar(&format!("SELECT count(*) {STALE}"))
-        .bind(&types)
-        .bind(&versions)
-        .fetch_one(&mut *ctx.conn)
-        .await?;
     Ok(SummariesRefreshed {
         refreshed,
         remaining,
