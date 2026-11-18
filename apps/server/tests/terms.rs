@@ -2052,3 +2052,102 @@ async fn a_preview_fills_every_lines_net_and_tax() {
     assert_eq!(dec(&got["tax_amount"]), 1.9, "{got}");
     t.stop().await;
 }
+
+/// Orders set aside stock on hand: an approved sales order reserves what
+/// free stock covers, a delivery cuts its own back, and taking what other
+/// orders reserved is the company's policy (allowed unless it says not).
+#[tokio::test]
+async fn orders_reserve_stock_and_deliveries_respect_it_as_far_as_the_company_says() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let bought = f.order(&t, "purchase", "10", "1.00", json!({})).await;
+    f.posted(
+        &t,
+        "purchase_receipt",
+        "2026-01-02",
+        json!({ "purchase_order_id": bought["id"],
+                "lines": [{ "order_line_id": bought["body"]["lines"][0]["id"], "qty": "10" }] }),
+    )
+    .await;
+    let held = |order: Value| {
+        let t = &t;
+        let company = f.c.id.clone();
+        async move {
+            let (status, out) = t
+                .command(
+                    &t.admin,
+                    "stock.reservations",
+                    json!({ "company_id": company, "document_id": order["id"] }),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{out}");
+            out["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| dec(&r["qty"]))
+                .sum::<f64>()
+        }
+    };
+    // Ten on hand: the first order holds six, the second the four left.
+    let first = f.order(&t, "sales", "6", "5.00", json!({})).await;
+    let second = f.order(&t, "sales", "6", "5.00", json!({})).await;
+    assert_eq!(held(first.clone()).await, 6.0);
+    assert_eq!(held(second.clone()).await, 4.0);
+
+    // The second ships all six, two of them out of the first's: allowed by
+    // default. It holds nothing after; the first is cut back when asked.
+    let deliver = |order: Value, qty: &'static str| {
+        let f = &f;
+        let t = &t;
+        async move {
+            let draft = f
+                .draft(
+                    t,
+                    "sales_delivery",
+                    "2026-01-05",
+                    json!({ "sales_order_id": order["id"],
+                            "lines": [{ "order_line_id": order["body"]["lines"][0]["id"],
+                                        "qty": qty }] }),
+                )
+                .await;
+            f.post(t, "sales_delivery", &draft).await
+        }
+    };
+    let (status, body) = deliver(second.clone(), "6").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(held(second.clone()).await, 0.0);
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "sales_order.reserve",
+            json!({ "id": first["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(held(first.clone()).await, 4.0);
+
+    // A company that keeps reservations firm refuses it.
+    let (status, rule) = t
+        .post(
+            &t.admin,
+            "/api/entities/policy_rule",
+            json!({ "company_id": f.c.id, "point": "sales_delivery.reserved_elsewhere",
+                    "effect": "refuse", "condition": "facts.short > 0", "priority": 10 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{rule}");
+    let third = f.order(&t, "sales", "2", "5.00", json!({})).await;
+    assert_eq!(held(third.clone()).await, 0.0, "nothing is free");
+    let (status, body) = deliver(third.clone(), "2").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    // The first is cancelled: its goods are free again.
+    let (status, body) = t
+        .command(&t.admin, "sales_order.cancel", json!({ "id": first["id"] }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(held(first.clone()).await, 0.0);
+    let (status, body) = deliver(third.clone(), "2").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    t.stop().await;
+}

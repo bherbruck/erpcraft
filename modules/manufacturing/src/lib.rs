@@ -642,6 +642,18 @@ impl Command for Release {
             .await?;
         }
 
+        // The components are set aside for it, as far as free stock goes.
+        let needs: Vec<erpcraft_stock::Need> = load_components(&mut *ctx.conn, doc.id)
+            .await?
+            .into_iter()
+            .map(|c| erpcraft_stock::Need {
+                line_id: c.id,
+                item_id: c.item_id,
+                warehouse_id: order.warehouse_id,
+                qty: c.qty,
+            })
+            .collect();
+        erpcraft_stock::reserve(&mut *ctx.conn, doc.company_id, doc.id, &needs).await?;
         document::transition(ctx, &mut doc, "released").await?;
         document::view(ctx, doc).await
     }
@@ -677,6 +689,7 @@ impl Command for Cancel {
                 doc.status
             )));
         }
+        erpcraft_stock::release(&mut *ctx.conn, doc.id).await?;
         document::transition(ctx, &mut doc, "cancelled").await?;
         document::view(ctx, doc).await
     }
@@ -870,6 +883,8 @@ impl Command for Complete {
             erpcraft_gl::post(&mut *ctx.conn, &posting, &gl).await?;
         }
 
+        // Consumed: nothing is held for it any more.
+        erpcraft_stock::release(&mut *ctx.conn, doc.id).await?;
         document::transition(ctx, &mut doc, "completed").await?;
         document::view(ctx, doc).await
     }

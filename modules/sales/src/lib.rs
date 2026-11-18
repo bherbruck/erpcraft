@@ -215,6 +215,7 @@ impl Module for SalesModule {
             command(returns::PostCreditNote),
             command(returns::ReverseCreditNote),
             command(returns::AwaitingCredit),
+            command(Reserve),
             command(credit::PostCredit),
             command(credit::ReverseCredit),
         ]
@@ -394,10 +395,45 @@ async fn settle_order(
     let complete = lines.values().all(OrderLine::complete);
     let unbilled = lines.values().any(|l| l.qty_invoiced != l.qty_delivered);
     match order.status.as_str() {
-        "open" if complete => document::transition(ctx, order, "closed").await,
-        "closed" if unbilled && reversal => document::transition(ctx, order, "open").await,
-        _ => Ok(()),
+        "open" if complete => document::transition(ctx, order, "closed").await?,
+        "closed" if unbilled && reversal => document::transition(ctx, order, "open").await?,
+        _ => {}
     }
+    reserve_lines(&mut *ctx.conn, order, lines.values()).await
+}
+
+/// Keep an order's reservations in step with it: while it is open, each
+/// stock line holds what it still has to deliver, as far as free stock
+/// covers it; once it is closed or cancelled, nothing.
+async fn reserve_lines<'l>(
+    conn: &mut PgConnection,
+    order: &Document,
+    lines: impl IntoIterator<Item = &'l OrderLine>,
+) -> Result<()> {
+    if order.status != "open" {
+        return erpcraft_stock::release(conn, order.id).await;
+    }
+    let needs: Vec<erpcraft_stock::Need> = lines
+        .into_iter()
+        .filter_map(|l| {
+            Some(erpcraft_stock::Need {
+                line_id: l.id,
+                item_id: l.item_id?,
+                warehouse_id: l.warehouse_id?,
+                qty: l.qty - l.qty_delivered,
+            })
+        })
+        .collect();
+    erpcraft_stock::reserve(conn, order.company_id, order.id, &needs).await?;
+    Ok(())
+}
+
+/// Reserve again what an open order still needs: after goods came in, or
+/// after another order's delivery took some of what it held.
+async fn reserve_order(ctx: &mut Ctx<'_>, order_id: Uuid) -> Result<()> {
+    let order = document::lock(ctx, SALES_ORDER, order_id, "read").await?;
+    let lines = order_lines(&mut *ctx.conn, order_id).await?;
+    reserve_lines(&mut *ctx.conn, &order, &lines).await
 }
 
 /// Whether a delivery or an invoice (`doc_type`) may refer to an order in
@@ -1243,6 +1279,9 @@ impl Command for OrderStep {
             }
         }
         document::transition(ctx, &mut order, self.to).await?;
+        // Approved, it sets aside what it needs; cancelled or closed, it
+        // lets go.
+        reserve_lines(&mut *ctx.conn, &order, &lines).await?;
         document::view(ctx, order).await
     }
 }
@@ -1643,6 +1682,51 @@ impl Command for PostDelivery {
                 cost: None,
                 source_line_id: Some(line.id),
             });
+        }
+
+        // Taking goods other orders reserved is the company's call.
+        let elsewhere = ctx
+            .policy(policy::RESERVED_ELSEWHERE, doc.company_id)
+            .await?;
+        let mut taking: BTreeMap<(Uuid, Uuid), Decimal> = BTreeMap::new();
+        for (line, movement) in lines.iter().zip(&movements) {
+            let key = (movement.item_id, movement.warehouse_id);
+            let taken = taking.entry(key).or_default();
+            *taken += line.qty;
+            let (on_hand, _) =
+                erpcraft_stock::on_hand(&mut *ctx.conn, movement.item_id, movement.warehouse_id)
+                    .await?;
+            let others = erpcraft_stock::reserved_for_others(
+                &mut *ctx.conn,
+                movement.item_id,
+                movement.warehouse_id,
+                order.id,
+            )
+            .await?;
+            let free = (on_hand - others - (*taken - line.qty)).max(Decimal::ZERO);
+            if line.qty <= free {
+                continue;
+            }
+            let code: String = sqlx::query_scalar("SELECT code FROM item WHERE id = $1")
+                .bind(movement.item_id)
+                .fetch_one(&mut *ctx.conn)
+                .await?;
+            let facts = policy::reserved_elsewhere(line.qty, free, &code);
+            if let Decision::Refused(refusal) = elsewhere.evaluate(facts.clone())? {
+                return Err(Error::line(
+                    "lines",
+                    line.line_no as usize,
+                    Some("qty"),
+                    refusal.message.unwrap_or_else(|| {
+                        format!(
+                            "only {} of item {code} is free; the rest is reserved for other orders",
+                            trim(free)
+                        )
+                    }),
+                ));
+            }
+            ctx.decide(policy::RESERVED_ELSEWHERE, doc.company_id, facts)
+                .await?;
         }
 
         let posting = document::create_posting(ctx, &doc, doc.doc_date, doc.memo.clone()).await?;
@@ -2774,4 +2858,31 @@ pub(crate) async fn fill_draft_lines(
         }
     }
     Ok(())
+}
+
+/// `sales_order.reserve`: set aside again what an open order still needs.
+struct Reserve;
+
+#[async_trait]
+impl Command for Reserve {
+    type Input = DocInput;
+    type Output = DocumentView;
+
+    fn spec(&self) -> CommandSpec {
+        CommandSpec::action(
+            "sales_order.reserve",
+            "Reserve again, for an open sales order, what each stock line still has to deliver, \
+             as far as stock on hand that no other order reserved covers it: after goods came \
+             in, or after another order's delivery took some of what it held. An order reserves \
+             when it is approved and lets go when it is delivered, cancelled or closed.",
+        )
+        .from_states(&["open"])
+        .permission("sales_order:approve")
+    }
+
+    async fn run(&self, ctx: &mut Ctx<'_>, input: DocInput) -> Result<DocumentView> {
+        reserve_order(ctx, input.id).await?;
+        let order = document::lock(ctx, SALES_ORDER, input.id, "read").await?;
+        document::view(ctx, order).await
+    }
 }

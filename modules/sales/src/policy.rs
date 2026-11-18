@@ -10,9 +10,30 @@ pub(crate) const CLOSED_ORDER: &str = "sales_order.closed";
 pub(crate) const CREDIT_WITHOUT_RETURN: &str = "sales_credit_note.without_return";
 pub(crate) const REOPEN_ON_RETURN: &str = "sales_order.reopen_on_return";
 pub(crate) const WITHOUT_INVOICE: &str = "sales_credit.without_invoice";
+pub(crate) const RESERVED_ELSEWHERE: &str = "sales_delivery.reserved_elsewhere";
 
 pub(crate) fn points() -> Vec<PolicyPoint> {
     vec![
+        PolicyPoint::new(
+            RESERVED_ELSEWHERE,
+            "Asked for a line of a sales delivery when it is posted and takes goods that are \
+             reserved for other orders: what is on hand less what other orders reserved does \
+             not cover it. Unless configured otherwise it is allowed, and the other orders' \
+             reservations are cut back to what is left when they are next looked at. A company \
+             that keeps reservations firm refuses it, or asks for approval, for example with \
+             `facts.short > 0`.",
+        )
+        .number("delivering", "Quantity this line takes out")
+        .as_quantity()
+        .number("free", "What is on hand and not reserved for other orders")
+        .as_quantity()
+        .number(
+            "short",
+            "How much of the line comes out of other orders' reservations",
+        )
+        .as_quantity()
+        .text("item_code", "The item's code")
+        .refusal("these goods are reserved for other orders"),
         PolicyPoint::new(
             WITHOUT_INVOICE,
             "Asked when a customer credit not tied to an invoice (a rebate, goodwill) is \
@@ -236,6 +257,16 @@ pub(crate) fn price_differs(order_price: Decimal, invoice_price: Decimal) -> Val
 }
 
 /// The facts of [`INACTIVE_CUSTOMER`].
+/// The facts of [`RESERVED_ELSEWHERE`] for one delivery line.
+pub(crate) fn reserved_elsewhere(delivering: Decimal, free: Decimal, item_code: &str) -> Value {
+    json!({
+        "delivering": shown(delivering),
+        "free": shown(free),
+        "short": shown((delivering - free).max(Decimal::ZERO)),
+        "item_code": item_code,
+    })
+}
+
 /// The facts of [`WITHOUT_INVOICE`] for a customer credit.
 pub(crate) fn without_invoice(total: Decimal, currency: &str, customer_code: &str) -> Value {
     json!({ "total": shown(total), "currency": currency, "customer_code": customer_code })

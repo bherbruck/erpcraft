@@ -69,6 +69,11 @@ impl Module for StockModule {
                 name: "item_weight",
                 sql: include_str!("../migrations/0005_item_weight.sql"),
             },
+            Migration {
+                version: 6,
+                name: "reservation",
+                sql: include_str!("../migrations/0006_reservation.sql"),
+            },
         ]
     }
 
@@ -211,7 +216,7 @@ impl Module for StockModule {
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
-        vec![command(OnHand)]
+        vec![command(OnHand), command(Reservations)]
     }
 }
 
@@ -377,6 +382,122 @@ impl StockEntry {
 
 const ENTRY_COLUMNS: &str = "id, line_no, source_line_id, item_id, warehouse_id, qty, value, \
                              unit_cost, qty_after, value_after, variance, negative_rule_id";
+
+// ------------------------------------------------------------- reservations
+
+/// What a line of an order still needs from stock: a sales order line not
+/// yet delivered, a production order's component not yet consumed.
+#[derive(Debug, Clone)]
+pub struct Need {
+    pub line_id: Uuid,
+    pub item_id: Uuid,
+    pub warehouse_id: Uuid,
+    /// Zero or less: nothing, and its reservation goes.
+    pub qty: Decimal,
+}
+
+/// Set aside stock for the lines of an order (`document_id`): each line's
+/// reservation becomes what it still needs, as far as stock on hand that
+/// is not reserved for anything else covers it. A line that needs nothing
+/// more, or for which nothing is free, holds no reservation. Returns what
+/// each need holds now, in the order given. The levels are locked, so two
+/// orders do not set aside the same goods.
+pub async fn reserve(
+    conn: &mut PgConnection,
+    company_id: Uuid,
+    document_id: Uuid,
+    needs: &[Need],
+) -> Result<Vec<Decimal>> {
+    let pairs = needs.iter().map(|n| (n.item_id, n.warehouse_id)).collect();
+    let on_hand = lock_and_read_levels(conn, company_id, pairs).await?;
+    let mut held = Vec::with_capacity(needs.len());
+    for need in needs {
+        let others: Decimal = sqlx::query_scalar(
+            "SELECT COALESCE(sum(qty), 0) FROM stock_reservation
+             WHERE company_id = $1 AND item_id = $2 AND warehouse_id = $3 AND line_id <> $4",
+        )
+        .bind(company_id)
+        .bind(need.item_id)
+        .bind(need.warehouse_id)
+        .bind(need.line_id)
+        .fetch_one(&mut *conn)
+        .await?;
+        let here = on_hand
+            .get(&(need.item_id, need.warehouse_id))
+            .copied()
+            .unwrap_or_default();
+        let free = (here - others).max(Decimal::ZERO);
+        let qty = need.qty.min(free).max(Decimal::ZERO);
+        if qty.is_zero() {
+            sqlx::query("DELETE FROM stock_reservation WHERE line_id = $1")
+                .bind(need.line_id)
+                .execute(&mut *conn)
+                .await?;
+        } else {
+            sqlx::query(
+                "INSERT INTO stock_reservation (id, company_id, item_id, warehouse_id, qty,
+                     document_id, line_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
+                 ON CONFLICT (line_id) DO UPDATE SET qty = EXCLUDED.qty,
+                     item_id = EXCLUDED.item_id, warehouse_id = EXCLUDED.warehouse_id,
+                     updated_at = now()",
+            )
+            .bind(erpcraft_kernel::new_id())
+            .bind(company_id)
+            .bind(need.item_id)
+            .bind(need.warehouse_id)
+            .bind(qty)
+            .bind(document_id)
+            .bind(need.line_id)
+            .execute(&mut *conn)
+            .await?;
+        }
+        held.push(qty);
+    }
+    Ok(held)
+}
+
+/// Remove every reservation of an order: it is done, cancelled or closed.
+pub async fn release(conn: &mut PgConnection, document_id: Uuid) -> Result<()> {
+    sqlx::query("DELETE FROM stock_reservation WHERE document_id = $1")
+        .bind(document_id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// What is reserved of each item in each warehouse of a company.
+pub async fn reserved(
+    conn: &mut PgConnection,
+    company_id: Uuid,
+) -> Result<Vec<(Uuid, Uuid, Decimal)>> {
+    Ok(sqlx::query_as(
+        "SELECT item_id, warehouse_id, sum(qty) FROM stock_reservation
+         WHERE company_id = $1 GROUP BY item_id, warehouse_id ORDER BY item_id, warehouse_id",
+    )
+    .bind(company_id)
+    .fetch_all(&mut *conn)
+    .await?)
+}
+
+/// What of an item in a warehouse is reserved for orders other than
+/// `document_id`.
+pub async fn reserved_for_others(
+    conn: &mut PgConnection,
+    item_id: Uuid,
+    warehouse_id: Uuid,
+    document_id: Uuid,
+) -> Result<Decimal> {
+    Ok(sqlx::query_scalar(
+        "SELECT COALESCE(sum(qty), 0) FROM stock_reservation
+         WHERE item_id = $1 AND warehouse_id = $2 AND document_id <> $3",
+    )
+    .bind(item_id)
+    .bind(warehouse_id)
+    .bind(document_id)
+    .fetch_one(&mut *conn)
+    .await?)
+}
 
 /// Lock the levels of these `(item, warehouse)` pairs, always in the same
 /// order, so that two postings moving the same items cannot deadlock.
@@ -907,6 +1028,82 @@ impl Command for OnHand {
             company_id: input.company_id,
             currency,
             total_value: values.then(|| rows.iter().filter_map(|r| r.value).sum()),
+            rows,
+        })
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ReservationsInput {
+    /// The company whose reservations are listed.
+    company_id: Uuid,
+    /// Only this item.
+    item_id: Option<Uuid>,
+    /// Only this warehouse.
+    warehouse_id: Option<Uuid>,
+    /// Only those of this order.
+    document_id: Option<Uuid>,
+}
+
+#[derive(Serialize, JsonSchema, sqlx::FromRow)]
+struct ReservationRow {
+    item_id: Uuid,
+    warehouse_id: Uuid,
+    qty: Decimal,
+    /// The order it is set aside for, its type and number.
+    document_id: Uuid,
+    doc_type: String,
+    number: Option<String>,
+    /// The order's line.
+    line_id: Uuid,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct ReservationsOutput {
+    company_id: Uuid,
+    rows: Vec<ReservationRow>,
+}
+
+struct Reservations;
+
+#[async_trait]
+impl Command for Reservations {
+    type Input = ReservationsInput;
+    type Output = ReservationsOutput;
+
+    fn spec(&self) -> CommandSpec {
+        CommandSpec::query(
+            "stock.reservations",
+            "Stock on hand set aside for lines of open sales orders and released production \
+             orders, per order line: what each holds now. An order reserves what free stock \
+             covers when it is approved or released, holds less as its goods leave, and lets \
+             go when it is done, cancelled or closed.",
+        )
+        .report("Reservations")
+        .permission("stock_entry:read")
+    }
+
+    async fn run(&self, ctx: &mut Ctx<'_>, input: ReservationsInput) -> Result<ReservationsOutput> {
+        ctx.require("stock_entry:read", input.company_id)?;
+        let rows = sqlx::query_as(
+            "SELECT r.item_id, r.warehouse_id, trim_scale(r.qty) AS qty, r.document_id,
+                    d.doc_type, d.number, r.line_id, r.updated_at
+             FROM stock_reservation r JOIN document d ON d.id = r.document_id
+             WHERE r.company_id = $1 AND ($2::uuid IS NULL OR r.item_id = $2)
+               AND ($3::uuid IS NULL OR r.warehouse_id = $3)
+               AND ($4::uuid IS NULL OR r.document_id = $4)
+             ORDER BY r.item_id, r.warehouse_id, r.created_at",
+        )
+        .bind(input.company_id)
+        .bind(input.item_id)
+        .bind(input.warehouse_id)
+        .bind(input.document_id)
+        .fetch_all(&mut *ctx.conn)
+        .await?;
+        Ok(ReservationsOutput {
+            company_id: input.company_id,
             rows,
         })
     }
