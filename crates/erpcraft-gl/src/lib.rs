@@ -306,9 +306,44 @@ pub struct GlLine {
     pub source_line_id: Option<Uuid>,
 }
 
+/// The latest rate on record that converts `from` into `to` on `date`:
+/// a rate recorded from `from` to `to`, or the inverse of one recorded the
+/// other way, whichever is dated later (on the same day, the one recorded
+/// this way). The inverse is rounded to the 10 decimal places a rate is
+/// kept with. `None` when neither is on record by `date`.
+pub async fn rate_on_record(
+    conn: &mut PgConnection,
+    from: &str,
+    to: &str,
+    date: chrono::NaiveDate,
+) -> Result<Option<Decimal>> {
+    let found: Option<(Decimal, bool)> = sqlx::query_as(
+        "SELECT rate, from_currency = $2 AS inverse FROM exchange_rate
+         WHERE ((from_currency = $1 AND to_currency = $2)
+                OR (from_currency = $2 AND to_currency = $1))
+           AND rate_date <= $3
+         ORDER BY rate_date DESC, (from_currency = $2) LIMIT 1",
+    )
+    .bind(from)
+    .bind(to)
+    .bind(date)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(found.and_then(|(rate, inverse)| {
+        if !inverse {
+            Some(rate)
+        } else if rate.is_zero() {
+            None
+        } else {
+            Some((Decimal::ONE / rate).round_dp(10))
+        }
+    }))
+}
+
 /// The rate that converts `currency` into the accounting currency of
 /// `company_id` on `date`: 1 for the accounting currency itself, else the
-/// latest rate on record dated on or before `date`.
+/// latest rate on record dated on or before `date`, either way round (see
+/// [`rate_on_record`]).
 pub async fn rate_on(
     conn: &mut PgConnection,
     company_id: Uuid,
@@ -319,16 +354,7 @@ pub async fn rate_on(
     if currency == base {
         return Ok(Decimal::ONE);
     }
-    let on_record: Option<Decimal> = sqlx::query_scalar(
-        "SELECT rate FROM exchange_rate
-         WHERE from_currency = $1 AND to_currency = $2 AND rate_date <= $3
-         ORDER BY rate_date DESC LIMIT 1",
-    )
-    .bind(currency)
-    .bind(&base)
-    .bind(date)
-    .fetch_optional(&mut *conn)
-    .await?;
+    let on_record = rate_on_record(conn, currency, &base, date).await?;
     on_record.ok_or_else(|| {
         Error::validation(format!(
             "an exchange rate from {currency} to {base} is required: state one, or record one \
@@ -590,16 +616,8 @@ pub async fn post(conn: &mut PgConnection, posting: &Posting, lines: &[GlLine]) 
             let rate = match line.fx_rate {
                 Some(rate) => rate,
                 None => {
-                    let on_record: Option<Decimal> = sqlx::query_scalar(
-                        "SELECT rate FROM exchange_rate
-                         WHERE from_currency = $1 AND to_currency = $2 AND rate_date <= $3
-                         ORDER BY rate_date DESC LIMIT 1",
-                    )
-                    .bind(&currency)
-                    .bind(&base)
-                    .bind(posting.posting_date)
-                    .fetch_optional(&mut *conn)
-                    .await?;
+                    let on_record =
+                        rate_on_record(&mut *conn, &currency, &base, posting.posting_date).await?;
                     on_record.ok_or_else(|| {
                         fail(format!(
                             "an exchange rate from {currency} to {base} is required: state one, \

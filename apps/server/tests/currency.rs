@@ -804,3 +804,73 @@ async fn a_link_says_which_key_its_value_is() {
     assert!(checked >= 6, "only {checked} links checked");
     t.stop().await;
 }
+
+/// A rate recorded the other way round is used inverted: with only
+/// dollars to pounds on record, pounds post at its inverse. The later of
+/// the two directions applies.
+#[tokio::test]
+async fn a_rate_recorded_the_other_way_round_is_inverted() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    t.create(
+        "exchange_rate",
+        json!({ "from_currency": "USD", "to_currency": "GBP", "rate_date": "2026-03-01",
+                "rate": "0.8" }),
+    )
+    .await;
+    let stock = f.order(&t, "purchase", "USD", "10", "1.00").await;
+    f.posted(
+        &t,
+        "purchase_receipt",
+        "2026-03-02",
+        json!({ "purchase_order_id": stock["id"],
+                "lines": [{ "order_line_id": stock["body"]["lines"][0]["id"], "qty": "10" }] }),
+    )
+    .await;
+    let order = f.order(&t, "sales", "GBP", "10", "10.00").await;
+    let line = order["body"]["lines"][0]["id"].clone();
+    f.posted(
+        &t,
+        "sales_delivery",
+        "2026-03-05",
+        json!({ "sales_order_id": order["id"], "lines": [{ "order_line_id": line, "qty": "4" }] }),
+    )
+    .await;
+    let invoice = f
+        .posted(
+            &t,
+            "sales_invoice",
+            "2026-03-05",
+            json!({ "sales_order_id": order["id"],
+                    "lines": [{ "order_line_id": line, "qty": "4", "unit_price": "10.00" }] }),
+        )
+        .await;
+    assert_eq!(dec(&invoice["body"]["fx_rate"]), 1.25, "{invoice}");
+    assert!(close(f.books(&t).await["1200"], 50.0));
+
+    // A later rate recorded this way round comes before the older inverse.
+    t.create(
+        "exchange_rate",
+        json!({ "from_currency": "GBP", "to_currency": "USD", "rate_date": "2026-03-06",
+                "rate": "1.3" }),
+    )
+    .await;
+    f.posted(
+        &t,
+        "sales_delivery",
+        "2026-03-07",
+        json!({ "sales_order_id": order["id"], "lines": [{ "order_line_id": line, "qty": "2" }] }),
+    )
+    .await;
+    let invoice = f
+        .posted(
+            &t,
+            "sales_invoice",
+            "2026-03-07",
+            json!({ "sales_order_id": order["id"],
+                    "lines": [{ "order_line_id": line, "qty": "2", "unit_price": "10.00" }] }),
+        )
+        .await;
+    assert_eq!(dec(&invoice["body"]["fx_rate"]), 1.3, "{invoice}");
+    t.stop().await;
+}
