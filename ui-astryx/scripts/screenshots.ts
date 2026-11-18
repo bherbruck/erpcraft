@@ -126,7 +126,7 @@ try {
   // Generated entity screens.
   await browser.goto(`${BASE}/c/${BIG}/e/customer`);
   await shot("10-customers");
-  const firstCustomer = await browser.evaluate(`document.querySelector("table a")?.getAttribute("href")`);
+  const firstCustomer = await browser.evaluate(`document.querySelector("[data-grid-body] a")?.getAttribute("href")`);
   if (typeof firstCustomer === "string") {
     await browser.goto(`${BASE}${firstCustomer}`);
     await shot("11-customer");
@@ -183,7 +183,7 @@ try {
   await browser.goto(`${BASE}/c/${SMALL}/r/bank.reconciliation?account=${String(account)}`);
   await shot("24b-bank-reconciliation");
   await browser.goto(`${BASE}/c/${SMALL}/d/journal_entry`);
-  await browser.evaluate(`[...document.querySelectorAll("tbody input[type=checkbox]")].slice(0, 3).forEach((c) => c.click())`);
+  await browser.evaluate(`[...document.querySelectorAll(".ag-check input[type=checkbox]")].slice(0, 3).forEach((c) => c.click())`);
   await Bun.sleep(600);
   await shot("25-bulk-selection");
   await browser.goto(`${BASE}/c/${SMALL}/d/sales_order/${ORDER}`);

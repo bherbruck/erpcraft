@@ -89,6 +89,8 @@ export function LinesGrid({
   const { meta, currencyDecimals } = useApp();
   const labelsVersion = useLinkLabelsVersion();
   const [report, setReport] = useState<EditReport | null>(null);
+  // One set of slot components for the grid's life: new ones would remount every cell, editor included.
+  const slots = useMemo(() => astryxGridSlots<Line>(), []);
   const kinds = docType.alternatives.find((alternative) => alternative.collection === collection.name)?.one_of ?? [];
   const decimals = (currency ? currencyDecimals[currency] : undefined) ?? 2;
 
@@ -217,7 +219,7 @@ export function LinesGrid({
         columns={columns}
         rows={lines}
         rowId={(line) => line.key}
-        slots={astryxGridSlots<Line>()}
+        slots={slots}
         toolbar={false}
         height={height}
         rowHeight={ROW_HEIGHT}

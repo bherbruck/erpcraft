@@ -11,6 +11,7 @@ import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { HStack } from "@astryxdesign/core/HStack";
 import { Icon } from "@astryxdesign/core/Icon";
 import { IconButton } from "@astryxdesign/core/IconButton";
+import { Link } from "@astryxdesign/core/Link";
 import { Pagination } from "@astryxdesign/core/Pagination";
 import { Popover } from "@astryxdesign/core/Popover";
 import { RadioList, RadioListItem } from "@astryxdesign/core/RadioList";
@@ -41,7 +42,7 @@ import type {
   ToolbarSlotProps,
 } from "@erpcraft/grid";
 import { ArrowDown, ArrowUp, Columns3, Funnel, MoreVertical } from "lucide-react";
-import { type KeyboardEvent, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useMemo, useRef, useState } from "react";
 
 // ------------------------------------------------------------ structure
 
@@ -80,12 +81,54 @@ function HeaderCell<R>(p: HeaderCellSlotProps<R>) {
   );
 }
 
-function Cell<R>({ props, editor, text }: CellSlotProps<R>) {
-  return (
-    <div {...props} className="ag-cell">
-      {editor ?? <span className="ag-text">{text}</span>}
-    </div>
-  );
+/** A column whose cells link to the row's record (a list's first column). */
+export interface GridLink<R> {
+  columnId: string;
+  href: (row: R) => string | undefined;
+}
+
+/** A yes/no column drawn as a checkbox the mouse can tick (the keyboard types y/n, Delete clears). */
+export interface GridCheck<R> {
+  columnId: string;
+  label: (row: R) => string;
+  onToggle: (row: R, checked: boolean) => void;
+}
+
+/** Draws a cell's value as something richer than its text (a status badge); the text is still what is copied. */
+export type GridDecorate<R> = (columnId: string, row: R, text: string) => ReactNode | undefined;
+
+function makeCell<R>(link?: GridLink<R>, check?: GridCheck<R>, decorate?: GridDecorate<R>) {
+  return function Cell({ props, editor, text, column, row, value }: CellSlotProps<R>) {
+    if (check && column.id === check.columnId && !editor) {
+      return (
+        <div {...props} className="ag-cell ag-check">
+          <CheckboxInput label={check.label(row)} isLabelHidden value={value === true} onChange={(on) => check.onToggle(row, on)} />
+        </div>
+      );
+    }
+    const href = link && column.id === link.columnId && !editor ? link.href(row) : undefined;
+    const decorated = !editor && !href ? decorate?.(column.id, row, text) : undefined;
+    if (decorated !== undefined) {
+      return (
+        <div {...props} className="ag-cell">
+          {decorated}
+        </div>
+      );
+    }
+    return (
+      <div {...props} className="ag-cell" data-link={href ? "" : undefined}>
+        {editor ??
+          (href ? (
+            // Not a tab stop: the cell is. Enter on it opens the record (see ListGrid).
+            <Link href={href} tabIndex={-1} className="ag-text">
+              {text}
+            </Link>
+          ) : (
+            <span className="ag-text">{text}</span>
+          ))}
+      </div>
+    );
+  };
 }
 
 function FooterCell<R>({ props, text }: FooterCellSlotProps<R>) {
@@ -328,10 +371,13 @@ function Toolbar(p: ToolbarSlotProps) {
     <div {...p.props} className="ag-toolbar">
       {p.search}
       {p.chips}
+      {/* Where the grid has no search of its own, the page's filter bar already counts the rows. */}
       <span className="push-end">
-        <Text type="supporting">
-          {p.shownRows === p.totalRows ? `${p.totalRows} ${p.labels.rows}` : `${p.shownRows} ${p.labels.of} ${p.totalRows} ${p.labels.rows}`}
-        </Text>
+        {p.search ? (
+          <Text type="supporting">
+            {p.shownRows === p.totalRows ? `${p.totalRows} ${p.labels.rows}` : `${p.shownRows} ${p.labels.of} ${p.totalRows} ${p.labels.rows}`}
+          </Text>
+        ) : null}
       </span>
       {p.extra}
       {p.columns}
@@ -395,12 +441,12 @@ function Empty({ filtered, loading, labels }: EmptySlotProps) {
 }
 
 /** The Astryx skin of the grid. */
-export function astryxGridSlots<R>(): GridSlots<R> {
+export function astryxGridSlots<R>(options: { link?: GridLink<R>; check?: GridCheck<R>; decorate?: GridDecorate<R> } = {}): GridSlots<R> {
   return {
     Part,
     Row,
     HeaderCell,
-    Cell,
+    Cell: makeCell(options.link, options.check, options.decorate),
     FooterCell,
     ResizeHandle,
     Editor,

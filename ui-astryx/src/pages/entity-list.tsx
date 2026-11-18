@@ -1,19 +1,20 @@
 import { Button } from "@astryxdesign/core/Button";
+import { Center } from "@astryxdesign/core/Center";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { HStack } from "@astryxdesign/core/HStack";
 import { useMemo } from "react";
 import { useParams } from "react-router";
 import { api } from "@/api/client";
 import type { EntityMeta, EntityRecord } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
-import { type Column, DataTable, useColumnChoice } from "@/components/data-table";
-import { FieldValue, isNumeric, Withheld } from "@/components/field-value";
+import { FilterBar, type FilterSpec, filterSpec, parseFilters, toQuery } from "@/components/filter-bar";
+import { fieldColumn, ListGrid } from "@/components/list-grid";
 import { Page } from "@/components/page";
 import { SavedViews } from "@/components/saved-views";
-import { FilterBar, filterSpec, parseFilters, toQuery, type FilterSpec } from "@/components/filter-bar";
 import { t } from "@/i18n/t";
 import { COMPANY, canEntity, canRun, fieldReach, findEntity, isCompanyScoped, listFields } from "@/lib/meta";
 import { paths } from "@/lib/paths";
-import { pageFromUrl, useUrlState } from "@/lib/url-state";
+import { useListUrl } from "@/lib/list-url";
 import { useAsync } from "@/lib/use-async";
 import { NotFoundPage } from "./not-found";
 
@@ -27,37 +28,32 @@ export function EntityListPage() {
   return <EntityList key={entity.name} entity={entity} />;
 }
 
-/** The list of any entity, generated from the registry: its fields are the columns. */
+export default EntityListPage;
+
+/** The list of any entity, generated from the registry: its fields are the grid's columns. */
 function EntityList({ entity }: { entity: EntityMeta }) {
   const { meta } = useApp();
   const { code, company } = useCompany();
-  const url = useUrlState();
+  const { url, sort, page, size, setQuery } = useListUrl();
   const filters = parseFilters(url.get("f"));
-  const specs = useMemo(
-    () => listFields(meta, entity).flatMap((field) => filterSpec(field) ?? []) as FilterSpec[],
-    [meta, entity],
-  );
+  const specs = useMemo(() => listFields(meta, entity).flatMap((field) => filterSpec(field) ?? []) as FilterSpec[], [meta, entity]);
   const query = toQuery(filters, specs);
-  const q = query.q;
-  const where = query.where;
-  const sort = url.get("sort");
-  const page = pageFromUrl(url.get("page"));
-  const size = Number(url.get("size")) || 25;
   const scoped = isCompanyScoped(entity);
   const searchable = entity.search.length > 0;
   const canCreate = !entity.read_only && canEntity(meta, entity.name, "create");
   const waitingForCompany = scoped && company === null;
+  const filterKey = `${query.q}|${query.where}`;
 
   const list = useAsync(
-    waitingForCompany ? null : `${entity.name}|${company?.id ?? ""}|${q}|${where}|${sort}|${page}|${size}`,
+    waitingForCompany ? null : `${entity.name}|${company?.id ?? ""}|${filterKey}|${sort.join()}|${page}|${size}`,
     (signal) =>
       api.run(
         "entity.list",
         {
           entity: entity.name,
-          q: searchable && q ? q : null,
-          where,
-          sort: sort ? [sort] : [],
+          q: searchable && query.q ? query.q : null,
+          where: query.where,
+          sort,
           filters: scoped && company ? { company_id: company.id } : {},
           limit: size,
           offset: (page - 1) * size,
@@ -66,32 +62,35 @@ function EntityList({ entity }: { entity: EntityMeta }) {
       ),
   );
 
-  const columns = useMemo<Column<EntityRecord>[]>(
+  const fields = useMemo(() => listFields(meta, entity), [meta, entity]);
+  const columns = useMemo(
     () =>
-      listFields(meta, entity).map((field, index) => ({
-        id: field.name,
-        header: field.label,
-        align: isNumeric(field) ? "end" : "start",
-        sortField: field.name,
-        width: field.type.kind === "bool" ? 90 : field.type.kind === "date" ? 130 : undefined,
-        defaultHidden: field.type.kind === "timestamp" || index >= MAX_COLUMNS,
-        cell: (record) =>
-          !(field.name in record) && fieldReach(meta, entity.name, field.name, "read") === "some" ? (
-            <Withheld />
-          ) : (
-            <FieldValue field={field} value={record[field.name]} />
-          ),
-      })),
-    [meta, entity],
+      fields.map((field, index) =>
+        fieldColumn<EntityRecord>(
+          field,
+          // A field the user may read on some records only arrives without a value on the others.
+          (record) =>
+            !(field.name in record) && fieldReach(meta, entity.name, field.name, "read") === "some" ? t("value.withheld") : record[field.name],
+          { hidden: field.type.kind === "timestamp" || index >= MAX_COLUMNS },
+        ),
+      ),
+    [fields, meta, entity.name],
   );
-  const { visible, chooser, chosen, choose } = useColumnChoice(`entity.${entity.name}`, columns);
+  const firstColumn = columns[0]?.id ?? "id";
 
-  // A company is best started from a template that sets it up ready to work.
   const setupButton =
     entity.name === COMPANY && canRun(meta, "company.setup") ? <Button label={t("setup.new_company")} href={paths.setup(code)} /> : null;
   const newButton = canCreate ? (
     <Button label={t("list.new", { label: entity.label })} variant="primary" href={paths.entityNew(code, entity.name)} />
   ) : null;
+
+  const emptyTitle = waitingForCompany
+    ? t("list.needs_company", { label: entity.plural })
+    : filters.length > 0
+      ? t("list.no_match_filtered")
+      : scoped && company
+        ? t("list.empty_in_company", { label: entity.plural, company: company.name })
+        : t("list.empty", { label: entity.plural });
 
   return (
     <Page
@@ -114,51 +113,39 @@ function EntityList({ entity }: { entity: EntityMeta }) {
             label={t("filter.placeholder", { label: entity.plural })}
             onChange={(next) => url.set({ f: next.length ? JSON.stringify(next) : null, page: null })}
           />
-          <SavedViews tableKey={`entity.${entity.name}`} columns={chosen} onColumns={choose} />
-          {chooser}
+          <SavedViews tableKey={`entity.${entity.name}`} columns={null} onColumns={() => {}} />
         </HStack>
       }
     >
-      <DataTable
-        caption={entity.plural}
-        columns={visible}
+      <ListGrid<EntityRecord>
+        key={`${entity.name}|${filterKey}`}
+        id={`entity.${entity.name}`}
+        label={entity.plural}
+        columns={columns}
         rows={waitingForCompany ? [] : list.data?.items}
-        rowKey={(record) => record.id}
-        rowHref={(record) => paths.entityRecord(code, entity.name, record.id)}
-        loading={list.loading}
-        error={list.error}
-        onRetry={list.reload}
-        sort={sort}
-        onSort={(next) => url.set({ sort: next, page: null })}
-        page={page}
-        pageSize={size}
         total={list.data?.total ?? 0}
-        onPage={(next) => url.set({ page: next === 1 ? null : String(next) })}
-        onPageSize={(next) => url.set({ size: next === 25 ? null : String(next), page: null })}
+        loading={list.loading}
+        sort={sort}
+        page={page}
+        size={size}
+        onQuery={setQuery}
+        rowHref={(record) => paths.entityRecord(code, entity.name, record.id)}
+        linkColumn={firstColumn}
         empty={
-          waitingForCompany
-            ? { title: t("list.needs_company", { label: entity.plural }) }
-            : filters.length > 0
-              ? {
-                  title: t("list.no_match_filtered"),
-                  action: <Button label={t("list.clear_filters")} size="sm" onClick={() => url.set({ f: null, page: null })} />,
-                }
-              : page > 1
-                ? {
-                    title: t("list.past_end"),
-                    action: <Button label={t("list.first_page")} size="sm" onClick={() => url.set({ page: null })} />,
-                  }
-                : {
-                    title:
-                      scoped && company
-                        ? t("list.empty_in_company", { label: entity.plural, company: company.name })
-                        : t("list.empty", { label: entity.plural }),
-                    action: newButton ?? undefined,
-                  }
+          <Center padding={6}>
+            <EmptyState
+              title={emptyTitle}
+              actions={
+                filters.length > 0 ? (
+                  <Button label={t("list.clear_filters")} size="sm" onClick={() => url.set({ f: null, page: null })} />
+                ) : (
+                  (newButton ?? undefined)
+                )
+              }
+            />
+          </Center>
         }
       />
     </Page>
   );
 }
-
-export default EntityListPage;

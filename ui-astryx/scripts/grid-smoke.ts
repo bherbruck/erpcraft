@@ -64,7 +64,8 @@ try {
   await b.key("Enter");
   await Bun.sleep(400);
   await type("Gadget");
-  await Bun.sleep(1200);
+  // Wait for the server's answer to show in Astryx's list.
+  for (let i = 0; i < 30 && !(await b.evaluate(`[...document.querySelectorAll("[role=option]")].some((o) => o.textContent.includes("Gadget") && o.getBoundingClientRect().height > 0)`)); i += 1) await Bun.sleep(100);
   if (SHOTS) await b.screenshot(`${SHOTS}/28-grid-item-typeahead.png`);
   await b.key("Enter");
   await Bun.sleep(600);
@@ -100,6 +101,48 @@ try {
   const copied = await b.evaluate(`(() => { const dt = new DataTransfer(); document.activeElement.dispatchEvent(new ClipboardEvent("copy", { clipboardData: dt, bubbles: true, cancelable: true })); return dt.getData("text/plain"); })()`);
   check(typeof copied === "string" && /^3\t12\.50/.test(copied) && /\n4\t1,234\.50/.test(copied), `the selection copied as TSV for Excel (${JSON.stringify(copied)})`);
   if (SHOTS) await b.screenshot(`${SHOTS}/29-grid-lines-edited.png`);
+  // ------------------------------------------------------------ a list on the grid, server mode
+  await b.goto(`${BASE}/c/AWC/d/sales_order`);
+  await Bun.sleep(1000);
+  const header = async (label: string) => Number(await colIndex(label));
+  // Sort by the total: the header's button, then once more for descending.
+  const total = await header("Total");
+  const sortButton = `[data-grid-header] [role=columnheader]:nth-child(${total + 1}) button`;
+  await b.evaluate(`document.querySelector(${JSON.stringify(sortButton)})?.click()`);
+  await Bun.sleep(600);
+  await b.evaluate(`document.querySelector(${JSON.stringify(sortButton)})?.click()`);
+  await Bun.sleep(1200);
+  check((await b.location()).includes("sort=-summary.total"), `sorting on the server, kept in the URL (${await b.location()})`);
+  // The next page, from the pager.
+  await b.evaluate(`[...document.querySelectorAll("nav button")].find((x) => x.textContent.trim() === "2")?.click()`);
+  await Bun.sleep(1200);
+  check((await b.location()).includes("page=2"), `paging on the server, kept in the URL (${await b.location()})`);
+  const listUrl = await b.location();
+  // Choose two orders by typing into the choice column, as into any cell: y, ArrowDown, y.
+  const chosenCol = await header("Choose");
+  await b.evaluate(`(() => { const c = document.querySelector('[data-grid-body] [data-row="0"][data-col="${chosenCol}"]'); c?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); c?.focus(); })()`);
+  await b.key("y");
+  await b.key("Enter");
+  await b.key("y");
+  await b.key("Enter");
+  await Bun.sleep(500);
+  check((await b.text()).includes("2 chosen"), "two orders chosen by typing y into the choice column");
+  if (SHOTS) await b.screenshot(`${SHOTS}/30-list-grid.png`);
+  // Copy a block of the list for Excel.
+  await b.key("ArrowRight");
+  await b.key("ArrowDown", 8);
+  await b.key("ArrowRight", 8);
+  const block = await b.evaluate(`(() => { const dt = new DataTransfer(); document.activeElement.dispatchEvent(new ClipboardEvent("copy", { clipboardData: dt, bubbles: true, cancelable: true })); return dt.getData("text/plain"); })()`);
+  check(typeof block === "string" && /^SO-\d{4}-\d+\t/.test(block) && block.split("\n").filter(Boolean).length === 2, `rows copied as TSV (${JSON.stringify(block).slice(0, 80)})`);
+  // Enter on the number opens the order; Back returns to the same sorted page.
+  await b.key("Escape");
+  await b.key("Enter");
+  await Bun.sleep(1500);
+  check(/\/d\/sales_order\/[0-9a-f-]{36}/.test(await b.location()), `Enter on the number opened the order (${await b.location()})`);
+  await b.evaluate("history.back()");
+  await Bun.sleep(1500);
+  check((await b.location()) === listUrl, `Back returned to the same sorted page (${await b.location()})`);
+
   if (b.errors.length) console.log(`page errors:\n${b.errors.join("\n")}`);
 } finally {
   await b.close();

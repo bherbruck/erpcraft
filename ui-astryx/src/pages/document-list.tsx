@@ -1,6 +1,7 @@
 import { Button } from "@astryxdesign/core/Button";
 import { HStack } from "@astryxdesign/core/HStack";
-import { Text } from "@astryxdesign/core/Text";
+import { Center } from "@astryxdesign/core/Center";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { VStack } from "@astryxdesign/core/VStack";
 import { useMemo, useState } from "react";
 import { type BulkResult, BulkBar, BulkResults } from "@/components/bulk-actions";
@@ -8,9 +9,9 @@ import { useParams } from "react-router";
 import { api } from "@/api/client";
 import type { DocTypeMeta, DocumentSummary, FieldMeta, JsonObject } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
-import { type Column, DataTable, useColumnChoice } from "@/components/data-table";
+import type { GridColumn } from "@erpcraft/grid";
+import { fieldColumn, ListGrid } from "@/components/list-grid";
 import { useDecimalHeader } from "@/components/decimal-value";
-import { Empty, FieldValue, isNumeric } from "@/components/field-value";
 import { Page } from "@/components/page";
 import { SavedViews } from "@/components/saved-views";
 import { FilterBar, filterSpec, parseFilters, toQuery, type FilterSpec } from "@/components/filter-bar";
@@ -19,7 +20,7 @@ import { t } from "@/i18n/t";
 import { formatCalendarDate, formatTimestamp } from "@/lib/dates";
 import { canDoc, canEntity, canRun, findDocType } from "@/lib/meta";
 import { paths } from "@/lib/paths";
-import { pageFromUrl, useUrlState } from "@/lib/url-state";
+import { useListUrl } from "@/lib/list-url";
 import { useAsync } from "@/lib/use-async";
 import { NotFoundPage } from "./not-found";
 
@@ -47,16 +48,27 @@ function useHeaders(fields: FieldMeta[]): Record<string, string> {
 }
 
 /** The list of any document type, generated from the registry: header, status and the type's summary. */
+/** The column of checkboxes that chooses documents for a bulk action. */
+const CHOSEN = "_chosen";
+type Row = DocumentSummary & JsonObject;
+
 function DocumentList({ docType }: { docType: DocTypeMeta }) {
-  const { meta } = useApp();
+  const { meta, currencyDecimals } = useApp();
   const { code, company } = useCompany();
-  const url = useUrlState();
+  const { url, sort, page, size, setQuery } = useListUrl();
   const filters = parseFilters(url.get("f"));
-  const sort = url.get("sort");
-  const page = pageFromUrl(url.get("page"));
-  const size = Number(url.get("size")) || 25;
   const canCreate = canDoc(meta, docType.name, "create") && company !== null;
   const summaryHeaders = useHeaders(docType.summary);
+  // Documents chosen for one action on all of them, kept across pages of the list.
+  const [chosenDocs, setChosenDocs] = useState<Map<string, DocumentSummary>>(() => new Map());
+  const [bulk, setBulk] = useState<{ action: string; results: BulkResult[] } | null>(null);
+  const canBulk = meta.commands.some((command) => command.resource === docType.name && command.target && !command.read_only && command.creates === null);
+  const choose = (docs: DocumentSummary[], on: boolean) =>
+    setChosenDocs((previous) => {
+      const next = new Map(previous);
+      for (const doc of docs) on ? next.set(doc.id, doc) : next.delete(doc.id);
+      return next;
+    });
 
   // The header the server filters by expression, and who the document is with by exact value.
   const specs = useMemo(() => {
@@ -84,7 +96,7 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
   const filterKey = `${query.q}|${query.where}|${JSON.stringify(query.summary)}`;
 
   const list = useAsync(
-    company ? `${docType.name}|${company.id}|${filterKey}|${sort}|${page}|${size}` : null,
+    company ? `${docType.name}|${company.id}|${filterKey}|${sort.join()}|${page}|${size}` : null,
     (signal) =>
       api.run(
         "document.list",
@@ -94,7 +106,7 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
           q: query.q || null,
           where: query.where,
           summary: query.summary,
-          sort: sort ? [sort] : ["-doc_date", "-created_at"],
+          sort: sort.length ? sort : ["-doc_date", "-created_at"],
           limit: size,
           offset: (page - 1) * size,
         },
@@ -102,92 +114,89 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
       ),
   );
 
-  const columns = useMemo<Column<DocumentSummary>[]>(() => {
-    const header = (name: string, fallback: string): string =>
-      meta.document_header.find((field) => field.name === name)?.label ?? fallback;
+  // The grid's columns: the header, the state, the type's summary and the memo.
+  const columns = useMemo<GridColumn<Row>[]>(() => {
+    const header = (name: string, fallback: string): string => meta.document_header.find((field) => field.name === name)?.label ?? fallback;
     const named = docType.summary.some((field) => field.type.kind === "text");
-    const summary = docType.summary.map(
-      (field): Column<DocumentSummary> => ({
-        id: `summary.${field.name}`,
-        header: summaryHeaders[field.name] ?? field.label,
-        sortField:
-          field.type.kind === "link" || field.type.kind === "document_link" ? undefined : `summary.${field.name}`,
-        align: isNumeric(field) ? "end" : "start",
-        defaultHidden:
-          ((field.type.kind === "link" || field.type.kind === "document_link") && named) ||
-          field.type.kind === "entity_link" ||
-          field.name.endsWith("_accounting") ||
-          (field.name === "total_value" && docType.summary.some((other) => other.name === "total_gross")),
-        cell: (doc) => {
-          const values = summaryOf(doc);
-          return <FieldValue field={field} value={values[field.name]} context={{ header: values, fields: docType.summary }} />;
-        },
-      }),
-    );
+    const text = (id: string, label: string, read: (doc: Row) => string | null, extra: Partial<GridColumn<Row>> = {}): GridColumn<Row> => ({
+      id,
+      header: label,
+      type: "text",
+      field: id,
+      filterable: false,
+      searchable: false,
+      value: (doc) => read(doc),
+      ...extra,
+    });
+    const chooser: GridColumn<Row>[] = canBulk
+      ? [{ id: CHOSEN, header: t("list.select"), type: "boolean", sortable: false, filterable: false, searchable: false, hideable: false, width: 84, pin: "left", editable: true, value: (doc) => chosenDocs.has(doc.id) }]
+      : [];
     return [
-      {
-        id: "number",
-        header: header("number", t("document.number")),
-        sortField: "number",
-        width: 150,
-        cell: (doc) =>
-          doc.number ? (
-            <Text hasTabularNumbers weight="medium">
-              {doc.number}
-            </Text>
-          ) : (
-            <Text color="secondary">{t("document.unnumbered")}</Text>
-          ),
-      },
+      ...chooser,
+      text("number", header("number", t("document.number")), (doc) => doc.number ?? t("document.unnumbered"), { width: 150, hideable: false }),
       {
         id: "doc_date",
         header: header("doc_date", t("document.date")),
-        sortField: "doc_date",
+        type: "date",
+        field: "doc_date",
+        filterable: false,
+        searchable: false,
         width: 120,
-        cell: (doc) => <span className="nowrap">{formatCalendarDate(doc.doc_date)}</span>,
+        value: (doc) => doc.doc_date,
+        format: (v) => (typeof v === "string" ? formatCalendarDate(v) : ""),
       },
       {
         id: "status",
         header: header("status", t("document.status")),
-        sortField: "status",
+        type: "state",
+        field: "status",
+        filterable: false,
+        searchable: false,
         width: 110,
-        cell: (doc) => <StatusBadge status={doc.status} docType={docType} />,
+        options: docType.states.map((state) => ({ value: state.name, label: state.label })),
+        value: (doc) => doc.status,
       },
-      ...summary,
-      {
-        id: "memo",
-        header: header("memo", t("document.memo")),
-        cell: (doc) => doc.memo || <Empty />,
-      },
-      {
-        id: "created_by_name",
-        header: header("created_by_name", t("document.created_by_column")),
-        defaultHidden: true,
-        cell: (doc) => doc.created_by_name ?? <Empty />,
-      },
+      ...docType.summary.map((field) =>
+        fieldColumn<Row>(field, (doc) => summaryOf(doc)[field.name], {
+          id: `summary.${field.name}`,
+          header: summaryHeaders[field.name] ?? field.label,
+          sortField: field.type.kind === "link" || field.type.kind === "document_link" ? null : `summary.${field.name}`,
+          decimals: currencyDecimals[company?.base_currency ?? ""] ?? 2,
+          hidden:
+            ((field.type.kind === "link" || field.type.kind === "document_link") && named) ||
+            field.type.kind === "entity_link" ||
+            field.name.endsWith("_accounting") ||
+            (field.name === "total_value" && docType.summary.some((other) => other.name === "total_gross")),
+        }),
+      ),
+      text("memo", header("memo", t("document.memo")), (doc) => doc.memo, { width: 280, sortable: false }),
+      text("created_by_name", header("created_by_name", t("document.created_by_column")), (doc) => doc.created_by_name, { hidden: true, sortable: false }),
       {
         id: "created_at",
         header: header("created_at", t("document.created")),
-        sortField: "created_at",
-        defaultHidden: true,
-        cell: (doc) => formatTimestamp(doc.created_at),
+        type: "datetime",
+        field: "created_at",
+        filterable: false,
+        searchable: false,
+        hidden: true,
+        value: (doc) => doc.created_at,
+        format: (v) => (typeof v === "string" ? formatTimestamp(v) : ""),
       },
       {
         id: "updated_at",
         header: header("updated_at", t("document.updated")),
-        sortField: "updated_at",
-        defaultHidden: true,
-        cell: (doc) => formatTimestamp(doc.updated_at),
+        type: "datetime",
+        field: "updated_at",
+        filterable: false,
+        searchable: false,
+        hidden: true,
+        value: (doc) => doc.updated_at,
+        format: (v) => (typeof v === "string" ? formatTimestamp(v) : ""),
       },
     ];
     // biome-ignore lint/correctness/useExhaustiveDependencies: headers follow the type
-  }, [docType, meta.document_header]);
-  const { visible, chooser, chosen, choose } = useColumnChoice(`document.${docType.name}`, columns);
+  }, [docType, meta.document_header, chosenDocs, canBulk]);
 
-  // Documents chosen for one action on all of them, kept across pages of the list.
-  const [chosenDocs, setChosenDocs] = useState<Map<string, DocumentSummary>>(() => new Map());
-  const [bulk, setBulk] = useState<{ action: string; results: BulkResult[] } | null>(null);
-  const canBulk = meta.commands.some((command) => command.resource === docType.name && command.target && !command.read_only && command.creates === null);
   const filtered = filters.length > 0;
   const clearFilters = (): void => url.set({ f: null, page: null });
   // Commands that make a document of this type from something else (importing a file).
@@ -219,8 +228,7 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
             label={t("filter.placeholder", { label: docType.plural })}
             onChange={(next) => url.set({ f: next.length ? JSON.stringify(next) : null, page: null })}
           />
-          <SavedViews tableKey={`document.${docType.name}`} columns={chosen} onColumns={choose} />
-          {chooser}
+          <SavedViews tableKey={`document.${docType.name}`} columns={null} onColumns={() => {}} />
         </HStack>
       }
     >
@@ -241,44 +249,39 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
           ) : null}
         </VStack>
       ) : null}
-      <DataTable
-        selection={
-          canBulk
-            ? {
-                selected: new Set(chosenDocs.keys()),
-                label: (doc) => t("bulk.choose", { number: doc.number ?? doc.memo ?? doc.id }),
-                onChange: (docs, on) =>
-                  setChosenDocs((previous) => {
-                    const next = new Map(previous);
-                    for (const doc of docs) on ? next.set(doc.id, doc) : next.delete(doc.id);
-                    return next;
-                  }),
-              }
-            : undefined
-        }
-        caption={docType.plural}
-        columns={visible}
-        rows={company ? list.data?.items : []}
-        rowKey={(doc) => doc.id}
-        rowHref={(doc) => paths.doc(code, docType.name, doc.id)}
-        loading={list.loading}
-        error={list.error}
-        onRetry={list.reload}
-        sort={sort}
-        onSort={(next) => url.set({ sort: next, page: null })}
-        page={page}
-        pageSize={size}
+      <ListGrid<Row>
+        key={`${docType.name}|${filterKey}`}
+        id={`document.${docType.name}`}
+        label={docType.plural}
+        columns={columns}
+        rows={company ? (list.data?.items as Row[] | undefined) : []}
         total={list.data?.total ?? 0}
-        onPage={(next) => url.set({ page: next === 1 ? null : String(next) })}
-        onPageSize={(next) => url.set({ size: next === 25 ? null : String(next), page: null })}
+        loading={list.loading}
+        sort={sort}
+        page={page}
+        size={size}
+        onQuery={setQuery}
+        rowHref={(doc) => paths.doc(code, docType.name, doc.id)}
+        linkColumn="number"
+        decorate={(columnId, doc) => (columnId === "status" ? <StatusBadge status={doc.status} docType={docType} /> : undefined)}
+        check={canBulk ? { columnId: CHOSEN, label: (doc) => t("bulk.choose", { number: doc.number ?? doc.memo ?? doc.id }), onToggle: (doc, on) => choose([doc], on) } : undefined}
+        // The choice column takes typing, paste and Delete like any cell: y/n, x, 1/0.
+        onEdit={(changes) => {
+          for (const change of changes) if (change.columnId === CHOSEN) choose([change.row], change.newValue === true);
+        }}
         empty={
-          !company
-            ? { title: t("list.needs_company", { label: docType.plural }) }
-            : filtered
-              ? { title: t("list.no_match_filtered"), action: <Button label={t("list.clear_filters")} size="sm" onClick={clearFilters} /> }
-              : page > 1
-                ? { title: t("list.past_end"), action: <Button label={t("list.first_page")} size="sm" onClick={() => url.set({ page: null })} /> }
-                : { title: t("list.empty_in_company", { label: docType.plural, company: company.name }), action: newButton ?? undefined }
+          <Center padding={6}>
+            <EmptyState
+              title={
+                !company
+                  ? t("list.needs_company", { label: docType.plural })
+                  : filtered
+                    ? t("list.no_match_filtered")
+                    : t("list.empty_in_company", { label: docType.plural, company: company.name })
+              }
+              actions={filtered ? <Button label={t("list.clear_filters")} size="sm" onClick={clearFilters} /> : (newButton ?? undefined)}
+            />
+          </Center>
         }
       />
     </Page>
