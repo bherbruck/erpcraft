@@ -1780,3 +1780,97 @@ mod tests {
         assert_eq!(credited_value(&l, Decimal::ZERO, 2), Decimal::ZERO);
     }
 }
+
+// ------------------------------------------------------- awaiting a credit
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AwaitingInput {
+    /// The company whose orders are looked at.
+    company_id: Uuid,
+    /// Only this vendor.
+    vendor_id: Option<Uuid>,
+}
+
+#[derive(Serialize, JsonSchema, sqlx::FromRow)]
+struct AwaitingRow {
+    /// The order the goods were received on.
+    order_id: Uuid,
+    order_number: Option<String>,
+    vendor_id: Uuid,
+    vendor_name: String,
+    line_no: i32,
+    item_id: Option<Uuid>,
+    item_code: Option<String>,
+    /// Returned and invoiced, and not yet credited.
+    qty: Decimal,
+    /// The order line's price, in the order's currency.
+    unit_price: Decimal,
+    currency: String,
+    /// The quantity at the order line's price, before discounts and tax.
+    amount: Decimal,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct AwaitingOutput {
+    company_id: Uuid,
+    rows: Vec<AwaitingRow>,
+}
+
+pub(crate) struct AwaitingCredit;
+
+#[async_trait]
+impl Command for AwaitingCredit {
+    type Input = AwaitingInput;
+    type Output = AwaitingOutput;
+
+    fn spec(&self) -> CommandSpec {
+        CommandSpec::query(
+            "purchase_order.awaiting_credit",
+            "Goods sent back to vendors that they had invoiced and have not yet credited, per purchase order line of a company: what a vendor credit note is still to come for, at the order line's price. GRNI holds their value until it comes.",
+        )
+        .report("Returns awaiting a credit")
+        .permission("purchase_order:read")
+    }
+
+    async fn run(&self, ctx: &mut Ctx<'_>, input: AwaitingInput) -> Result<AwaitingOutput> {
+        ctx.require("purchase_order:read", input.company_id)?;
+        let items = ctx.actor.can_any("item:read");
+        // Of what was returned, what had been invoiced and is not credited:
+        // net invoiced beyond net received, no more than returned less
+        // credited.
+        let rows: Vec<AwaitingRow> = sqlx::query_as(
+            "WITH open AS (
+                SELECT l.document_id, l.line_no, l.item_id, l.unit_price,
+                       LEAST(p.qty_returned - p.qty_credited,
+                             (p.qty_invoiced - p.qty_credited)
+                               - (p.qty_received - p.qty_returned)) AS qty
+                FROM purchase_order_line l JOIN purchase_order_progress p ON p.line_id = l.id)
+             SELECT d.id AS order_id, d.number AS order_number, x.id AS vendor_id,
+                    x.name AS vendor_name, o.line_no, o.item_id,
+                    CASE WHEN $3 THEN i.code END AS item_code, trim_scale(o.qty) AS qty,
+                    trim_scale(o.unit_price) AS unit_price,
+                    COALESCE(h.currency, c.base_currency) AS currency,
+                    round(o.qty * o.unit_price, cur.decimals) AS amount
+             FROM open o
+             JOIN document d ON d.id = o.document_id
+             JOIN purchase_order h ON h.document_id = d.id
+             JOIN vendor x ON x.id = h.vendor_id
+             JOIN company c ON c.id = d.company_id
+             JOIN currency cur ON cur.code = COALESCE(h.currency, c.base_currency)
+             LEFT JOIN item i ON i.id = o.item_id
+             WHERE d.company_id = $1 AND o.qty > 0
+               AND ($2::uuid IS NULL OR h.vendor_id = $2)
+             ORDER BY x.name, d.number, o.line_no",
+        )
+        .bind(input.company_id)
+        .bind(input.vendor_id)
+        .bind(items)
+        .fetch_all(&mut *ctx.conn)
+        .await?;
+        Ok(AwaitingOutput {
+            company_id: input.company_id,
+            rows,
+        })
+    }
+}

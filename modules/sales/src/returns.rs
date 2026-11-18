@@ -1603,3 +1603,97 @@ impl Command for DraftCreditNote {
         .await
     }
 }
+
+// ------------------------------------------------------- awaiting a credit
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AwaitingInput {
+    /// The company whose orders are looked at.
+    company_id: Uuid,
+    /// Only this customer.
+    customer_id: Option<Uuid>,
+}
+
+#[derive(Serialize, JsonSchema, sqlx::FromRow)]
+struct AwaitingRow {
+    /// The order the goods were delivered on.
+    order_id: Uuid,
+    order_number: Option<String>,
+    customer_id: Uuid,
+    customer_name: String,
+    line_no: i32,
+    item_id: Option<Uuid>,
+    item_code: Option<String>,
+    /// Returned and invoiced, and not yet credited.
+    qty: Decimal,
+    /// The order line's price, in the order's currency.
+    unit_price: Decimal,
+    currency: String,
+    /// The quantity at the order line's price, before discounts and tax.
+    amount: Decimal,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct AwaitingOutput {
+    company_id: Uuid,
+    rows: Vec<AwaitingRow>,
+}
+
+pub(crate) struct AwaitingCredit;
+
+#[async_trait]
+impl Command for AwaitingCredit {
+    type Input = AwaitingInput;
+    type Output = AwaitingOutput;
+
+    fn spec(&self) -> CommandSpec {
+        CommandSpec::query(
+            "sales_order.awaiting_credit",
+            "Goods customers sent back that they had been invoiced for and have not yet been credited, per sales order line of a company: what a sales credit note is still owed for, at the order line's price.",
+        )
+        .report("Returns to credit")
+        .permission("sales_order:read")
+    }
+
+    async fn run(&self, ctx: &mut Ctx<'_>, input: AwaitingInput) -> Result<AwaitingOutput> {
+        ctx.require("sales_order:read", input.company_id)?;
+        let items = ctx.actor.can_any("item:read");
+        // Of what was returned, what had been invoiced and is not credited:
+        // net invoiced beyond net delivered, no more than returned less
+        // credited.
+        let rows: Vec<AwaitingRow> = sqlx::query_as(
+            "WITH open AS (
+                SELECT l.document_id, l.line_no, l.item_id, l.unit_price,
+                       LEAST(p.qty_returned - p.qty_credited,
+                             (p.qty_invoiced - p.qty_credited)
+                               - (p.qty_delivered - p.qty_returned)) AS qty
+                FROM sales_order_line l JOIN sales_order_progress p ON p.line_id = l.id)
+             SELECT d.id AS order_id, d.number AS order_number, x.id AS customer_id,
+                    x.name AS customer_name, o.line_no, o.item_id,
+                    CASE WHEN $3 THEN i.code END AS item_code, trim_scale(o.qty) AS qty,
+                    trim_scale(o.unit_price) AS unit_price,
+                    COALESCE(h.currency, c.base_currency) AS currency,
+                    round(o.qty * o.unit_price, cur.decimals) AS amount
+             FROM open o
+             JOIN document d ON d.id = o.document_id
+             JOIN sales_order h ON h.document_id = d.id
+             JOIN customer x ON x.id = h.customer_id
+             JOIN company c ON c.id = d.company_id
+             JOIN currency cur ON cur.code = COALESCE(h.currency, c.base_currency)
+             LEFT JOIN item i ON i.id = o.item_id
+             WHERE d.company_id = $1 AND o.qty > 0
+               AND ($2::uuid IS NULL OR h.customer_id = $2)
+             ORDER BY x.name, d.number, o.line_no",
+        )
+        .bind(input.company_id)
+        .bind(input.customer_id)
+        .bind(items)
+        .fetch_all(&mut *ctx.conn)
+        .await?;
+        Ok(AwaitingOutput {
+            company_id: input.company_id,
+            rows,
+        })
+    }
+}

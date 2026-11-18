@@ -214,6 +214,7 @@ impl Module for SalesModule {
             command(returns::DraftCreditNote),
             command(returns::PostCreditNote),
             command(returns::ReverseCreditNote),
+            command(returns::AwaitingCredit),
             command(credit::PostCredit),
             command(credit::ReverseCredit),
         ]

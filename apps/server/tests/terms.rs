@@ -1870,3 +1870,67 @@ async fn a_vendor_rebate_is_a_credit_without_an_invoice() {
     assert_eq!(dec(&debt["txn_open"]), 119.0 - 23.8);
     t.stop().await;
 }
+
+/// Goods sent back after they were invoiced wait for a credit note: the
+/// reports list them until it comes.
+#[tokio::test]
+async fn returns_awaiting_a_credit_are_reported() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let bought = f.order(&t, "purchase", "10", "4.00", json!({})).await;
+    let invoice = f.bought(&t, &bought, "2026-03-01", json!({})).await;
+    let line = bought["body"]["lines"][0]["id"].clone();
+    f.posted(
+        &t,
+        "purchase_return",
+        "2026-03-02",
+        json!({ "purchase_order_id": bought["id"],
+                "lines": [{ "order_line_id": line, "qty": "3" }] }),
+    )
+    .await;
+    let awaiting = |name: &'static str| {
+        let t = &t;
+        let company = f.c.id.clone();
+        async move {
+            let (status, out) = t
+                .command(&t.admin, name, json!({ "company_id": company }))
+                .await;
+            assert_eq!(status, StatusCode::OK, "{out}");
+            out["rows"].as_array().unwrap().clone()
+        }
+    };
+    let rows = awaiting("purchase_order.awaiting_credit").await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(dec(&rows[0]["qty"]), 3.0);
+    assert_eq!(dec(&rows[0]["amount"]), 12.0);
+    assert_eq!(rows[0]["vendor_name"], "Parts Inc");
+    // The vendor credits two of them: one still waits.
+    let invoice_line = invoice["body"]["lines"][0]["id"].clone();
+    f.posted(
+        &t,
+        "vendor_credit_note",
+        "2026-03-03",
+        json!({ "vendor_invoice_id": invoice["id"],
+                "lines": [{ "invoice_line_id": invoice_line, "qty": "2" }] }),
+    )
+    .await;
+    let rows = awaiting("purchase_order.awaiting_credit").await;
+    assert_eq!(dec(&rows[0]["qty"]), 1.0);
+
+    // A customer sends back two of four invoiced.
+    let sold = f.order(&t, "sales", "4", "10.00", json!({})).await;
+    f.sold(&t, &sold, "2026-03-04").await;
+    f.posted(
+        &t,
+        "sales_return",
+        "2026-03-05",
+        json!({ "sales_order_id": sold["id"],
+                "lines": [{ "order_line_id": sold["body"]["lines"][0]["id"], "qty": "2" }] }),
+    )
+    .await;
+    let rows = awaiting("sales_order.awaiting_credit").await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(dec(&rows[0]["qty"]), 2.0);
+    assert_eq!(dec(&rows[0]["amount"]), 20.0);
+    t.stop().await;
+}
