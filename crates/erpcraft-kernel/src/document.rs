@@ -23,7 +23,7 @@ use uuid::Uuid;
 use crate::authz::{RowScope, Target};
 use crate::command::Ctx;
 use crate::entity::{
-    DEFAULT_LIMIT, MAX_LIMIT, Page, arguments, caller_condition, like_pattern, sort_key,
+    DEFAULT_LIMIT, MAX_LIMIT, Page, SortKey, arguments, caller_condition, like_pattern, sort_key,
 };
 use crate::numbering;
 use crate::placeholders::checked;
@@ -1084,19 +1084,44 @@ pub async fn list(
         let _ = write!(conditions, " AND {filter}");
     }
 
+    // Values the order needs are bound after the conditions', and only the
+    // page's query uses them.
+    let mut sort_binds = vec![];
     let mut order = vec![];
     for key in &query.sort {
-        let (name, direction) = sort_key(key);
+        let SortKey {
+            field: name,
+            direction,
+            nulls,
+        } = sort_key(key)?;
+        // Rows without a value go last unless the caller says otherwise.
+        let nulls = if nulls.is_empty() {
+            " NULLS LAST"
+        } else {
+            nulls
+        };
         if let Some(field) = name.strip_prefix("summary.") {
-            let field = summary_field(field)?;
+            let mut field = summary_field(field)?;
             may_query_summary(ctx, meta, field)?;
+            // A link sorts by the name the summary shows for it, when it
+            // has one the reader may sort by.
+            if matches!(field.ty, FieldType::Link { .. })
+                && let Some(shown) = meta.summary.iter().find(|f| {
+                    f.shown_from
+                        .as_ref()
+                        .is_some_and(|from| from.link == field.name)
+                })
+                && may_query_summary(ctx, meta, shown).is_ok()
+            {
+                field = shown;
+            }
             // Amounts sort as numbers, everything else as text.
             let cast = match field.ty {
                 FieldType::Decimal | FieldType::Int => "::numeric",
                 _ => "",
             };
             order.push(format!(
-                "(t.summary->>'{}'){cast} {direction} NULLS LAST",
+                "(t.summary->>'{}'){cast} {direction}{nulls}",
                 field.name
             ));
             continue;
@@ -1107,7 +1132,18 @@ pub async fn list(
                 SORTABLE.join(", ")
             )));
         }
-        order.push(format!("t.{name} {direction} NULLS LAST"));
+        if name == "status" {
+            // States in the order of the workflow, not alphabetically.
+            sort_binds.push(Bind::Texts(
+                meta.states.iter().map(|s| s.name.clone()).collect(),
+            ));
+            order.push(format!(
+                "array_position(${}::text[], t.status) {direction}{nulls}",
+                binds.len() + sort_binds.len()
+            ));
+            continue;
+        }
+        order.push(format!("t.{name} {direction}{nulls}"));
     }
     if order.is_empty() {
         order.push("t.created_at DESC".into());
@@ -1125,6 +1161,7 @@ pub async fn list(
         Some(count)
     };
 
+    binds.extend(sort_binds);
     let sql = format!(
         "SELECT t.*, u.name AS created_by_name FROM document AS t
          LEFT JOIN app_user u ON u.id = t.created_by

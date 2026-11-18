@@ -279,3 +279,140 @@ async fn a_document_list_filters_by_its_summary_and_respects_what_a_reader_may_s
     assert_eq!(status, StatusCode::OK, "{page}");
     assert_eq!(page["total"], 1);
 }
+
+#[tokio::test]
+async fn sorts_follow_choices_names_and_where_empty_values_go() {
+    let t = TestApp::start().await;
+    let c = t.company("ACME", "USD").await;
+    // Accounts "1" (asset group), "1000" (asset), "4000" (income) come with the company.
+    for (code, kind) in [("6000", "expense"), ("2000", "liability")] {
+        t.create(
+            "account",
+            json!({ "company_id": c.id, "code": code, "name": code, "account_type": kind }),
+        )
+        .await;
+    }
+    let sorted = |sort: Value| {
+        let t = &t;
+        let company = c.id.clone();
+        async move {
+            let (status, page) = t
+                .command(
+                    &t.admin,
+                    "entity.list",
+                    json!({ "entity": "account", "filters": { "company_id": company }, "sort": sort }),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{page}");
+            codes(&page)
+                .iter()
+                .map(|c| (*c).to_owned())
+                .collect::<Vec<_>>()
+        }
+    };
+    // A choice sorts in its declared order (asset, liability, equity,
+    // income, expense), not alphabetically (expense before income).
+    assert_eq!(
+        sorted(json!(["account_type", "code"])).await,
+        ["1", "1000", "2000", "4000", "6000"]
+    );
+    assert_eq!(
+        sorted(json!(["-account_type", "code"])).await,
+        ["6000", "4000", "2000", "1", "1000"]
+    );
+
+    // A link sorts by what the linked record is shown as (its code), and
+    // empty values go where they are asked to.
+    for (code, parent) in [("1100", &c.revenue), ("1200", &c.group)] {
+        t.create(
+            "account",
+            json!({ "company_id": c.id, "code": code, "name": code, "account_type": "asset", "parent_id": parent }),
+        )
+        .await;
+    }
+    let with_parent = |list: Vec<String>| -> Vec<String> {
+        list.into_iter()
+            .filter(|c| c == "1100" || c == "1200")
+            .collect()
+    };
+    // Parent "1" before parent "4000", whatever their ids.
+    assert_eq!(
+        with_parent(sorted(json!(["parent_id nulls last", "code"])).await),
+        ["1200", "1100"]
+    );
+    assert_eq!(
+        with_parent(sorted(json!(["-parent_id", "code"])).await),
+        ["1100", "1200"]
+    );
+    let last = sorted(json!(["parent_id nulls last", "code"])).await;
+    assert_eq!(&last[..2], ["1200", "1100"].map(String::from), "{last:?}");
+    let first = sorted(json!(["parent_id NULLS FIRST", "code"])).await;
+    assert_eq!(
+        &first[first.len() - 2..],
+        ["1200", "1100"].map(String::from),
+        "{first:?}"
+    );
+    assert_eq!(first[0], "1", "{first:?}");
+
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "entity.list",
+            json!({ "entity": "account", "sort": ["code nulls maybe"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+    // A document's state sorts in the order of its workflow.
+    let draft = t.draft(&t.admin, &c, "5.00").await;
+    let posted = t.draft(&t.admin, &c, "6.00").await;
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "journal_entry.post",
+            json!({ "id": common::id(&posted) }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, describe) = t.command(&t.admin, "meta.describe", json!({})).await;
+    let states: Vec<String> = describe["doc_types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "journal_entry")
+        .unwrap()["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap().to_owned())
+        .collect();
+    for (sort, reversed) in [("status", false), ("-status", true)] {
+        let (status, page) = t
+            .command(
+                &t.admin,
+                "document.list",
+                json!({ "doc_type": "journal_entry", "sort": [sort] }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        let mut at: Vec<usize> = page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| {
+                states
+                    .iter()
+                    .position(|s| d["status"] == s.as_str())
+                    .unwrap()
+            })
+            .collect();
+        if reversed {
+            at.reverse();
+        }
+        assert!(
+            at.windows(2).all(|w| w[0] <= w[1]),
+            "{sort}: {at:?} in {states:?}"
+        );
+    }
+    let _ = draft;
+}

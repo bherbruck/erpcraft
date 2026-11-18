@@ -160,12 +160,56 @@ pub(crate) async fn check_time_zone(
     Ok(())
 }
 
-/// Split `-name` into the field and whether it sorts descending.
-pub(crate) fn sort_key(key: &str) -> (&str, &'static str) {
-    match key.strip_prefix('-') {
-        Some(field) => (field, "DESC"),
-        None => (key, "ASC"),
-    }
+/// One key of a list's `sort`: a field name, `-` before it for
+/// descending, and ` nulls first` or ` nulls last` after it to say where
+/// rows without a value go: `-total nulls last`.
+pub(crate) struct SortKey<'a> {
+    pub field: &'a str,
+    /// `ASC` or `DESC`.
+    pub direction: &'static str,
+    /// ` NULLS FIRST`, ` NULLS LAST`, or empty for the database's default.
+    pub nulls: &'static str,
+}
+
+pub(crate) fn sort_key(key: &str) -> Result<SortKey<'_>> {
+    let key = key.trim();
+    let (rest, nulls) = match key.rsplit_once(char::is_whitespace) {
+        Some((rest, last)) => {
+            let rest = rest.trim_end();
+            match rest.rsplit_once(char::is_whitespace) {
+                Some((field, word)) if word.eq_ignore_ascii_case("nulls") => {
+                    let nulls = if last.eq_ignore_ascii_case("first") {
+                        " NULLS FIRST"
+                    } else if last.eq_ignore_ascii_case("last") {
+                        " NULLS LAST"
+                    } else {
+                        return Err(Error::validation(format!(
+                            "sort key '{key}': after 'nulls' comes 'first' or 'last'"
+                        )));
+                    };
+                    (field.trim_end(), nulls)
+                }
+                _ => {
+                    return Err(Error::validation(format!(
+                        "sort key '{key}': write a field, '-field', or either with ' nulls first' or ' nulls last'"
+                    )));
+                }
+            }
+        }
+        None => (key, ""),
+    };
+    Ok(match rest.strip_prefix('-') {
+        Some(field) => SortKey {
+            field,
+            direction: "DESC",
+            nulls,
+        },
+        None => SortKey {
+            field: rest,
+            direction: "ASC",
+            nulls,
+        },
+    })
 }
 
 /// JSON for one row aliased `t`. Decimals are returned as strings so that
@@ -430,22 +474,32 @@ pub async fn list(ctx: &mut Ctx<'_>, entity: &str, query: &ListQuery) -> Result<
         let _ = write!(conditions, " AND {filter}");
     }
 
+    // Values the order needs (the choices of a field, in their order) are
+    // bound after the conditions', and only the page's query uses them.
+    let mut sort_binds = vec![];
     let mut order = vec![];
     for key in &query.sort {
-        let (name, direction) = sort_key(key);
-        match field(name) {
-            Some(f) if !matches!(f.ty, FieldType::Json) => {}
+        let SortKey {
+            field: name,
+            direction,
+            nulls,
+        } = sort_key(key)?;
+        let f = match field(name) {
+            Some(f) if !matches!(f.ty, FieldType::Json) => f,
             _ => {
                 return Err(Error::validation(format!("cannot sort by '{name}'")).with_field(name));
             }
-        }
+        };
         // Sorting by a field would reveal the order of its values.
         if actor.may_withhold(&permission, name) {
             return Err(
                 Error::forbidden(format!("you may not sort by field '{name}'")).with_field(name),
             );
         }
-        order.push(format!("t.{name} {direction}"));
+        order.push(format!(
+            "{} {direction}{nulls}",
+            sort_expression(kernel, actor, f, &mut sort_binds, binds.len())?
+        ));
     }
     if order.is_empty() {
         // The entity's own order, leaving out any field whose order the
@@ -473,6 +527,7 @@ pub async fn list(ctx: &mut Ctx<'_>, entity: &str, query: &ListQuery) -> Result<
         Some(count)
     };
 
+    binds.extend(sort_binds);
     let sql = format!(
         "SELECT {} FROM {} AS t WHERE {conditions} ORDER BY {} LIMIT ${} OFFSET ${}",
         select_expr(meta),
@@ -575,6 +630,51 @@ pub async fn readable_ids(
 /// Whether the actor reads every record of `entity` and its `field`
 /// without a condition: what filtering or sorting by a copy of that field
 /// needs, since no record is then left out.
+/// What a list sorts a field by. A choice sorts in the order its values
+/// are declared (a workflow's states in their order), not alphabetically.
+/// A link to an entity sorts by what the linked record is shown as, its
+/// first display field, when the reader may read that field of every such
+/// record; otherwise by the stored value, as the order of names they may
+/// not read would tell them something. `offset` is the number of binds
+/// before these.
+fn sort_expression(
+    kernel: &crate::Kernel,
+    actor: &Actor,
+    field: &crate::registry::FieldMeta,
+    binds: &mut Vec<Bind>,
+    offset: usize,
+) -> Result<String> {
+    let name = &field.name;
+    match &field.ty {
+        FieldType::Enum { values, .. } => {
+            binds.push(Bind::Texts(values.clone()));
+            Ok(format!(
+                "array_position(${}::text[], t.{name}::text)",
+                offset + binds.len()
+            ))
+        }
+        FieldType::Link { entity, key, .. } => {
+            let Ok(linked) = kernel.registry().entity(entity) else {
+                return Ok(format!("t.{name}"));
+            };
+            match linked.display.first() {
+                Some(display)
+                    if display != key
+                        && linked.fields.iter().any(|f| &f.name == display)
+                        && reads_all(actor, linked, display) =>
+                {
+                    Ok(format!(
+                        "(SELECT l.{display} FROM {} AS l WHERE l.{key} = t.{name} LIMIT 1)",
+                        linked.table
+                    ))
+                }
+                _ => Ok(format!("t.{name}")),
+            }
+        }
+        _ => Ok(format!("t.{name}")),
+    }
+}
+
 pub fn reads_all(actor: &Actor, meta: &EntityMeta, field: &str) -> bool {
     if actor.is_admin {
         return true;

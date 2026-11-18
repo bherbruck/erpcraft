@@ -114,7 +114,7 @@ Every list of entity records or documents takes the same parameters and returns 
   it can test text (`record.name.containsIgnoreCase('bolt')`; also `contains`, `startsWith`, `endsWith`, the `IgnoreCase` forms of those and `equalsIgnoreCase`, compiled to `LIKE`/`ILIKE` with the wildcards in the value escaped), read dates relative to today (`today()`, `addDays`, `addMonths`, `startOf`/`endOf` `Month`, `Quarter` and `Year`; only in a list's condition, never in a stored rule, which is also decided in memory), and name a document's summary fields as `record.summary.<field>`;
 - `params`: values the condition reads as `params.<name>`, bound as parameters, so a list of 500 ids is `record.customer_id in params.customers` and does not lengthen the condition;
 - `time_zone`: the reader's zone (an IANA name the database knows): what day `today()` is, and where a day begins when a timestamp is compared with one;
-- `sort`: field names, `-` for descending;
+- `sort`: field names, `-` for descending, and ` nulls first` or ` nulls last` after one to say where rows without a value go. A choice sorts in its declared order (a workflow's states in theirs), a link to an entity by what the linked record is shown as when the reader may read that of every such record, and a document summary's link by the name the summary shows for it;
 - `limit` and `offset`.
 
 All of it runs in the database, in the same query as the caller's row permissions. So a total never counts a record the caller may not see, and a field withheld from the caller cannot be searched, sorted by, or named in a condition.
