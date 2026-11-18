@@ -22,7 +22,7 @@ use crate::entity::{self, DEFAULT_LIMIT, MAX_LIMIT, Page};
 /// command was given as input. It is only ever checked for all companies.
 pub const READ: &str = "audit:read";
 
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, JsonSchema, sqlx::FromRow)]
 pub struct AuditEntry {
     pub id: Uuid,
     pub at: DateTime<Utc>,
@@ -154,9 +154,11 @@ pub(crate) fn commands() -> Vec<Arc<dyn DynCommand>> {
 struct HistoryInput {
     /// An entity name, a document type, or `user`.
     resource: String,
+    /// Id of the record or document.
     id: Uuid,
     /// At most 500; 50 when omitted.
     limit: Option<i64>,
+    /// Records to skip, for paging.
     offset: Option<i64>,
 }
 
@@ -199,6 +201,7 @@ struct ListInput {
     outcome: Option<Outcome>,
     /// At most 500; 50 when omitted.
     limit: Option<i64>,
+    /// Records to skip, for paging.
     offset: Option<i64>,
 }
 
@@ -215,6 +218,7 @@ impl Command for List {
             "The audit log, newest first: every command that changed something or tried to, \
              with who ran it, when, and its input.",
         )
+        .report("Audit log")
         .permission(READ)
     }
 

@@ -12,7 +12,6 @@ struct Fixture {
     item: String,
     warehouse: String,
     customer: String,
-    inventory: String,
     adjustments: String,
 }
 
@@ -51,16 +50,15 @@ async fn setup(t: &TestApp) -> Fixture {
             "receivable_account_id": receivable,
             "revenue_account_id": c.revenue,
             "cogs_account_id": cogs,
-            "inventory_account_id": inventory,
         }),
     )
     .await;
+    t.inventory_rule(&c.id, &inventory).await;
     Fixture {
         c,
         item,
         warehouse,
         customer,
-        inventory,
         adjustments,
     }
 }
@@ -105,7 +103,6 @@ impl Fixture {
     async fn stock_in(&self, t: &TestApp, qty: &str, unit_cost: &str) {
         let draft = self
             .document(t, "stock_adjustment", json!({
-                    "inventory_account_id": self.inventory,
                     "offset_account_id": self.adjustments,
                     "lines": [{ "item_id": self.item, "warehouse_id": self.warehouse, "qty": qty, "unit_cost": unit_cost }],
                 }),
@@ -585,7 +582,6 @@ async fn orders_follow_their_workflow_and_their_permissions() {
                 "receivable_account_id": f.c.cash,
                 "revenue_account_id": other.revenue,
                 "cogs_account_id": other.cash,
-                "inventory_account_id": other.cash,
             }),
         )
         .await;

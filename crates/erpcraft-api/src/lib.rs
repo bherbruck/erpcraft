@@ -15,14 +15,22 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use erpcraft_kernel::command::{self, Options};
+use erpcraft_kernel::command::{self, Options, View};
 use erpcraft_kernel::{Actor, Error, Kernel};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+/// The API with a JSON index at `/` and a JSON "not found" for every
+/// other path.
 pub fn router(kernel: Kernel) -> Router {
+    routes(kernel).route("/", get(index)).fallback(not_found)
+}
+
+/// The API routes alone, for a server that answers `/` and unknown paths
+/// itself, for example with a user interface. It should still answer
+/// unknown paths under `/api` with [`not_found`].
+pub fn routes(kernel: Kernel) -> Router {
     Router::new()
-        .route("/", get(index))
         .route(
             "/healthz",
             get(|| async { Json(json!({ "status": "ok" })) }),
@@ -48,12 +56,16 @@ pub fn router(kernel: Kernel) -> Router {
                 .patch(document_update)
                 .delete(document_delete),
         )
-        .fallback(|| async { ApiError(Error::not_found("route")) })
         .with_state(kernel)
 }
 
+/// The answer to a path that is not a route.
+pub async fn not_found() -> Response {
+    ApiError(Error::not_found("route")).into_response()
+}
+
 /// Where to go from the root. Needs no token.
-async fn index() -> Json<Value> {
+pub async fn index() -> Json<Value> {
     Json(json!({
         "name": "erpcraft",
         "version": env!("CARGO_PKG_VERSION"),
@@ -91,18 +103,10 @@ impl IntoResponse for ApiError {
             Error::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         // Internal details go to the log, not to the caller.
-        let message = match &self.0 {
-            Error::Internal(detail) => {
-                tracing::error!(%detail, "internal error");
-                "internal error".to_owned()
-            }
-            other => other.to_string(),
-        };
-        (
-            status,
-            Json(json!({ "error": { "code": self.0.code(), "message": message } })),
-        )
-            .into_response()
+        if let Error::Internal(detail) = &self.0 {
+            tracing::error!(%detail, "internal error");
+        }
+        (status, Json(json!({ "error": self.0.to_json() }))).into_response()
     }
 }
 
@@ -181,6 +185,9 @@ fn paging(query: Vec<(String, String)>) -> Result<(Fields, Fields), Error> {
             "q" | "where" => {
                 page.insert(key, json!(value));
             }
+            "active_only" => {
+                page.insert(key, json!(value == "true"));
+            }
             "sort" => {
                 let fields: Vec<&str> = value
                     .split(',')
@@ -207,6 +214,7 @@ async fn run(
     let options = Options {
         idempotency_key: idempotency_key(headers),
         preview: false,
+        view: View::Full,
     };
     command::execute(kernel, actor, name, input, options).await
 }
@@ -242,6 +250,10 @@ async fn meta(
 struct CommandQuery {
     #[serde(default)]
     preview: bool,
+    /// `header`: a command that returns a document returns its header and
+    /// summary only, without body, postings and links.
+    #[serde(default)]
+    view: View,
 }
 
 async fn run_command(
@@ -255,10 +267,22 @@ async fn run_command(
     let options = Options {
         idempotency_key: idempotency_key(&headers),
         preview: query.preview,
+        view: query.view,
     };
-    let output = command::execute(&kernel, &actor, &name, parse_body(&body)?, options).await?;
+    let mut output = command::execute(&kernel, &actor, &name, parse_body(&body)?, options).await?;
+    if query.view == View::Header
+        && let Some(document) = output.as_object_mut()
+        && document.contains_key("doc_type")
+    {
+        for left_out in ["body", "postings", "links"] {
+            document.remove(left_out);
+        }
+    }
     if query.preview {
         ok(json!({ "preview": true, "result": output }))
+    } else if erpcraft_kernel::approval::is_pending(&output) {
+        // The command did not run: it waits for approval.
+        Ok((StatusCode::ACCEPTED, Json(output)).into_response())
     } else {
         ok(output)
     }
@@ -349,7 +373,15 @@ async fn document_list(
     headers: HeaderMap,
 ) -> ApiResult {
     let (mut input, filters) = paging(query)?;
-    input.extend(filters);
+    // `summary.vendor_id=...` filters by a field of the type's summary.
+    let mut summary = Map::new();
+    for (key, value) in filters {
+        match key.strip_prefix("summary.") {
+            Some(field) => summary.insert(field.to_owned(), value),
+            None => input.insert(key, value),
+        };
+    }
+    input.insert("summary".into(), Value::Object(summary));
     input.insert("doc_type".into(), json!(doc_type));
     ok(run(
         &kernel,

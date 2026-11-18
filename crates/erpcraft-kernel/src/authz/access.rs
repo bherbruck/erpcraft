@@ -6,12 +6,13 @@
 
 use std::collections::BTreeMap;
 
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::actor::{Actor, Reach};
 use crate::registry::{Description, EntityMeta};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Access {
     /// Per entity name.
     pub entities: BTreeMap<String, EntityAccess>,
@@ -23,7 +24,7 @@ pub struct Access {
 }
 
 /// Whether the actor could act on at least some records of an entity.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct EntityAccess {
     pub read: bool,
     pub create: bool,
@@ -35,7 +36,7 @@ pub struct EntityAccess {
 }
 
 /// `all`, `some` (depends on the record) or `none`, per action.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct FieldReach {
     pub read: Reach,
     pub create: Reach,
@@ -96,10 +97,10 @@ impl Access {
                     .and_then(|p| p.split_once(':'))
                     .filter(|(resource, _)| *resource == doc_type.name)
                     .map(|(_, action)| action.to_owned());
-                if let Some(action) = action {
-                    if !actions.contains(&action) {
-                        actions.push(action);
-                    }
+                if let Some(action) = action
+                    && !actions.contains(&action)
+                {
+                    actions.push(action);
                 }
             }
             actions.retain(|action| actor.can_any(&format!("{}:{action}", doc_type.name)));

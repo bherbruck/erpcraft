@@ -18,19 +18,40 @@ erpcraft-db.workspace = true
 erpcraft-gl.workspace = true
 erpcraft-inventory.workspace = true
 erpcraft-kernel.workspace = true
+erpcraft-manufacturing.workspace = true
 erpcraft-mcp.workspace = true
+erpcraft-openitems.workspace = true
+erpcraft-payments.workspace = true
+erpcraft-printing.workspace = true
 erpcraft-purchasing.workspace = true
 erpcraft-sales.workspace = true
+erpcraft-setup.workspace = true
+erpcraft-banking.workspace = true
+erpcraft-assets.workspace = true
+erpcraft-party.workspace = true
+erpcraft-einvoice.workspace = true
 erpcraft-stock.workspace = true
+erpcraft-tax.workspace = true
+erpcraft-webhooks.workspace = true
 axum.workspace = true
 tokio.workspace = true
+tower.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
+# Checks real command outputs against the schemas the server publishes.
+jsonschema = { version = "0.61", default-features = false }
 serde_json.workspace = true
 sqlx.workspace = true
-tower.workspace = true
 uuid.workspace = true
+# The single sign-on tests run an identity provider of their own.
+aws-lc-rs.workspace = true
+base64.workspace = true
+# The e-invoicing tests write compressed PDF streams by hand.
+flate2.workspace = true
+jsonwebtoken.workspace = true
+sha2.workspace = true
+url.workspace = true

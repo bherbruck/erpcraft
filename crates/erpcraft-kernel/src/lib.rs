@@ -9,22 +9,29 @@
 //! Compiled modules are trusted server code. The module API is an
 //! architectural boundary, not a security sandbox.
 
+pub mod approval;
 pub mod audit;
 pub mod authz;
 mod builtin;
 pub mod command;
+pub mod company;
 pub mod document;
 pub mod entity;
+pub mod input;
 pub mod maintenance;
 pub mod numbering;
 pub mod outbox;
+pub mod placeholders;
+pub mod policy;
 pub mod registry;
+mod schema;
+pub mod users;
 
 use std::sync::Arc;
 
 pub use async_trait::async_trait;
 pub use erpcraft_core::{
-    DateTime, Decimal, Error, NaiveDate, Result, Utc, Uuid, new_id, round_money,
+    DateTime, Decimal, Detail, Error, NaiveDate, Reason, Result, Utc, Uuid, new_id, round_money,
 };
 pub use erpcraft_db::{Migration, PgConnection, PgPool};
 pub use schemars::{self, JsonSchema};
@@ -33,14 +40,18 @@ pub use authz::{Actor, Authenticator};
 pub use command::{Command, CommandSpec, Ctx, DynCommand, Options, command};
 pub use document::{Document, DocumentHandler, DocumentView, Ledger, Posting};
 pub use outbox::{Event, Subscriber};
+pub use policy::{Decision, FactType, PolicyPoint};
 pub use registry::{
-    CollectionMeta, DocTypeMeta, EntityMeta, FieldMeta, FieldType, Module, Registry, StateMeta,
+    Alternative, Alternatives, CollectionMeta, DecimalRole, DocTypeMeta, EntityMeta, FieldMeta,
+    FieldType, Lookup, Module, Registry, StateMeta, Tone, ValueSource,
 };
 
 #[derive(Clone)]
 pub struct Kernel {
     pool: PgPool,
     registry: Arc<Registry>,
+    /// What was read from the database about the entities' tables.
+    tables: Arc<schema::TableCache>,
 }
 
 impl Kernel {
@@ -71,7 +82,14 @@ impl Kernel {
 
     /// Apply every pending migration of every registered module.
     pub async fn migrate(&self) -> Result<usize> {
-        erpcraft_db::migrate(&self.pool, self.registry.migration_sets()).await
+        let applied = erpcraft_db::migrate(&self.pool, self.registry.migration_sets()).await;
+        // A migration may have changed a table the kernel had looked at.
+        self.tables.clear();
+        applied
+    }
+
+    pub(crate) fn tables(&self) -> &schema::TableCache {
+        &self.tables
     }
 }
 
@@ -91,6 +109,7 @@ impl KernelBuilder {
         Ok(Kernel {
             pool: self.pool,
             registry: Arc::new(Registry::build(self.modules)?),
+            tables: Arc::default(),
         })
     }
 }

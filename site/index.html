@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>erpcraft: a brief for CFOs and controllers</title>
+<meta name="description" content="What erpcraft, an early open-source ERP base for small and medium manufacturers, does with the books, which controls it enforces, what is missing, and the questions we would like a CFO or controller to answer.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="page">
+  <h1>erpcraft: a brief for CFOs and controllers</h1>
+  <p class="subtitle">An early open-source ERP base for small and medium manufacturers. What it does with the books, where it stands, and what we would like you to tell us.</p>
+
+  <div class="draft" role="note">
+    <p><strong>Draft, November 2026, for feedback.</strong> Nothing here is released. No company runs on it yet.</p>
+    <p>To give feedback, write to <span class="placeholder">feedback@example.com</span> <em>(placeholder: the owner replaces this address before publishing)</em>. A single line is welcome.</p>
+  </div>
+
+  <nav class="toc" aria-labelledby="toc-title">
+    <h2 id="toc-title">Contents</h2>
+    <ol>
+      <li><a href="#summary">In one paragraph</a></li>
+      <li><a href="#why">For the CFO: what it is meant to change</a></li>
+      <li><a href="#maturity">Risk and maturity</a></li>
+      <li><a href="#books">The books</a></li>
+      <li><a href="#controls">Controls that cannot be bypassed</a></li>
+      <li><a href="#processes">Processes covered</a></li>
+      <li><a href="#valuation">Valuation and rounding: our choices</a></li>
+      <li><a href="#evidence">Evidence so far</a></li>
+      <li><a href="#gaps">Not there yet</a></li>
+      <li><a href="#ready">What would make it ready for a company like yours</a></li>
+      <li><a href="#questions">Questions for you</a></li>
+    </ol>
+  </nav>
+</header>
+
+<main>
+
+<section id="summary">
+<h2>1. In one paragraph</h2>
+<p class="lead">erpcraft is an open-source accounting and operations system (an ERP) for small and medium companies, of the size that might otherwise run SAP Business One, Dynamics 365 Business Central or Odoo: for example a manufacturer in Ohio or in Germany. It aims to be the base layer: books, stock, purchasing, sales, payments in several currencies, tax recording, bank reconciliation, fixed assets and basic production. Country specifics such as tax returns and statutory reports are meant to be add-ons that others can contribute. The United States, Canada and the European Union come first. Anything a person can do in it, an AI assistant can do too, under the same permissions and controls, and recorded in the same audit trail.</p>
+<p><strong>It is early.</strong> It was built over the last days. It has been tested heavily by machine, but no real company has used it and it has not been released. We are asking whether the accounting is right, which choices you would make differently, and what is missing before a company like yours could close a month on it. The <a href="#questions">questions at the end</a> are where your answers help most.</p>
+</section>
+
+<section id="why">
+<h2>2. For the CFO: what it is meant to change</h2>
+
+<p>We do not compare features or prices with other products here. Below is erpcraft's approach; you know the systems you run and can judge the difference yourself.</p>
+
+<h3>The approach</h3>
+<ul>
+  <li><strong>The accounting rules sit in the database, not only in the program.</strong> Balanced entries, closed periods, no editing of posted entries, stock that ties to the inventory account: these hold whatever program writes to the books, including someone with direct database access. Section 5 lists them.</li>
+  <li><strong>One base, with country add-ons.</strong> Nothing country-specific is built into the ledgers. Tax rules, charts of accounts and reporting for a country are add-ons on top. Three country setups exist today (US, Canada, Germany).</li>
+  <li><strong>Business rules a company can change without programming.</strong> Judgements such as "accept up to 5 % over-receipt" or "allow negative stock for deliveries but not for production" are company settings with a cautious default. Rules that keep the books right are fixed and cannot be switched off.</li>
+  <li><strong>People and AI assistants work through the same door.</strong> There is no back door for automation and no separate rights for integrations.</li>
+</ul>
+
+<h3>Open source and self-hosted: what it means for you</h3>
+<div class="table-wrap">
+<table>
+  <caption>What open source and self-hosting change, and what they do not</caption>
+  <thead><tr><th scope="col">Topic</th><th scope="col">What it means here</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">Cost of ownership</th><td>The intended licence (MIT or Apache 2.0, to be confirmed before release) has no licence fee per user or per company. What still costs money: hosting, implementation, data migration, training, support, upgrades, and the country add-ons your company needs. Today there is no support organisation and no implementation partner.</td></tr>
+    <tr><th scope="row">How it runs</th><td>One server program and one standard PostgreSQL database, on your own servers or a cloud account you control. One database can hold several companies.</td></tr>
+    <tr><th scope="row">Data ownership</th><td>The books are in a database you hold, in plain tables, readable with standard tools. Nobody else stores them.</td></tr>
+    <tr><th scope="row">Auditability</th><td>Anyone can read how a number is computed: the source, the rules, and the tests that check them. Your auditor, or a firm you hire, can inspect it.</td></tr>
+    <tr><th scope="row">Vendor lock-in</th><td>Your data sits in an open database and the code is open, so you are not tied to one supplier. The other side of this: no vendor is accountable today if something is wrong.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>AI assistants under the same permissions and audit trail</h3>
+<ul>
+  <li>Every action an assistant can take is an action a person can take, with the same checks. No business rule can be skipped this way.</li>
+  <li>An assistant works with a key that has <strong>at most</strong> the rights of the person it works for, and can be given fewer. For example: it may draft vendor invoices, but not post them or pay them.</li>
+  <li>Every action is recorded: who, what, when, on which records. Refused attempts are recorded too, with the reason.</li>
+  <li>Before saving anything, an assistant (or a person) can ask for a preview: it shows the exact entries a posting would write in every ledger, and saves nothing.</li>
+  <li>Ready-made tasks exist for an assistant, such as entering a vendor invoice against an order, closing a period, or explaining why something was refused. Each is offered only to someone allowed to do every step.</li>
+</ul>
+<p>In practice: work such as matching invoices to orders, drafting entries or preparing a close can be delegated with narrow rights, and you can read every step afterwards. None of this has been tried in a real company yet.</p>
+</section>
+
+<section id="maturity">
+<h2>3. Risk and maturity</h2>
+<div class="callout">
+<p><strong>Where it stands.</strong> Days old. Not released. No real company has used it. Large automated tests and a sample company of public data have run through it (section 8), four independent reviews have found 37 problems, all fixed with a test for each, and the books survived eight upgrades in place. That shows the design holds under load. It does not show that it fits a real company's month-end.</p>
+</div>
+<ul>
+  <li><strong>No track record.</strong> No customer, no audit has relied on it, no upgrade over years.</li>
+  <li><strong>Work in progress.</strong> Vendor invoices before the goods arrive and landed cost (freight and other charges added to the cost of purchased goods) are being built now. Much of what this page describes was built in the last few days: foreign currency, payment terms and aging, bank reconciliation, approvals, fixed assets, and discounts, charges and service lines on sales are hours to days old.</li>
+  <li><strong>No support organisation</strong> and no implementation partners yet.</li>
+  <li><strong>The user interface</strong> is limited to administration screens. Day-to-day use by clerks needs more.</li>
+  <li><strong>Gaps that may block a close today</strong> are listed in <a href="#gaps">section 9</a>, among them closing a year kept in monthly periods, invoices before receipt and write-off of small differences.</li>
+</ul>
+<p>A realistic first use would be a pilot next to the existing system, for one entity, with both sets of books compared each month. We would value your view on what such a pilot would need (<a href="#questions">questions</a>).</p>
+</section>
+
+<section id="books">
+<h2>4. The books</h2>
+<p>The system keeps four ledgers. Each is complete for its subject, and each must agree with the general ledger.</p>
+<div class="table-wrap">
+<table>
+  <caption>The four ledgers and what ties them</caption>
+  <thead><tr><th scope="col">Ledger</th><th scope="col">What it holds</th><th scope="col">Must equal</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">General ledger</th><td>Every accounting entry, by account, company and date</td><td>Itself: debits equal credits</td></tr>
+    <tr><th scope="row">Stock ledger</th><td>Quantity and value on hand per item and warehouse, and every movement</td><td>The inventory account(s)</td></tr>
+    <tr><th scope="row">Open items</th><td>What is owed to each vendor and by each customer, invoice by invoice and credit by credit, with every settlement</td><td>Accounts payable and accounts receivable</td></tr>
+    <tr><th scope="row">Tax ledger</th><td>The tax on each invoice line, with its base, by tax code and period</td><td>The tax accounts (collected and paid)</td></tr>
+  </tbody>
+</table>
+</div>
+<p>How they stay tied together:</p>
+<ul>
+  <li>A business document (a receipt, an invoice, a delivery, a payment) writes to every ledger it affects in one step. Either all of it is recorded or none of it is.</li>
+  <li>The stock ledger, not the person, works out the value of every issue. Whatever moves stock posts that same value to the general ledger in the same step, to the account the company assigned for that purpose (a company default, or one per item or warehouse).</li>
+  <li>Open items are opened only by invoices and credit notes and closed only by payments, so the detail and the control account cannot drift apart.</li>
+  <li>Tax is recorded per line on the invoice that posts it, so the tax report is built from the same lines as the tax accounts.</li>
+  <li>Every document shows what it posted, ledger by ledger.</li>
+</ul>
+<p>Two further records are set against the general ledger by report rather than by construction: the <strong>fixed asset register</strong> shows, account by account, what it says the asset and accumulated depreciation accounts should hold beside what they hold; the <strong>bank reconciliation</strong> sets each bank account against the bank's statements and explains the difference to the cent.</p>
+<p>The automated tests check these agreements after each step: stock value against the inventory account, open items against payables and receivables, the tax report against the tax accounts, the trial balance, and the balance sheet against the income statement and retained earnings.</p>
+</section>
+
+<section id="controls">
+<h2>5. Controls that cannot be bypassed</h2>
+
+<h3>Fixed rules: true for every company, not configurable</h3>
+<p>These rules are enforced by the database itself, so they hold whatever program writes to it, including someone with direct database access.</p>
+<ul>
+  <li><strong>Balanced entries.</strong> Every posting balances in the company's accounting currency. An unbalanced entry is refused.</li>
+  <li><strong>Closed periods stay closed.</strong> Nothing can be posted into a closed fiscal period, in any ledger. Once a period is closed or has postings in it, its dates cannot change and it cannot be deleted. A period close and a posting in progress wait for each other, so nothing slips in during the close.</li>
+  <li><strong>No editing, no deleting.</strong> Posted entries, open items and settlements cannot be changed or removed. A mistake is undone by a reversal: a second posting with the opposite effect. A posting can be reversed at most once, and a reversal cannot itself be reversed. By default the reversal carries the original's date; the user may give a later date. Either way it is refused if the date is in a closed period.</li>
+  <li><strong>Valid accounts only.</strong> An entry must go to an active, postable (not summary) account of the same company. Amounts must fit the currency's decimals, and the accounting amount must equal the transaction amount times the recorded exchange rate.</li>
+  <li><strong>Gapless document numbering.</strong> Numbers run per company, document type and year, with no gaps and no duplicates, even with many people posting at once. A document receives its number when it is posted.</li>
+  <li><strong>Stock does not go below zero</strong> unless the company chose to allow it (see the next table). Even then, each such movement must name the company rule that allowed it and keeps the facts it was decided on, so an auditor can check it afterwards.</li>
+  <li><strong>No settling an invoice twice.</strong> Payments together can never settle more than is owed, even when two are entered at the same moment.</li>
+  <li><strong>Returns and credit notes are bounded.</strong> Only goods actually received (or delivered) and not yet returned can go back. A credit note line can never credit more than the invoice charged on that line.</li>
+  <li><strong>Goods received not invoiced clears to the cent</strong> on each order line once receipts, returns, invoices and credits are level.</li>
+  <li><strong>A settled foreign-currency item leaves nothing behind.</strong> When the last of an invoice in another currency is paid, its control account holds nothing more for it; the exchange difference goes to a gain or loss account.</li>
+  <li><strong>Bank statements add up and follow each other.</strong> Opening balance plus lines must equal the closing balance, and each statement starts where the previous one ended. A bank transaction is imported once.</li>
+  <li><strong>Depreciation runs go forward and count each month once.</strong> A month of an asset can be depreciated only once, and a run for a period already run, or before one, is refused.</li>
+  <li><strong>Permanent audit trail.</strong> Every action is recorded: who, what, when, on which records, with what input. Refused and failed attempts are recorded too, with the reason. The audit trail cannot be changed, even with direct database access, so every record has a full history. Sign-ins, including refused ones, are kept in a separate log.</li>
+</ul>
+
+<h3>Period and year-end close</h3>
+<p>A person with the right permission closes a fiscal period. The year-end close moves the income and expense accounts of a fiscal year to retained earnings in one posting. Reports still show each year's result on its own. In the load test, two years were closed, and the balance sheet, income statement and retained earnings agreed to the cent.</p>
+<p>Limits today: a year must be a single fiscal period to be closed in one step, so a year kept as twelve monthly periods cannot yet be closed that way. The whole result goes to one equity account. Closing a later year does not check that earlier ones are closed.</p>
+
+<h3>Who may do what: segregation of duties</h3>
+<ul>
+  <li>A <strong>role</strong> is a list of rules, granted to a person for one company or for all companies.</li>
+  <li>A rule allows or denies an action, optionally only for records that meet a condition, and optionally only for some fields. Examples: a warehouse clerk sees only the stock movements of their own warehouses; nobody sees the cost field on items; <strong>nobody may post a journal entry they created themselves.</strong></li>
+  <li><strong>Deny wins.</strong> If any rule denies, the action is refused. Anything not explicitly allowed is refused. A rule that cannot be evaluated (for example, a missing fact about the user) never allows.</li>
+  <li>A person who may not see a record cannot find, count, sort or filter by it. To them it does not exist.</li>
+  <li><strong>Nobody hands on more than they hold.</strong> Someone who is not an administrator can grant a role only to someone else, and only if they hold every right in it themselves. Users are listed, granted and revoked roles, and switched off (their access ends at the next request); every change is recorded, and the last administrator cannot be removed.</li>
+  <li>Sign-in can go through the company's own identity provider (for example Microsoft Entra ID, Google, Okta). A person signed in that way keeps administrator rights only through a provider trusted for administrators.</li>
+  <li>Limits today: <strong>an administrator is not bound by permission rules</strong>, though administrators are bound by company policies and their actions are recorded. Rules on documents look at the header (company, status, dates, creator), not at the lines. A second, database-level layer of permissions is planned, not built.</li>
+</ul>
+
+<h3>Policies: business rules the company configures</h3>
+<p>Some refusals are not about whether the books are right but about how a company chooses to work. These are <strong>policies</strong>. Each has a cautious default and can be changed by the company without programming, with simple conditions such as "allow over-receipt up to 5 %". Policies apply to administrators too.</p>
+<div class="table-wrap">
+<table>
+  <caption>Policies, their defaults, and examples of other choices</caption>
+  <thead><tr><th scope="col">Policy</th><th scope="col">Default</th><th scope="col">Example of another choice</th></tr></thead>
+  <tbody>
+    <tr><td>Receiving more than ordered</td><td>Refused</td><td>Accept up to 5 % over</td></tr>
+    <tr><td>Delivering more than ordered</td><td>Refused</td><td>Accept a tolerance</td></tr>
+    <tr><td>Invoice price differs from order price (purchase and sales)</td><td>Allowed</td><td>Refuse above a percentage</td></tr>
+    <tr><td>Stock going below zero</td><td>Refused</td><td>Allow for sales deliveries, not for production</td></tr>
+    <tr><td>Ordering from an inactive vendor, or for an inactive customer</td><td>Refused when the order is approved; goods already ordered can still arrive and be invoiced</td><td>Refuse further receipts too</td></tr>
+    <tr><td>Receiving or invoicing against a closed order</td><td>Receipt refused; invoice allowed for what was received and not yet invoiced</td><td>Allow receipts too</td></tr>
+    <tr><td>Posting date far from today</td><td>Allowed</td><td>Refuse postings more than a set number of days back or ahead</td></tr>
+    <tr><td>Credit note without a matching return (a price allowance)</td><td>Refused</td><td>Allow, perhaps only for some people</td></tr>
+    <tr><td>Reopening a closed order after a return</td><td>Stays closed</td><td>Reopen it for replacements</td></tr>
+    <tr><td>Using an inactive tax code or bill of materials</td><td>Refused</td><td></td></tr>
+    <tr><td>Approving a purchase order</td><td>Allowed</td><td>Above 10,000, a controller approves first</td></tr>
+    <tr><td>Posting a payment</td><td>Allowed</td><td>Above an amount, two people approve first</td></tr>
+    <tr><td>Exchange rate on a document differs from the rate on record</td><td>Allowed</td><td>Refuse beyond a percentage</td></tr>
+    <tr><td>Early-payment discount taken after its date</td><td>Refused</td><td>Allow a few days' grace</td></tr>
+    <tr><td>Early-payment discount reduces the tax</td><td>Yes: the tax is corrected</td><td>No, where the tax does not follow the discount (US sales tax)</td></tr>
+    <tr><td>Bank statement line matched to a payment of another amount</td><td>Refused</td><td>Accept small differences, posted to a fee account</td></tr>
+    <tr><td>Capitalising an asset below the company's minimum cost</td><td>Refused (no minimum is set by default)</td><td>Allow for one asset class</td></tr>
+  </tbody>
+</table>
+</div>
+<h3>Approvals: the third outcome of a policy</h3>
+<p>A company rule can also say <strong>"ask first"</strong>. Then the action does not happen yet: it is kept as an approval request (what was asked, with exactly what input, by whom, why and when) and waits for the people the rule names, by role or by right, one or several of them. Once enough have approved, the action runs as the person who asked, with exactly what they entered. If the document changed in the meantime (an order edited, an amount changed), the approval no longer applies and the request is marked out of date. A rejection needs a reason. A request not decided within its time (14 days by default) expires and can be asked again.</p>
+<ul>
+  <li><strong>A requester can never approve their own request, administrators included.</strong></li>
+  <li>The record's history shows both the person who asked and the people who approved.</li>
+  <li>A preview of an action that would need approval says so, and who can approve, without creating a request.</li>
+  <li>Only judgements can be approved. A rule that keeps the books right is not a policy, so nothing the fixed rules forbid can be approved into the books.</li>
+</ul>
+<p>Limits today: a policy can allow, refuse or ask for approval. It cannot warn or set a value. Approvers are not notified by the system itself, only through an event an e-mail or chat integration can pick up; there is no delegation while an approver is away and no escalation. A refusal is recorded in the audit trail; that a rule allowed something is not recorded on its own.</p>
+</section>
+
+<section id="processes">
+<h2>6. Processes covered</h2>
+
+<h3>Purchase to pay</h3>
+<p>Purchase order, approval (with an approval step above an amount if the company wants one), partial receipts, vendor invoices against the order. Order, receipt and invoice are tied through goods received not invoiced (GRNI): the receipt credits GRNI at the order price, the invoice clears it, and any difference from the invoice price goes to purchase price variance. An order closes by itself when everything is received and invoiced, can be closed short by hand, and reopens if a reversal leaves goods received but not invoiced. Also: purchase returns and vendor credit notes. Orders, invoices and credit notes can be in another currency (see below).</p>
+
+<h3>Order to cash</h3>
+<p>Sales order, approval, deliveries (cost of goods sold posted at the moving average), customer invoices, sales returns (goods come back at the cost they left at), and sales credit notes, also in another currency. A line can carry a percentage discount and an amount discount, applied in that order, and tax is worked out on what is left. Besides goods, orders and invoices carry lines that are not stock: charges such as freight or handling, each with its own tax code, and services posted to a revenue account.</p>
+
+<h3>Payments, terms and aging</h3>
+<p>Payments to vendors and from customers settle open items invoice by invoice. One payment can net a party's invoices against its credit notes; money paid on account stays as an open credit and is applied later; refunds are payments the other way. Payment terms (net days, or days after the end of the month, with an optional early-payment discount) come from the vendor or customer to the order and the invoice and set each invoice's due date and discount. A discount taken is posted to discount received or given, and the tax the invoice charged is corrected by the same share, in the payment's period. The aging report puts open payables or receivables as of any day into buckets by days past due, per party, with what falls due in the next 7 and 30 days, and shows each control account's balance beside what its items add up to.</p>
+
+<h3>Foreign currency</h3>
+<p>Orders, invoices, credit notes and payments can be in a currency other than the company's. Each posts at the rate it states or the rate on record for its date. Open items keep both the invoice's currency and its value in the accounting currency. A payment realizes the exchange difference to a gain or loss account. At a period end, a revaluation values every open foreign payable and receivable at that day's rate, posts the unrealized difference, and is reversed the next day. Bank accounts can hold a currency of their own.</p>
+
+<h3>Bank statements and reconciliation</h3>
+<p>Bank statements are imported from the files banks provide (CSV with a saved column layout per bank account, ISO 20022 camt.053, OFX) or entered by hand. For each line the system proposes what it probably is: a payment already recorded, open invoices it pays, or an account such as bank fees. A person (or an assistant) confirms each match; nothing is matched automatically. Posting the statement locks it once every line is accounted for. The bank reconciliation report sets the ledger balance against the statements on any day: payments not yet on a statement, statement lines not yet in the books, and anything left unexplained.</p>
+
+<h3>Fixed assets</h3>
+<p>An asset register with asset classes (for example furniture, computers, vehicles, machinery, land), each with a depreciation method, a useful life, and its own asset, accumulated depreciation and expense accounts. An asset is capitalised from a posted line that put its cost on the asset account, or taken over from an earlier system with its cost and depreciation to date. A monthly depreciation run depreciates every asset in service and posts one entry per asset. Selling or scrapping an asset depreciates it up to the date, removes it from the books, books the proceeds and posts the gain or loss. The fixed asset register as of any day shows cost, accumulated depreciation, book value and this year's depreciation per asset, beside the ledger accounts that should hold them; a schedule shows one asset's depreciation, posted and planned.</p>
+
+<h3>Inventory</h3>
+<p>Moving-average valuation per item and warehouse. Transfers between warehouses. Stock adjustments, also used for opening stock. Negative stock as an option, valued as described in <a href="#valuation">section 7</a>.</p>
+
+<h3>Manufacturing</h3>
+<p>Bills of materials and production orders. Components are issued from stock, and the finished product enters stock at exactly the cost of the components used. <strong>Material cost only:</strong> no labour, overhead or routing; one step, one warehouse.</p>
+
+<h3>Tax</h3>
+<p>Tax codes with rates. Several taxes on one line: Canadian GST plus a provincial tax (PST, RST or QST), a US state plus a county, including a tax charged on top of another. Each authority's tax goes to its own account. Tax is worked out and rounded per tax per line and recorded per line. A credit note takes tax back at the rate the original invoice used, dated in the credit note's period, so a period already reported does not change. Whether tax paid can be reclaimed follows from the account it posts to: an asset for VAT, GST or QST, an expense for US sales tax or most PST. Only invoices carry tax; orders do not.</p>
+
+<h3>General ledger and reports</h3>
+<p>Manual journal entries. Exchange rates on record, entered by hand. Trial balance, balance sheet, income statement, account ledger, stock on hand, tax report, aging, bank reconciliation, fixed asset register, year-end close.</p>
+
+<h3>Users and access</h3>
+<p>Users are created, given roles per company, and switched off from the administration screens; every change is recorded on the user. Sign-in is by password or through the company's identity provider.</p>
+
+<h3>Company setup by country</h3>
+<p>A new company is created in one step from a template: chart of accounts, fiscal years, a warehouse, tax codes, payment terms, asset classes, and which account is used for inventory, GRNI, payables, receivables, revenue, cost of goods sold, price variance, stock variance, exchange differences, discounts, disposal gains and losses, and retained earnings.</p>
+<ul>
+  <li><strong>US small business:</strong> a US chart in USD. Sales tax depends on the buyer's location, which the system does not look up, so it ships one 0 % code and a clearly labelled example of a state-plus-county group. Asset classes for furniture, computers, vehicles, machinery and land.</li>
+  <li><strong>Canada:</strong> GST and HST at the Canada Revenue Agency's published rates, and GST-plus-provincial groups for British Columbia, Saskatchewan, Manitoba and Quebec. QST is recoverable as an input tax refund; PST and RST are expensed. Sources are cited in the template.</li>
+  <li><strong>Germany:</strong> accounts numbered as in DATEV SKR 03 (checked against the 2023 chart), 19 % and 7 % VAT. SKR 03 has no GRNI account, so 1700 is used; cost of goods sold and price differences both go to 3200. Tax is posted explicitly, so revenue goes net to 8400. Asset classes on their SKR 03 accounts, written off directly as SKR 03 does, with useful lives from the official depreciation tables (machinery is a placeholder to set per trade).</li>
+</ul>
+<p>Limits: one revenue account per company; opening balances only by journal entry.</p>
+
+<h3>Printing</h3>
+<p>Orders, deliveries and invoices print from templates the company can edit, to paper or to PDF through the browser. No letterhead or addresses yet, because addresses are not stored yet.</p>
+</section>
+
+<section id="valuation">
+<h2>7. Valuation and rounding: our choices</h2>
+<p>These are choices, not necessities. Please tell us where you would choose otherwise.</p>
+<ul>
+  <li><strong>Moving average, not FIFO and not standard cost.</strong> A receipt comes in at its stated cost; an issue goes out at the current average. Nobody can state the value of an issue; the stock ledger works it out.</li>
+  <li><strong>Back-dated entries do not revalue later ones.</strong> Each movement is valued when it is recorded. A receipt back-dated into last week does not change the cost of a delivery recorded after it.</li>
+  <li><strong>Rounding</strong> is per line, to the currency's smallest unit, half away from zero. Tax is rounded per tax per line; a line's tax is the sum of its parts; a document's total is the sum of its lines. What a draft shows is exactly what posts.</li>
+  <li><strong>The last one takes the last cent, everywhere.</strong> When a shelf is emptied, the remaining value leaves with the last units, so no value stays on an empty shelf. The same rule holds when the last of an invoice line is credited (the last of its tax goes with it), when GRNI is cleared, when the last of a foreign-currency invoice is paid (its control account is left at exactly nothing), in the last month of an asset's life, and in the last month of each year of declining-balance depreciation.</li>
+  <li><strong>GRNI</strong> is credited at the order price on receipt and cleared at the received value on invoice; the difference goes to purchase price variance. A return takes out of GRNI what the goods were received at; if the item's average cost has moved since, that difference also goes to purchase price variance.</li>
+  <li><strong>Negative stock, where allowed,</strong> is an estimate until the goods arrive. Missing goods leave at the last receipt cost of that item in that warehouse. When goods arrive they first cover the shortfall; the difference between their real cost and the estimate goes to a stock variance account, not back into cost of goods sold.</li>
+  <li><strong>Over-receipts, where allowed,</strong> are valued at the order price like the rest of the line.</li>
+  <li><strong>Foreign-currency purchases.</strong> Stock is valued in the company's own currency: a receipt converts the order price at the receipt's rate, and GRNI holds that value. The invoice posts at its own rate. The difference between receipt and invoice, whether from the price or from the rate, goes to purchase price variance: the goods cost what the invoice says. A separate exchange line would need more bookkeeping per order line and gives the same total.</li>
+  <li><strong>Credit notes in a foreign currency</strong> post at the rate of the invoice they credit, so they take back exactly what the invoice put in the books. An exchange difference arises only when money moves or a credit is applied.</li>
+  <li><strong>Revaluation is reversed the next day.</strong> At a period end, open foreign payables and receivables are valued at that day's rate and the unrealized difference is posted; the next day it is reversed, and the payment later realizes the whole difference from the invoice's rate. The two never count the same movement twice. A payment dated after a revaluation that still stands is refused until it is reversed.</li>
+  <li><strong>A credit note after an early-payment discount.</strong> The share of the invoice kept back as discount was never paid, so the same share of what is credited comes off the discount received (or given) rather than being owed back, and tax is taken back only on the rest, because the discount already corrected the tax on its share.</li>
+  <li><strong>Depreciation is monthly.</strong> Per company, the month an asset goes into service either counts in full or depreciation starts the month after; once the company has depreciated anything, this choice is fixed. Straight line spreads cost less salvage value evenly, rounded per month, the last month taking the remainder. Declining balance applies a yearly rate to the book value at the start of each calendar year (pro rata by months in the first year) and switches to straight line once that is higher. Depreciation never goes below the salvage value. Missed months are caught up by the next run; a disposal first depreciates the months that ended by its date.</li>
+</ul>
+<div class="table-wrap">
+<table>
+  <caption>Worked example: negative stock and its variance</caption>
+  <thead><tr><th scope="col">Step</th><th scope="col" class="num">Quantity</th><th scope="col" class="num">Value</th><th scope="col">Note</th></tr></thead>
+  <tbody>
+    <tr><td>On hand, last receipt cost 3.00</td><td class="num">4</td><td class="num">12.00</td><td></td></tr>
+    <tr><td>Issue of 10</td><td class="num">−10</td><td class="num">−30.00</td><td>12.00 on hand + 6 × 3.00 estimated</td></tr>
+    <tr><td>Level after the issue</td><td class="num">−6</td><td class="num">−18.00</td><td></td></tr>
+    <tr><td>Receipt of 10 at 3.50</td><td class="num">10</td><td class="num">35.00</td><td>6 cover the shortfall at a real cost of 21.00</td></tr>
+    <tr><td>Stock variance</td><td class="num"></td><td class="num">3.00</td><td>21.00 real cost less 18.00 estimated</td></tr>
+    <tr><td>Level after the receipt</td><td class="num">4</td><td class="num">14.00</td><td></td></tr>
+  </tbody>
+</table>
+</div>
+</section>
+
+<section id="evidence">
+<h2>8. Evidence so far</h2>
+
+<h3>Load tests with a public sample company</h3>
+<p>We loaded Microsoft's AdventureWorks sample data (a bicycle maker) the same way a user or an AI assistant would enter it, in three rounds on a shared development machine.</p>
+<div class="table-wrap">
+<table>
+  <caption>The largest run (round 1, three successive loads into one company)</caption>
+  <thead><tr><th scope="col">What</th><th scope="col" class="num">Count</th></tr></thead>
+  <tbody>
+    <tr><td>Purchase orders / sales orders</td><td class="num">3,000 / 3,000</td></tr>
+    <tr><td>Sales order lines</td><td class="num">11,895</td></tr>
+    <tr><td>Receipts and vendor invoices, posted</td><td class="num">2,765 each</td></tr>
+    <tr><td>Deliveries and customer invoices, posted</td><td class="num">3,000 each</td></tr>
+    <tr><td>Payments, posted</td><td class="num">5,527</td></tr>
+    <tr><td>Items / vendors / customers / bills of materials</td><td class="num">504 / 104 / 2,841 / 238</td></tr>
+    <tr><td>Requests to the server</td><td class="num">61,917</td></tr>
+    <tr><td>Server errors, timeouts, conflicts</td><td class="num">0</td></tr>
+  </tbody>
+</table>
+</div>
+<p>The only refusals were 147 orders to vendors that are inactive today. That is the default policy working as intended: the historical data has orders for vendors since retired. In rounds 2 and 3, two further companies were loaded from nothing with opening capital (900 purchase and 900 sales orders each, 1,315 payments, two year-end closes), with 16,464 requests each and nothing refused or failed. Running the load again created nothing twice. The server holding these companies has since been upgraded in place eight times to newer versions, each time changing the database; after each upgrade every company's books still balanced and inventory still equalled stock value. In round 3 the server handled about 13 complete sales orders per second.</p>
+
+<div class="table-wrap">
+<table>
+  <caption>Book checks after round 1, all passed</caption>
+  <thead><tr><th scope="col">Check</th><th scope="col" class="num">Result</th></tr></thead>
+  <tbody>
+    <tr><td>Trial balance: total debits = total credits</td><td class="num">227,771,827.30</td></tr>
+    <tr><td>Stock value = inventory account</td><td class="num">41,987,028.72</td></tr>
+    <tr><td>Open payables (183 items) = payables account</td><td class="num">3,122,896.96</td></tr>
+    <tr><td>Open receivables (55 items) = receivables account</td><td class="num">1,926,767.28</td></tr>
+    <tr><td>Tax report = tax collected account</td><td class="num">2,011,567.13</td></tr>
+    <tr><td>Tax report = tax paid account</td><td class="num">3,358,962.13</td></tr>
+    <tr><td>GRNI, with every receipt invoiced</td><td class="num">0.00</td></tr>
+    <tr><td>Items with negative quantity or value</td><td class="num">0</td></tr>
+  </tbody>
+</table>
+</div>
+<p>In rounds 2 and 3, the balance sheet, the income statement by year, and retained earnings after two year-end closes agreed to the cent. The two companies loaded with the same orders came out identical to the cent.</p>
+<p>What a controller would notice: revenue came out 2.37 higher than the source's own total over 11,895 lines, because we round each line to cents and the source adds up lines carried to six decimals. Freight, line discounts, tax rates blended by region and foreign-currency sales could not be represented at the time of these runs; freight, line discounts and foreign currency have been built since, and the loads have not yet been repeated with them.</p>
+
+<h3>Independent code reviews</h3>
+<p>The work has had four independent reviews, each by a reviewer who had not written the code and read it as an attacker or an auditor would. Together they found 37 problems (10, 7, 6 and 14 in turn): amounts that could leave a ledger out of agreement with its control account, ways around permissions, a way to crash the server with a specially crafted condition, taking over someone's account through single sign-on, and secrets that could reach the audit trail. All 37 are fixed, and each finding has a test that guards against it from then on. The second review found, among other things, that a payment could be routed through the control account it was settling, that fiscal period dates could be changed after use, and that a posting without ledger lines could be dated in a closed period. These are fixed.</p>
+<p>The fourth review's 14 findings are now fixed too, each with a test. Among them: a payment could still be pointed at a control account instead of a bank account; a credit note could exceed what the invoice charged on an untaxed line; reversing a sales delivery after a return could leave cost of goods sold wrong; the way roles were granted let a person raise their own rights; a session from an untrusted single sign-on provider could keep administrator rights; user and role records were readable more widely than they should be; party names could show in document summaries to people not allowed to read the party; and the checker for print templates could be got round. No real books were affected, because there are none yet. We mention them because this is how the project checks itself: assume there are errors, look for them on purpose, and fix the cause.</p>
+
+<h3>Automated tests</h3>
+<p>About 75 test files with about 350 automated tests, most of them run end to end against a real database. They cover, among others: purchasing, sales, returns, payments, payment terms and discounts, foreign currency and revaluation, negative stock, tax, tax groups, bank statements and reconciliation, approvals, fixed assets, numbering, year-end close, permissions, user administration, policies, the audit trail, reports, printing and company setup.</p>
+</section>
+
+<section id="gaps">
+<h2>9. Not there yet</h2>
+<p>Grouped by what we expect matters most to a controller. Please tell us if the order is wrong.</p>
+
+<h3>Likely to block a monthly close today</h3>
+<ul>
+  <li>Closing a year kept as twelve monthly periods in one step.</li>
+  <li>Vendor invoices before the goods arrive (this needs a "goods invoiced not received" account; being built now).</li>
+  <li>Write-off of small payment differences; instalments and discounts in several steps (2 % in 10 days, 1 % in 20, net 30).</li>
+  <li>Revaluation of foreign-currency bank balances (open payables and receivables are revalued; bank accounts are not).</li>
+  <li>A user interface for daily work beyond the administration screens.</li>
+</ul>
+
+<h3>Costing and inventory</h3>
+<ul>
+  <li>Standard costing and FIFO (moving average only).</li>
+  <li>Landed cost: freight and other charges added to the cost of purchased goods (being built now).</li>
+  <li>Labour and overhead in production; routings; production in several steps.</li>
+  <li>Lots and serial numbers, reserved stock, more than one unit of measure per item.</li>
+  <li>A stock revaluation document. No report of stock below zero or of lines received beyond the order.</li>
+</ul>
+
+<h3>Tax and country requirements</h3>
+<ul>
+  <li>Tax returns and statutory reports per country; e-invoicing.</li>
+  <li>Tax by jurisdiction (US sales tax lookup), prices including tax, reverse charge, exemptions. The person entering an invoice picks the tax code per line (a charge line starts with its charge's code); nothing proposes one.</li>
+  <li>Credits not tied to an invoice (rebates, goodwill).</li>
+</ul>
+
+<h3>Banking, payments and fixed assets</h3>
+<ul>
+  <li>Direct bank feeds and automatic matching; bank formats such as MT940 and BAI2. Every statement line is matched by a person or an assistant.</li>
+  <li>A payment in one foreign currency for invoices in another.</li>
+  <li>Separate tax and book depreciation (for example MACRS beside book depreciation); impairment, revaluation and partial disposal of assets; capitalising directly from a vendor invoice (today through a journal entry). Declining balance follows calendar years, not the fiscal year.</li>
+</ul>
+
+<h3>Group and planning</h3>
+<ul>
+  <li>Budgets, consolidation, intercompany postings, closing to more than one equity account or by dimension.</li>
+  <li>Payroll.</li>
+</ul>
+
+<h3>Controls and data</h3>
+<ul>
+  <li>Administrators are not bound by permission rules (they are bound by policies and approvals, and every action is recorded).</li>
+  <li>Approvals have no delegation, no escalation, and notify approvers only through an integration.</li>
+  <li>Thin vendor and customer records: no addresses, contacts or credit limits (payment terms exist).</li>
+</ul>
+</section>
+
+<section id="ready">
+<h2>10. What would make it ready for a company like yours</h2>
+<p>Our own reading, to be corrected by yours:</p>
+<ol>
+  <li><strong>Close the blocking gaps:</strong> monthly periods within a year-end close, invoices before receipt, write-off of small differences, and revaluation of foreign bank balances.</li>
+  <li><strong>A user interface for daily work</strong>, so clerks can enter orders, receipts and invoices without help.</li>
+  <li><strong>Your country add-on:</strong> the tax return, statutory reports and e-invoicing your jurisdiction requires.</li>
+  <li><strong>The costing method you need:</strong> if that is standard cost, or labour and overhead in production, it has to be built first.</li>
+  <li><strong>A pilot next to your current system</strong> for one entity, with the two sets of books compared each month and your auditor's questions answered from it.</li>
+  <li><strong>Someone accountable:</strong> a partner who implements and supports it, and a release process that upgrades your data safely.</li>
+</ol>
+</section>
+
+<section id="questions">
+<h2>11. Questions for you</h2>
+<p>Short answers are fine. Any one of them helps. Please note the number.</p>
+
+<h3>For the controller</h3>
+<ol class="questions">
+  <li>Is moving average acceptable for a company like yours, or is standard cost with variances a must? FIFO?</li>
+  <li>What would you need to see, in the system and in its reports, before you would close a month on it?</li>
+  <li>Which reports do you use weekly or monthly that are missing from <a href="#processes">section 6</a>?</li>
+  <li>How do you handle GRNI and purchase price variance today? Does clearing GRNI at received value, with the difference to price variance, match your practice?</li>
+  <li>Do you allow stock to go negative? If so, is valuing the shortfall at the last receipt cost, with the difference to a stock variance account, acceptable, or should the difference go back to cost of goods sold?</li>
+  <li>Is "back-dated entries do not revalue later ones" acceptable, or would your auditor expect costs to be recalculated?</li>
+  <li>Is rounding per line, half away from zero, right for your invoices and tax?</li>
+  <li>What does your auditor ask for that a system must produce on demand: a change log per record, user rights at a given date, a list of manual journal entries, a data export in a given format?</li>
+  <li>Is an administrator outside the permission rules acceptable if every action is recorded, or must administrators be restricted too?</li>
+  <li>Which segregation-of-duties rules do you rely on most (for example, creator cannot post; vendor changes kept apart from payments)? Can they be put as "deny this action when this condition holds"?</li>
+  <li>Should a reversal be dated on the original's date by default, or on the day it is made?</li>
+  <li>Do you close monthly, and do you need a soft close (closed for some people, open for others)?</li>
+  <li>For a German or Canadian company: does the SKR 03 or Canadian setup look right, and what would a local accountant change first?</li>
+  <li>Is monthly depreciation, with the month of service counted in full or from the month after, acceptable for your asset register? Do you need tax depreciation kept apart from book depreciation, and which method do you use for each?</li>
+</ol>
+
+<h3>For the CFO</h3>
+<ol class="questions" start="15">
+  <li>Which of the gaps in <a href="#gaps">section 9</a> would stop you from using it at all? Which could you live without for a first year?</li>
+  <li>What would stop you from piloting it on one subsidiary or one entity, next to your current system?</li>
+  <li>What evidence would your auditors need before relying on it: an independent review, a controls report, a track record at other companies?</li>
+  <li>Would you pay a partner to implement and support it? What would you expect them to deliver?</li>
+  <li>How much weight do you give to holding your own data and reading the code, compared with having a large vendor accountable?</li>
+  <li>Would you let an AI assistant enter vendor invoices or prepare a close with the rights of a clerk? What would you want recorded or approved first?</li>
+  <li>Which actions do you require approval for today (orders, payments, credit notes, new vendors), at what amounts, and by how many people? Is "never the person who asked, administrators included" enough, or do you need delegation and escalation as well?</li>
+</ol>
+<p>Thank you. Write to <span class="placeholder">feedback@example.com</span> <em>(placeholder)</em>.</p>
+</section>
+
+</main>
+
+<footer class="page">
+  <p>erpcraft. Draft, November 2026, for feedback. This page describes software that is not released and has not been used by a company. It makes no claim of compliance with any accounting, tax or audit standard; it describes design choices for readers to judge.</p>
+</footer>
+
+</body>
+</html>

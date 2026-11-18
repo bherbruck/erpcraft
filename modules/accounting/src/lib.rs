@@ -9,11 +9,13 @@ use erpcraft_kernel::document::{self, Document, DocumentHandler, DocumentView};
 use erpcraft_kernel::{
     CollectionMeta, Command, CommandSpec, Ctx, Decimal, DocTypeMeta, DynCommand, Error, FieldMeta,
     FieldType, JsonSchema, Migration, Module, PgConnection, Result, StateMeta, async_trait,
-    command, new_id, schemars,
+    command, company, round_money, schemars,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
+
+mod year_end;
 
 const JOURNAL_ENTRY: &str = "journal_entry";
 
@@ -29,19 +31,31 @@ impl Module for AccountingModule {
     }
 
     fn migrations(&self) -> Vec<Migration> {
-        vec![Migration {
-            version: 1,
-            name: "accounting",
-            sql: include_str!("../migrations/0001_accounting.sql"),
-        }]
+        vec![
+            Migration {
+                version: 1,
+                name: "accounting",
+                sql: include_str!("../migrations/0001_accounting.sql"),
+            },
+            Migration {
+                version: 2,
+                name: "year_end_close",
+                sql: include_str!("../migrations/0002_year_end_close.sql"),
+            },
+        ]
     }
 
     fn doc_types(&self) -> Vec<Arc<dyn DocumentHandler>> {
-        vec![Arc::new(JournalEntry)]
+        vec![Arc::new(JournalEntry), Arc::new(year_end::YearEndClose)]
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
-        vec![command(PostJournalEntry), command(ReverseJournalEntry)]
+        vec![
+            command(PostJournalEntry),
+            command(ReverseJournalEntry),
+            command(year_end::PostYearEndClose),
+            command(year_end::ReverseYearEndClose),
+        ]
     }
 }
 
@@ -56,6 +70,8 @@ struct Body {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LineInput {
+    /// The id of the stored line this one is, when it was read before.
+    id: Option<Uuid>,
     account_id: Uuid,
     #[serde(default)]
     debit: Decimal,
@@ -104,15 +120,21 @@ impl DocumentHandler for JournalEntry {
                 name: "lines".into(),
                 label: "Lines".into(),
                 fields: vec![
+                    FieldMeta::line_id(),
+                    FieldMeta::line_no(),
                     FieldMeta::new("account_id", "Account", FieldType::link("account")).required(),
-                    FieldMeta::new("debit", "Debit", FieldType::Decimal),
-                    FieldMeta::new("credit", "Credit", FieldType::Decimal),
+                    FieldMeta::new("debit", "Debit", FieldType::Decimal)
+                        .money()
+                        .currency_in("currency"),
+                    FieldMeta::new("credit", "Credit", FieldType::Decimal)
+                        .money()
+                        .currency_in("currency"),
                     FieldMeta::new(
                         "currency",
                         "Currency",
                         FieldType::link_by("currency", "code"),
                     ),
-                    FieldMeta::new("fx_rate", "Exchange rate", FieldType::Decimal),
+                    FieldMeta::new("fx_rate", "Exchange rate", FieldType::Decimal).rate(10),
                     FieldMeta::new("memo", "Memo", FieldType::Text),
                 ],
             }],
@@ -126,25 +148,44 @@ impl DocumentHandler for JournalEntry {
                 ("draft".into(), "posted".into()),
                 ("posted".into(), "reversed".into()),
             ],
+            summary: vec![
+                FieldMeta::new("total_debit", "Total", FieldType::Decimal)
+                    .money()
+                    .readonly()
+                    .help(
+                        "The debit side in the accounting currency, which equals the credit side.",
+                    ),
+            ],
+            ..DocTypeMeta::default()
         }
     }
 
     /// A draft may be incomplete or out of balance; it is checked in full
     /// when it is posted.
     async fn save_body(&self, ctx: &mut Ctx<'_>, doc: &Document, body: &Value) -> Result<()> {
-        let body: Body = serde_json::from_value(body.clone())
-            .map_err(|e| Error::validation(format!("invalid journal entry body: {e}")))?;
+        let body: Body = erpcraft_kernel::input::parse(body.clone(), "journal entry body")?;
         for (index, line) in body.lines.iter().enumerate() {
             let n = index + 1;
             if line.debit.is_sign_negative() || line.credit.is_sign_negative() {
-                return Err(Error::validation(format!(
-                    "line {n}: amounts cannot be negative"
-                )));
+                let field = if line.debit.is_sign_negative() {
+                    "debit"
+                } else {
+                    "credit"
+                };
+                return Err(Error::line(
+                    "lines",
+                    n,
+                    Some(field),
+                    "amounts cannot be negative",
+                ));
             }
             if !line.debit.is_zero() && !line.credit.is_zero() {
-                return Err(Error::validation(format!(
-                    "line {n}: give an amount on one side only, debit or credit"
-                )));
+                return Err(Error::line(
+                    "lines",
+                    n,
+                    None,
+                    "give an amount on one side only, debit or credit",
+                ));
             }
             // Finer than the ledger stores: refuse it here, or the draft
             // would keep a rounded rate without saying so.
@@ -152,9 +193,12 @@ impl DocumentHandler for JournalEntry {
                 .fx_rate
                 .is_some_and(|rate| rate.normalize().scale() > 10)
             {
-                return Err(Error::validation(format!(
-                    "line {n}: an exchange rate has at most 10 decimal places"
-                )));
+                return Err(Error::line(
+                    "lines",
+                    n,
+                    Some("fx_rate"),
+                    "an exchange rate has at most 10 decimal places",
+                ));
             }
         }
 
@@ -174,28 +218,89 @@ impl DocumentHandler for JournalEntry {
             ));
         }
 
+        let ids = document::line_ids(
+            &mut *ctx.conn,
+            "journal_entry_line",
+            doc.id,
+            body.lines.iter().map(|l| l.id),
+        )
+        .await?;
         sqlx::query("DELETE FROM journal_entry_line WHERE document_id = $1")
             .bind(doc.id)
             .execute(&mut *ctx.conn)
             .await?;
-        for (index, line) in body.lines.iter().enumerate() {
-            sqlx::query(
-                "INSERT INTO journal_entry_line (id, document_id, line_no, account_id, debit, credit, currency, fx_rate, memo)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-            )
-            .bind(new_id())
-            .bind(doc.id)
-            .bind(index as i32 + 1)
-            .bind(line.account_id)
-            .bind(line.debit)
-            .bind(line.credit)
-            .bind(&line.currency)
-            .bind(line.fx_rate)
-            .bind(&line.memo)
-            .execute(&mut *ctx.conn)
-            .await?;
+        if body.lines.is_empty() {
+            return Ok(());
         }
+        // One statement for all lines.
+        let line_nos: Vec<i32> = (1..=body.lines.len() as i32).collect();
+        let accounts: Vec<Uuid> = body.lines.iter().map(|l| l.account_id).collect();
+        let debits: Vec<Decimal> = body.lines.iter().map(|l| l.debit).collect();
+        let credits: Vec<Decimal> = body.lines.iter().map(|l| l.credit).collect();
+        let currencies: Vec<Option<&str>> =
+            body.lines.iter().map(|l| l.currency.as_deref()).collect();
+        let rates: Vec<Option<Decimal>> = body.lines.iter().map(|l| l.fx_rate).collect();
+        let memos: Vec<Option<&str>> = body.lines.iter().map(|l| l.memo.as_deref()).collect();
+        sqlx::query(
+            "INSERT INTO journal_entry_line (id, document_id, line_no, account_id, debit, credit, currency, fx_rate, memo)
+             SELECT r.id, $1, r.line_no, r.account_id, r.debit, r.credit, r.currency, r.fx_rate, r.memo
+             FROM unnest($2::uuid[], $3::int4[], $4::uuid[], $5::numeric[], $6::numeric[],
+                         $7::text[], $8::numeric[], $9::text[])
+                AS r(id, line_no, account_id, debit, credit, currency, fx_rate, memo)
+             ORDER BY r.line_no",
+        )
+        .bind(doc.id)
+        .bind(&ids)
+        .bind(&line_nos)
+        .bind(&accounts)
+        .bind(&debits)
+        .bind(&credits)
+        .bind(&currencies)
+        .bind(&rates)
+        .bind(&memos)
+        .execute(&mut *ctx.conn)
+        .await?;
         Ok(())
+    }
+
+    /// The total of the debit side in the accounting currency. Once
+    /// posted it is what the ledger holds. For a draft it is worked out as
+    /// the ledger will, and unknown while a line in another currency has
+    /// no rate of its own: the rate on record is taken only at posting.
+    async fn summary_of(
+        &self,
+        conn: &mut PgConnection,
+        doc: &Document,
+        body: &Value,
+    ) -> Result<Value> {
+        use erpcraft_kernel::document::body::{amount, decimal, lines};
+        let total: Option<Decimal> = if doc.status == "draft" {
+            let base = company::base_currency(conn, doc.company_id).await?;
+            let decimals = company::currency_decimals(conn, doc.company_id).await?;
+            let mut total = Some(Decimal::ZERO);
+            for line in lines(body, "lines") {
+                let rate = match line["currency"].as_str() {
+                    Some(currency) if *currency != base => decimal(&line["fx_rate"]),
+                    _ => Some(Decimal::ONE),
+                };
+                total = match (total, rate) {
+                    (Some(total), Some(rate)) => {
+                        Some(total + round_money(amount(&line["debit"]) * rate, decimals))
+                    }
+                    _ => None,
+                };
+            }
+            total
+        } else {
+            sqlx::query_scalar(
+                "SELECT sum(g.debit) FROM gl_entry g JOIN posting p ON p.id = g.posting_id
+                 WHERE p.document_id = $1 AND p.reverses_id IS NULL",
+            )
+            .bind(doc.id)
+            .fetch_one(&mut *conn)
+            .await?
+        };
+        Ok(json!({ "total_debit": total }))
     }
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
@@ -204,6 +309,21 @@ impl DocumentHandler for JournalEntry {
 }
 
 // ----------------------------------------------------------------- commands
+
+/// Say which line of the journal entry a refusal of the general ledger is
+/// about. The ledger numbers the entries it is given ("line 2: ..."), and
+/// only the caller knows what they are; here entry n is line n.
+fn at_line(error: Error) -> Error {
+    let line = error
+        .to_string()
+        .strip_prefix("line ")
+        .and_then(|rest| rest.split_once(':'))
+        .and_then(|(number, _)| number.parse::<usize>().ok());
+    match line {
+        Some(line) => error.with_line("lines", line),
+        None => error,
+    }
+}
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -225,6 +345,7 @@ impl Command for PostJournalEntry {
             "Post a draft journal entry to the general ledger. It receives its number and can no \
              longer be changed. Posting an entry that is already posted returns it unchanged.",
         )
+        .from_states(&["draft"])
         .permission("journal_entry:post")
     }
 
@@ -237,7 +358,7 @@ impl Command for PostJournalEntry {
             return document::view(ctx, doc).await;
         }
         if doc.status != "draft" {
-            return Err(Error::conflict(format!(
+            return Err(Error::state(format!(
                 "a {} journal entry cannot be posted",
                 doc.status
             )));
@@ -262,9 +383,10 @@ impl Command for PostJournalEntry {
             })
             .collect();
 
-        document::assign_number(ctx, &mut doc).await?;
         let posting = document::create_posting(ctx, &doc, doc.doc_date, doc.memo.clone()).await?;
-        erpcraft_gl::post(&mut *ctx.conn, &posting, &entries).await?;
+        erpcraft_gl::post(&mut *ctx.conn, &posting, &entries)
+            .await
+            .map_err(at_line)?;
         document::transition(ctx, &mut doc, "posted").await?;
         document::view(ctx, doc).await
     }
@@ -278,6 +400,7 @@ struct ReverseInput {
     /// Accounting date of the reversal. Defaults to the date of the
     /// original posting, whose period must then still be open.
     posting_date: Option<NaiveDate>,
+    /// Memo of the reversing posting. Defaults to "Reversal of" and the document number.
     memo: Option<String>,
 }
 
@@ -294,6 +417,8 @@ impl Command for ReverseJournalEntry {
             "Cancel a posted journal entry by adding a second posting with debit and credit swapped. \
              The original posting is kept unchanged.",
         )
+        .from_states(&["posted"])
+        .destructive()
         .permission("journal_entry:reverse")
     }
 
@@ -304,7 +429,7 @@ impl Command for ReverseJournalEntry {
             return document::view(ctx, doc).await;
         }
         if doc.status != "posted" {
-            return Err(Error::conflict(format!(
+            return Err(Error::state(format!(
                 "a {} journal entry cannot be reversed",
                 doc.status
             )));

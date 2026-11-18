@@ -1,0 +1,26 @@
+<div class="page">
+<header class="head">
+  <div>
+    <div class="company-name">{{ company.name }}</div>
+    {%- set own = none %}
+    {%- if parties and parties.seller and parties.seller.kind == "company" %}{% set own = parties.seller %}
+    {%- elif parties and parties.buyer and parties.buyer.kind == "company" %}{% set own = parties.buyer %}{% endif %}
+    {%- if own and own.city %}
+    <div class="address">{% if own.street %}{{ own.street }}<br>{% endif %}{% if own.additional_street %}{{ own.additional_street }}<br>{% endif %}{{ own.postcode or "" }} {{ own.city }}{% if own.country_code %}, {{ own.country_code }}{% endif %}</div>
+    {%- if own.vat_id %}<div class="muted">VAT ID {{ own.vat_id }}</div>{% endif %}
+    {%- else %}
+    <div class="muted">{{ company.code }}</div>
+    {%- endif %}
+  </div>
+  <div>
+    <h1>{{ meta.label }}</h1>
+    <table class="facts">
+      <tr><th>Number</th><td>{{ doc.number or "Draft" }}</td></tr>
+      <tr><th>Date</th><td>{{ doc.doc_date | date }}</td></tr>
+      <tr><th>Currency</th><td>{{ company.currency }}</td></tr>
+      {%- if doc.status not in ["open", "posted"] %}
+      <tr><th>Status</th><td>{{ doc.status }}</td></tr>
+      {%- endif %}
+    </table>
+  </div>
+</header>

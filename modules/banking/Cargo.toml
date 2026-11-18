@@ -1,0 +1,19 @@
+[package]
+name = "erpcraft-banking"
+description = "erpcraft banking module: bank statements, their import, matching and reconciliation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+erpcraft-gl.workspace = true
+erpcraft-kernel.workspace = true
+chrono.workspace = true
+csv.workspace = true
+quick-xml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+uuid.workspace = true

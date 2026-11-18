@@ -46,13 +46,13 @@ async fn setup(t: &TestApp) -> Fixture {
         "purchasing_settings",
         json!({
             "company_id": c.id,
-            "inventory_account_id": inventory,
             "grni_account_id": grni,
             "payable_account_id": payable,
             "price_variance_account_id": variance,
         }),
     )
     .await;
+    t.inventory_rule(&c.id, &inventory).await;
     Fixture {
         c,
         item,

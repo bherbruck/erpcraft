@@ -11,7 +11,6 @@ struct Stock {
     c: Company,
     item: String,
     main: String,
-    inventory: String,
     offset: String,
 }
 
@@ -41,11 +40,11 @@ async fn setup(t: &TestApp) -> Stock {
     };
     let inventory = account("1300", "Inventory", "asset").await;
     let offset = account("5100", "Stock adjustments", "expense").await;
+    t.inventory_rule(&c.id, &inventory).await;
     Stock {
         c,
         item,
         main,
-        inventory,
         offset,
     }
 }
@@ -64,7 +63,6 @@ impl Stock {
                     "company_id": self.c.id,
                     "doc_date": "2026-03-15",
                     "body": {
-                        "inventory_account_id": self.inventory,
                         "offset_account_id": self.offset,
                         "lines": lines,
                     },
@@ -370,10 +368,10 @@ async fn an_adjustment_is_checked_before_and_at_posting() {
             "{body}"
         );
     }
-    let (status, body) = create(json!({ "inventory_account_id": other.cash, "lines": [] })).await;
+    let (status, body) = create(json!({ "offset_account_id": other.cash, "lines": [] })).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 
-    // A draft may lack its accounts, but cannot be posted without them.
+    // A draft may lack its offset account, but cannot be posted without it.
     let (status, draft) = create(json!({ "lines": [s.line("5", Some("1.00"))] })).await;
     assert_eq!(status, StatusCode::CREATED, "{draft}");
     let (status, body) = t

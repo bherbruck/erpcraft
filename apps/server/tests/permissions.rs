@@ -348,7 +348,8 @@ async fn a_rule_is_checked_when_its_role_is_saved() {
             "must name one resource",
         ),
         (
-            json!([{ "allow": "user:create", "where": "record.email == 'x'" }]),
+            // Users are an entity now; a token is not.
+            json!([{ "allow": "token:create", "where": "record.email == 'x'" }]),
             "not an entity or a document type",
         ),
         (

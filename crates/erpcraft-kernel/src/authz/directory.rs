@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use erpcraft_core::{Error, Result, new_id};
 use erpcraft_db::{PgConnection, PgPool};
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
@@ -20,7 +21,7 @@ pub trait Authenticator: Send + Sync + 'static {
     async fn authenticate(&self, kernel: &Kernel, token: &str) -> Result<Actor>;
 }
 
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, JsonSchema, sqlx::FromRow)]
 pub struct User {
     pub id: Uuid,
     pub email: String,
@@ -63,23 +64,33 @@ pub async fn load_actor(
     user_id: Uuid,
     scopes: Option<Vec<String>>,
 ) -> Result<Actor> {
-    let user: Option<(String, String, bool, Value)> = sqlx::query_as(
-        "SELECT email, name, is_admin, attributes FROM app_user WHERE id = $1 AND active",
+    // The user and their roles in one round trip: this runs for every
+    // request.
+    let user: Option<(String, String, bool, Value, Value)> = sqlx::query_as(
+        "SELECT u.email, u.name, u.is_admin, u.attributes,
+                COALESCE(jsonb_agg(jsonb_build_array(ra.company_id, r.permissions))
+                             FILTER (WHERE r.id IS NOT NULL), '[]')
+         FROM app_user u
+         LEFT JOIN role_assignment ra ON ra.user_id = u.id
+         LEFT JOIN role r ON r.id = ra.role_id
+         WHERE u.id = $1 AND u.active
+         GROUP BY u.id",
     )
     .bind(user_id)
     .fetch_optional(pool)
     .await?;
-    let Some((email, name, is_admin, attributes)) = user else {
+    let Some((email, name, is_admin, attributes, assignments)) = user else {
         return Err(Error::Unauthorized);
     };
-    let assignments: Vec<(Option<Uuid>, Value)> = sqlx::query_as(
-        "SELECT ra.company_id, r.permissions
-         FROM role_assignment ra JOIN role r ON r.id = ra.role_id
-         WHERE ra.user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_all(pool)
-    .await?;
+    let assignments: Vec<(Option<Uuid>, Value)> = assignments
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|pair| {
+            let company_id = pair[0].as_str().and_then(|id| Uuid::parse_str(id).ok());
+            (company_id, pair[1].clone())
+        })
+        .collect();
     let grants = assignments
         .into_iter()
         .map(|(company_id, permissions)| Grant {
@@ -100,6 +111,7 @@ pub async fn load_actor(
         attributes,
         grants,
         scopes,
+        credential: None,
     })
 }
 

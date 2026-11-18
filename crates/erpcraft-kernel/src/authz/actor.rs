@@ -67,7 +67,9 @@ impl PermissionRule {
                 };
                 let condition = match rule.get("where") {
                     None | Some(Value::Null) => None,
-                    Some(Value::String(source)) => Some(Arc::new(Rule::parse(source)?)),
+                    // A rule of a role is kept by the installation: it is
+                    // remembered where no request can push it out.
+                    Some(Value::String(source)) => Some(Arc::new(Rule::parse_stored(source)?)),
                     Some(_) => return Err(bad("'where' must be a string")),
                 };
                 let fields = match rule.get("fields") {
@@ -198,7 +200,7 @@ impl FieldAccess {
 }
 
 /// How far an actor's use of one field goes, across all records.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Reach {
     /// On every record the actor can reach.
@@ -234,6 +236,11 @@ pub struct Actor {
     /// A cap set by the credential in use: the actor can do only what both
     /// these patterns and the grants allow. `None`: no cap.
     pub scopes: Option<Vec<String>>,
+    /// How the credential in use was obtained, as the authenticator says:
+    /// `password`, or `sso:` and a provider. A token made from another
+    /// carries its origin on. `None` where nothing is known.
+    #[serde(skip)]
+    pub credential: Option<String>,
 }
 
 /// `pattern` is `resource:action` where either side may be `*`, or a bare `*`.
@@ -512,12 +519,24 @@ impl Actor {
             })
         };
 
+        // A rule without a condition, under a grant that is not limited to
+        // one company here, allows every row: the other allows add nothing.
+        // They are then not compiled at all, so that no value is bound that
+        // the SQL does not use. sqlx caches prepared statements by their
+        // text, and a text prepared with an unused parameter fails when the
+        // same text later runs on that connection without it, and the
+        // other way round.
+        let mut allow_all = self.rules(permission, target).any(|(grant, rule)| {
+            matches!(rule.effect, Effect::Allow)
+                && !rule.broken
+                && rule.condition.is_none()
+                && (scope.company_column.is_none() || grant.company_id.is_none())
+        });
         let mut allows = vec![];
-        let mut allow_all = false;
         let mut denies = vec![];
         for (grant, rule) in self.rules(permission, target) {
             match rule.effect {
-                Effect::Allow if rule.broken => {}
+                Effect::Allow if rule.broken || allow_all => {}
                 Effect::Allow => {
                     let mark = binds.len();
                     match term(grant, rule, binds) {
@@ -585,6 +604,7 @@ mod tests {
             name: "A".into(),
             is_admin: false,
             attributes: json!({"warehouses": ["W1"]}),
+            credential: None,
             grants: grants
                 .into_iter()
                 .map(|(company_id, items)| Grant {
@@ -751,6 +771,30 @@ mod tests {
         let everything = actor(vec![(None, vec![json!("stock:read")])]);
         assert_eq!(filter(&everything, "stock:read").unwrap().0, None);
         assert!(filter(&everything, "stock:update").is_err());
+
+        // A grant for all companies makes a narrower one moot, and nothing
+        // is bound for it: the SQL would not use the value.
+        let both = actor(vec![
+            (Some(A), vec![json!("stock:read")]),
+            (None, vec![json!("stock:read")]),
+        ]);
+        assert_eq!(filter(&both, "stock:read").unwrap(), (None, vec![]));
+        let both_denied = actor(vec![
+            (Some(A), vec![json!("stock:read")]),
+            (
+                None,
+                vec![
+                    json!("stock:read"),
+                    json!({"deny": "stock:read", "where": "record.created_by == user.id"}),
+                ],
+            ),
+        ]);
+        let (sql, binds) = filter(&both_denied, "stock:read").unwrap();
+        assert_eq!(
+            sql.unwrap(),
+            "COALESCE(NOT (((t.created_by = $1::uuid))), false)"
+        );
+        assert_eq!(binds.len(), 1);
 
         let one_company = actor(vec![(Some(A), vec![json!("stock:read")])]);
         let (sql, binds) = filter(&one_company, "stock:read").unwrap();

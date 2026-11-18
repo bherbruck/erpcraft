@@ -34,7 +34,7 @@ use crate::entity::{DEFAULT_LIMIT, MAX_LIMIT, Page};
 pub const READ: &str = "outbox:read";
 
 /// A committed change, as written by the command executor.
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, JsonSchema, sqlx::FromRow)]
 pub struct Event {
     pub id: Uuid,
     pub created_at: DateTime<Utc>,
@@ -171,7 +171,7 @@ async fn deliver(kernel: &Kernel, event: &Event) -> std::result::Result<(), Stri
 }
 
 /// An event with the state of its delivery.
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, JsonSchema, sqlx::FromRow)]
 pub struct EventStatus {
     pub id: Uuid,
     pub created_at: DateTime<Utc>,
@@ -205,6 +205,7 @@ struct ListInput {
     state: State,
     /// At most 500; 50 when omitted.
     limit: Option<i64>,
+    /// Records to skip, for paging.
     offset: Option<i64>,
 }
 
@@ -221,6 +222,7 @@ impl Command for List {
             "Events waiting to be delivered to subscribers, oldest first. By default only those \
              whose delivery has failed, with the last error.",
         )
+        .report("Outbox")
         .permission(READ)
     }
 

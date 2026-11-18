@@ -4,10 +4,16 @@
 //! opened for one of their documents. The ledger's rules are enforced by
 //! database triggers, so they hold for every module:
 //!
-//! - stock on hand never goes below zero;
+//! - stock on hand never goes below zero, unless a policy rule of the
+//!   company allows it (the policy point `stock.negative`, asked by
+//!   [`post`]); the entry then names the rule;
 //! - a receipt comes in at the cost the caller states, an issue goes out
 //!   at the moving average cost of what is on hand, and the ledger, not the
 //!   caller, works that out;
+//! - goods that are not on hand leave at the last cost known for them, an
+//!   estimate. When goods arrive on a level below zero they first cover
+//!   what is missing, and the difference between their real cost and that
+//!   estimate is a variance, not stock value: see [`StockEntry::variance`];
 //! - the last of the stock takes the last of the value with it, so no
 //!   rounding remainder is ever left on an empty shelf;
 //! - entries are never edited, and a reversal takes back exactly what the
@@ -19,12 +25,14 @@
 
 use std::sync::Arc;
 
+use erpcraft_kernel::policy::Policy;
 use erpcraft_kernel::{
-    Command, CommandSpec, Ctx, Decimal, DynCommand, EntityMeta, Error, FieldMeta, FieldType,
-    JsonSchema, Ledger, Migration, Module, PgConnection, Posting, Result, async_trait, command,
-    new_id, round_money, schemars,
+    Command, CommandSpec, Ctx, Decimal, Decision, DynCommand, EntityMeta, Error, FieldMeta,
+    FieldType, JsonSchema, Ledger, Migration, Module, PgConnection, PolicyPoint, Posting, Result,
+    async_trait, command, company, new_id, round_money, schemars,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 pub struct StockModule;
@@ -35,11 +43,72 @@ impl Module for StockModule {
     }
 
     fn migrations(&self) -> Vec<Migration> {
-        vec![Migration {
-            version: 1,
-            name: "stock",
-            sql: include_str!("../migrations/0001_stock.sql"),
-        }]
+        vec![
+            Migration {
+                version: 1,
+                name: "stock",
+                sql: include_str!("../migrations/0001_stock.sql"),
+            },
+            Migration {
+                version: 2,
+                name: "negative_stock",
+                sql: include_str!("../migrations/0002_negative_stock.sql"),
+            },
+            Migration {
+                version: 3,
+                name: "last_cost_and_facts",
+                sql: include_str!("../migrations/0003_last_cost_and_facts.sql"),
+            },
+            Migration {
+                version: 4,
+                name: "cost_adjustment",
+                sql: include_str!("../migrations/0004_cost_adjustment.sql"),
+            },
+            Migration {
+                version: 5,
+                name: "item_weight",
+                sql: include_str!("../migrations/0005_item_weight.sql"),
+            },
+        ]
+    }
+
+    fn policies(&self) -> Vec<PolicyPoint> {
+        vec![
+            PolicyPoint::new(
+                NEGATIVE,
+                "Asked whenever stock going out would take an item in a warehouse below zero: \
+                 may it? Unless configured otherwise it may not. A company whose goods are \
+                 often on the shelf before their receipt is entered allows it, for everything \
+                 or for some movements only, for example with an allow rule when \
+                 `facts.context == 'sales_delivery'`. Goods that are not on hand leave at the \
+                 last cost known for the item in that warehouse; when the missing goods are \
+                 received, the difference from their real cost is posted as a stock variance, \
+                 which needs an account rule with the purpose `stock_variance`.",
+            )
+            .number(
+                "on_hand",
+                "Quantity on hand before this movement; below zero if the level already is",
+            )
+            .as_quantity()
+            .number("issuing", "Quantity this movement takes out")
+            .as_quantity()
+            .number(
+                "short_by",
+                "How far below zero the level would stand after this movement",
+            )
+            .as_quantity()
+            .text("item_code", "Code of the item")
+            .text("warehouse_code", "Code of the warehouse")
+            .text(
+                "context",
+                "What takes the stock out: sales_delivery, production, adjustment or transfer; \
+                 other modules name their own",
+            )
+            .refuse_by_default()
+            .refusal("there is not enough stock on hand")
+            // The ledger checks the allowing rule itself.
+            .not_approvable(),
+        ]
     }
 
     fn entities(&self) -> Vec<EntityMeta> {
@@ -55,6 +124,14 @@ impl Module for StockModule {
                 .field(FieldMeta::new("name", "Name", FieldType::Text).required())
                 // Quantities already recorded would change meaning.
                 .field(FieldMeta::new("uom", "Unit of measure", FieldType::Text).immutable())
+                .field(
+                    FieldMeta::new("weight", "Weight", FieldType::Decimal)
+                        .quantity()
+                        .help(
+                            "Of one unit, in the company's unit of weight: what freight is \
+                             shared out by when it is allocated by weight.",
+                        ),
+                )
                 .field(FieldMeta::new("active", "Active", FieldType::Bool))
                 .field(created())
                 .order_by(&["code"])
@@ -70,7 +147,7 @@ impl Module for StockModule {
                 .company_field("company_id"),
             EntityMeta::new("stock_entry", "Stock entry")
                 .field(company())
-                .field(FieldMeta::new("posting_id", "Posting", FieldType::Uuid))
+                .field(FieldMeta::new("posting_id", "Posting", FieldType::Posting))
                 .field(FieldMeta::new("line_no", "Line", FieldType::Int))
                 .field(FieldMeta::new(
                     "source_line_id",
@@ -88,23 +165,39 @@ impl Module for StockModule {
                     "Posting date",
                     FieldType::Date,
                 ))
-                .field(FieldMeta::new("qty", "Quantity", FieldType::Decimal))
-                .field(FieldMeta::new("value", "Value", FieldType::Decimal))
-                .field(FieldMeta::new("unit_cost", "Unit cost", FieldType::Decimal))
-                .field(FieldMeta::new(
-                    "qty_after",
-                    "Quantity after",
-                    FieldType::Decimal,
-                ))
-                .field(FieldMeta::new(
-                    "value_after",
-                    "Value after",
-                    FieldType::Decimal,
-                ))
+                .field(
+                    FieldMeta::new("qty", "Quantity", FieldType::Decimal)
+                        .quantity()
+                        .unit_of("item_id", "uom"),
+                )
+                .field(FieldMeta::new("value", "Value", FieldType::Decimal).money())
+                .field(FieldMeta::new("unit_cost", "Unit cost", FieldType::Decimal).unit_price())
+                .field(
+                    FieldMeta::new("qty_after", "Quantity after", FieldType::Decimal)
+                        .quantity()
+                        .unit_of("item_id", "uom"),
+                )
+                .field(FieldMeta::new("value_after", "Value after", FieldType::Decimal).money())
                 .field(FieldMeta::new(
                     "reverses_id",
                     "Reverses",
                     FieldType::link("stock_entry"),
+                ))
+                .field(FieldMeta::new("variance", "Variance", FieldType::Decimal).money())
+                .field(FieldMeta::new(
+                    "negative_rule_id",
+                    "Went below zero by policy rule",
+                    FieldType::link("policy_rule"),
+                ))
+                .field(FieldMeta::new(
+                    "negative_facts",
+                    "Facts the rule was asked with",
+                    FieldType::Json,
+                ))
+                .field(FieldMeta::new(
+                    "negative_condition",
+                    "Condition of the rule then",
+                    FieldType::Text,
                 ))
                 .field(created())
                 .order_by(&["created_at", "id"])
@@ -122,6 +215,9 @@ impl Module for StockModule {
     }
 }
 
+/// The policy point asked when an issue would take a level below zero.
+pub const NEGATIVE: &str = "stock.negative";
+
 /// One movement to record.
 #[derive(Debug, Clone)]
 pub struct StockLine {
@@ -137,6 +233,102 @@ pub struct StockLine {
     pub source_line_id: Option<Uuid>,
 }
 
+/// A change in the value of what is on hand of an item in a warehouse,
+/// without any quantity moving: a landed cost allocated to goods received.
+#[derive(Debug, Clone)]
+pub struct Adjustment {
+    pub item_id: Uuid,
+    pub warehouse_id: Uuid,
+    /// In the company's accounting currency, rounded to its decimals; more
+    /// than zero raises the value.
+    pub value: Decimal,
+    pub source_line_id: Option<Uuid>,
+}
+
+/// Record cost adjustments under `posting`: entries with no quantity that
+/// change the value of the stock on hand. The ledger refuses one on a level
+/// with nothing on hand, or that would take its value below zero.
+/// Reversing the posting takes them back, which the ledger refuses once the
+/// stock has gone.
+pub async fn adjust(
+    conn: &mut PgConnection,
+    posting: &Posting,
+    adjustments: &[Adjustment],
+) -> Result<Vec<StockEntry>> {
+    if adjustments.is_empty() {
+        return Ok(vec![]);
+    }
+    lock_levels(
+        conn,
+        posting.company_id,
+        adjustments
+            .iter()
+            .map(|a| (a.item_id, a.warehouse_id))
+            .collect(),
+    )
+    .await?;
+    let numbered: i32 = sqlx::query_scalar(
+        "SELECT COALESCE(max(line_no), 0) FROM stock_entry WHERE posting_id = $1",
+    )
+    .bind(posting.id)
+    .fetch_one(&mut *conn)
+    .await?;
+    let ids: Vec<Uuid> = adjustments.iter().map(|_| new_id()).collect();
+    let line_nos: Vec<i32> = (1..=adjustments.len() as i32)
+        .map(|n| numbered + n)
+        .collect();
+    // In the order given; see `post` on relying on it.
+    let mut entries: Vec<StockEntry> = sqlx::query_as(&format!(
+        "INSERT INTO stock_entry (id, company_id, posting_id, line_no, source_line_id, item_id,
+            warehouse_id, posting_date, qty, value, unit_cost, qty_after, value_after)
+         SELECT r.id, $1, $2, r.line_no, r.source_line_id, r.item_id, r.warehouse_id, $3,
+            0, r.value, 0, 0, 0
+         FROM unnest($4::uuid[], $5::int4[], $6::uuid[], $7::uuid[], $8::uuid[], $9::numeric[])
+            AS r (id, line_no, source_line_id, item_id, warehouse_id, value)
+         ORDER BY r.line_no
+         RETURNING {ENTRY_COLUMNS}"
+    ))
+    .bind(posting.company_id)
+    .bind(posting.id)
+    .bind(posting.posting_date)
+    .bind(&ids)
+    .bind(&line_nos)
+    .bind(
+        adjustments
+            .iter()
+            .map(|a| a.source_line_id)
+            .collect::<Vec<_>>(),
+    )
+    .bind(adjustments.iter().map(|a| a.item_id).collect::<Vec<_>>())
+    .bind(
+        adjustments
+            .iter()
+            .map(|a| a.warehouse_id)
+            .collect::<Vec<_>>(),
+    )
+    .bind(adjustments.iter().map(|a| a.value).collect::<Vec<_>>())
+    .fetch_all(&mut *conn)
+    .await?;
+    entries.sort_by_key(|e| e.line_no);
+    Ok(entries)
+}
+
+/// What is on hand of an item in a warehouse now: quantity and value.
+pub async fn on_hand(
+    conn: &mut PgConnection,
+    item_id: Uuid,
+    warehouse_id: Uuid,
+) -> Result<(Decimal, Decimal)> {
+    let level: Option<(Decimal, Decimal)> = sqlx::query_as(
+        "SELECT qty, value FROM stock_level WHERE item_id = $1 AND warehouse_id = $2",
+    )
+    .bind(item_id)
+    .bind(warehouse_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(level.unwrap_or_default())
+}
+
 /// The cost of stock coming in.
 #[derive(Debug, Clone, Copy)]
 pub enum Cost {
@@ -149,7 +341,7 @@ pub enum Cost {
 }
 
 /// A movement as the ledger recorded it.
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, JsonSchema, sqlx::FromRow)]
 pub struct StockEntry {
     pub id: Uuid,
     pub line_no: i32,
@@ -163,10 +355,28 @@ pub struct StockEntry {
     pub unit_cost: Decimal,
     pub qty_after: Decimal,
     pub value_after: Decimal,
+    /// Not zero only for goods that arrived on a level below zero: what
+    /// the goods covering the shortfall really cost, less the estimate the
+    /// shortfall left stock at. It is not stock value. The caller posts it
+    /// to the account for the purpose `stock_variance`: a debit when
+    /// positive, a credit when negative.
+    pub variance: Decimal,
+    /// The policy rule that allowed this issue to take the level below
+    /// zero. `None` for every entry that did not.
+    pub negative_rule_id: Option<Uuid>,
+}
+
+impl StockEntry {
+    /// What the movement cost in all: the change in stock value plus the
+    /// variance. For a receipt it is the cost the caller stated, and what
+    /// the other side of the receipt is posted at.
+    pub fn cost(&self) -> Decimal {
+        self.value + self.variance
+    }
 }
 
 const ENTRY_COLUMNS: &str = "id, line_no, source_line_id, item_id, warehouse_id, qty, value, \
-                             unit_cost, qty_after, value_after";
+                             unit_cost, qty_after, value_after, variance, negative_rule_id";
 
 /// Lock the levels of these `(item, warehouse)` pairs, always in the same
 /// order, so that two postings moving the same items cannot deadlock.
@@ -175,8 +385,19 @@ const ENTRY_COLUMNS: &str = "id, line_no, source_line_id, item_id, warehouse_id,
 pub async fn lock_levels(
     conn: &mut PgConnection,
     company_id: Uuid,
-    mut pairs: Vec<(Uuid, Uuid)>,
+    pairs: Vec<(Uuid, Uuid)>,
 ) -> Result<()> {
+    lock_and_read_levels(conn, company_id, pairs)
+        .await
+        .map(|_| ())
+}
+
+/// [`lock_levels`], returning the quantity on hand of each level.
+async fn lock_and_read_levels(
+    conn: &mut PgConnection,
+    company_id: Uuid,
+    mut pairs: Vec<(Uuid, Uuid)>,
+) -> Result<std::collections::HashMap<(Uuid, Uuid), Decimal>> {
     pairs.sort();
     pairs.dedup();
     let (items, warehouses): (Vec<Uuid>, Vec<Uuid>) = pairs.into_iter().unzip();
@@ -190,40 +411,44 @@ pub async fn lock_levels(
     .bind(company_id)
     .execute(&mut *conn)
     .await?;
-    sqlx::query(
-        "SELECT 1 FROM stock_level l
+    let levels: Vec<(Uuid, Uuid, Decimal)> = sqlx::query_as(
+        "SELECT l.item_id, l.warehouse_id, l.qty FROM stock_level l
          JOIN unnest($1::uuid[], $2::uuid[]) AS p (item_id, warehouse_id)
            ON p.item_id = l.item_id AND p.warehouse_id = l.warehouse_id
          ORDER BY l.item_id, l.warehouse_id FOR UPDATE OF l",
     )
     .bind(&items)
     .bind(&warehouses)
-    .execute(&mut *conn)
+    .fetch_all(&mut *conn)
     .await?;
-    Ok(())
+    Ok(levels
+        .into_iter()
+        .map(|(item, warehouse, qty)| ((item, warehouse), qty))
+        .collect())
 }
 
 /// Write stock entries under a posting, in the order given, and return
 /// them as recorded, with the value the ledger gave each one. It can be
 /// called more than once for the same posting; the entries are numbered
 /// on from the ones already there.
+///
+/// `context` says what the movement is, in one word such as
+/// `sales_delivery`. The company's policy on stock below zero
+/// ([`NEGATIVE`]) can tell movements apart by it.
+///
+/// A caller that brings stock in must look at [`StockEntry::variance`].
 pub async fn post(
-    conn: &mut PgConnection,
+    ctx: &mut Ctx<'_>,
     posting: &Posting,
     lines: &[StockLine],
+    context: &str,
 ) -> Result<Vec<StockEntry>> {
     if lines.is_empty() {
         return Err(Error::validation(
             "a posting needs at least one stock entry",
         ));
     }
-    let decimals: i16 = sqlx::query_scalar(
-        "SELECT cur.decimals FROM company c
-         JOIN currency cur ON cur.code = c.base_currency WHERE c.id = $1",
-    )
-    .bind(posting.company_id)
-    .fetch_one(&mut *conn)
-    .await?;
+    let decimals = company::currency_decimals(&mut *ctx.conn, posting.company_id).await?;
 
     let mut values = Vec::with_capacity(lines.len());
     for (index, line) in lines.iter().enumerate() {
@@ -237,7 +462,7 @@ pub async fn post(
             (true, Some(Cost::Unit(cost) | Cost::Total(cost))) if cost.is_sign_negative() => {
                 return Err(fail("the cost cannot be negative"));
             }
-            (true, Some(Cost::Unit(cost))) => Some(round_money(line.qty * cost, decimals as u32)),
+            (true, Some(Cost::Unit(cost))) => Some(round_money(line.qty * cost, decimals)),
             (true, Some(Cost::Total(value))) => Some(value),
             (false, Some(_)) => {
                 return Err(fail(
@@ -248,8 +473,10 @@ pub async fn post(
         });
     }
 
-    lock_levels(
-        conn,
+    // What is on hand, followed line by line as the ledger will see it:
+    // the trigger takes the entries in the order given.
+    let mut on_hand = lock_and_read_levels(
+        &mut *ctx.conn,
         posting.company_id,
         lines.iter().map(|l| (l.item_id, l.warehouse_id)).collect(),
     )
@@ -259,34 +486,131 @@ pub async fn post(
         "SELECT COALESCE(max(line_no), 0) FROM stock_entry WHERE posting_id = $1",
     )
     .bind(posting.id)
-    .fetch_one(&mut *conn)
+    .fetch_one(&mut *ctx.conn)
     .await?;
 
-    let mut entries = Vec::with_capacity(lines.len());
-    for (index, (line, value)) in lines.iter().zip(values).enumerate() {
-        // unit_cost and the running totals are set by the ledger's trigger,
-        // as is the value of an issue.
-        let entry: StockEntry = sqlx::query_as(&format!(
-            "INSERT INTO stock_entry (id, company_id, posting_id, line_no, source_line_id, item_id,
-                warehouse_id, posting_date, qty, value, unit_cost, qty_after, value_after)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, 0, 0)
-             RETURNING {ENTRY_COLUMNS}"
-        ))
-        .bind(new_id())
-        .bind(posting.company_id)
-        .bind(posting.id)
-        .bind(numbered + index as i32 + 1)
-        .bind(line.source_line_id)
-        .bind(line.item_id)
-        .bind(line.warehouse_id)
-        .bind(posting.posting_date)
-        .bind(line.qty)
-        .bind(value)
-        .fetch_one(&mut *conn)
-        .await?;
-        entries.push(entry);
+    // Loaded when the first line is short, so that a posting within what
+    // is on hand asks nothing.
+    let mut policy = None;
+    let mut rule_ids = Vec::with_capacity(lines.len());
+    let mut facts = Vec::with_capacity(lines.len());
+    for line in lines {
+        let level = on_hand
+            .entry((line.item_id, line.warehouse_id))
+            .or_default();
+        let allowed = if line.qty.is_sign_negative() {
+            allow_negative(ctx, &mut policy, posting.company_id, line, *level, context).await?
+        } else {
+            None
+        };
+        *level += line.qty;
+        let (rule, fact) = allowed.unzip();
+        rule_ids.push(rule);
+        facts.push(fact.map(|f| f.to_string()));
     }
+
+    // One statement for all entries. unit_cost and the running totals are
+    // set by the ledger's trigger, row by row in the order given, as are the
+    // value of an issue and the variance of a receipt. The trigger honours
+    // a rule only if it is one that allows this, and only with the facts it
+    // was asked with, which it checks.
+    //
+    // This relies on `INSERT ... SELECT ... ORDER BY` inserting the rows,
+    // and firing the row triggers, in the order of the ORDER BY. PostgreSQL
+    // does not document that; it holds in practice, because the insert
+    // (ModifyTable) pulls rows from the Sort one at a time and an INSERT is
+    // never run in parallel. The order of RETURNING is not relied on: the
+    // entries are sorted by line number below.
+    let ids: Vec<Uuid> = lines.iter().map(|_| new_id()).collect();
+    let line_nos: Vec<i32> = (1..=lines.len() as i32).map(|n| numbered + n).collect();
+    let mut entries: Vec<StockEntry> = sqlx::query_as(&format!(
+        "INSERT INTO stock_entry (id, company_id, posting_id, line_no, source_line_id, item_id,
+            warehouse_id, posting_date, qty, value, unit_cost, qty_after, value_after,
+            negative_rule_id, negative_facts)
+         SELECT r.id, $1, $2, r.line_no, r.source_line_id, r.item_id, r.warehouse_id, $3,
+            r.qty, r.value, 0, 0, 0, r.rule_id, r.facts::jsonb
+         FROM unnest($4::uuid[], $5::int4[], $6::uuid[], $7::uuid[], $8::uuid[],
+                     $9::numeric[], $10::numeric[], $11::uuid[], $12::text[])
+            AS r (id, line_no, source_line_id, item_id, warehouse_id, qty, value, rule_id, facts)
+         ORDER BY r.line_no
+         RETURNING {ENTRY_COLUMNS}"
+    ))
+    .bind(posting.company_id)
+    .bind(posting.id)
+    .bind(posting.posting_date)
+    .bind(&ids)
+    .bind(&line_nos)
+    .bind(lines.iter().map(|l| l.source_line_id).collect::<Vec<_>>())
+    .bind(lines.iter().map(|l| l.item_id).collect::<Vec<_>>())
+    .bind(lines.iter().map(|l| l.warehouse_id).collect::<Vec<_>>())
+    .bind(lines.iter().map(|l| l.qty).collect::<Vec<_>>())
+    .bind(&values)
+    .bind(&rule_ids)
+    .bind(&facts)
+    .fetch_all(&mut *ctx.conn)
+    .await?;
+    // Returned in the order given, by their numbers.
+    entries.sort_by_key(|e| e.line_no);
     Ok(entries)
+}
+
+/// For an issue that would take its level below zero, ask the company's
+/// policy. `on_hand` is the level as the entry will find it: read under
+/// the level's lock and followed through the lines before it. Returns the
+/// rule that allows it with the facts it was asked with, `None` when the
+/// issue stays within what is on hand, and the refusal otherwise.
+async fn allow_negative<'a>(
+    ctx: &mut Ctx<'a>,
+    policy: &mut Option<Policy<'a>>,
+    company_id: Uuid,
+    line: &StockLine,
+    on_hand: Decimal,
+    context: &str,
+) -> Result<Option<(Uuid, Value)>> {
+    let after = on_hand + line.qty;
+    if !after.is_sign_negative() || after.is_zero() {
+        return Ok(None);
+    }
+    // An unknown item or warehouse is left to the ledger to refuse.
+    let named: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT i.code, i.uom, w.code FROM item i, warehouse w WHERE i.id = $1 AND w.id = $2",
+    )
+    .bind(line.item_id)
+    .bind(line.warehouse_id)
+    .fetch_optional(&mut *ctx.conn)
+    .await?;
+    let Some((item_code, uom, warehouse_code)) = named else {
+        return Ok(None);
+    };
+    let policy = match policy {
+        Some(policy) => policy,
+        None => policy.insert(ctx.policy(NEGATIVE, company_id).await?),
+    };
+    let shown = |qty: Decimal| qty.normalize().to_string();
+    let facts = json!({
+        "on_hand": shown(on_hand),
+        "issuing": shown(-line.qty),
+        "short_by": shown(-after),
+        "item_code": item_code,
+        "warehouse_code": warehouse_code,
+        "context": context,
+    });
+    let ruling = policy.ruling(facts.clone())?;
+    match (ruling.decision, ruling.rule_id) {
+        (Decision::Allowed, Some(rule_id)) => Ok(Some((rule_id, facts))),
+        (Decision::Refused(refusal), _) => {
+            Err(Error::validation(refusal.message.unwrap_or_else(|| {
+                format!(
+                    "only {} {uom} of item {item_code} are on hand in warehouse {warehouse_code}",
+                    shown(on_hand)
+                )
+            })))
+        }
+        // Allowed with no rule to name: the ledger could not verify it.
+        (Decision::Allowed, None) => Err(Error::internal(
+            "stock below zero must be allowed by a policy rule",
+        )),
+    }
 }
 
 /// The entries recorded under a posting, in order.
@@ -300,7 +624,71 @@ pub async fn entries_of(conn: &mut PgConnection, posting_id: Uuid) -> Result<Vec
     Ok(entries)
 }
 
+/// The stock value the document's posting brought in and took out, both
+/// as positive amounts: `(in, out)`. `None` for a document that has not
+/// posted. This is what a document shows as its value once it is posted.
+pub async fn value_moved(
+    conn: &mut PgConnection,
+    document_id: Uuid,
+) -> Result<Option<(Decimal, Decimal)>> {
+    let posting: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM posting WHERE document_id = $1 AND reverses_id IS NULL
+         ORDER BY created_at, id LIMIT 1",
+    )
+    .bind(document_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(posting) = posting else {
+        return Ok(None);
+    };
+    let entries = entries_of(conn, posting).await?;
+    let sum = |incoming: bool| -> Decimal {
+        entries
+            .iter()
+            .filter(|e| e.value.is_sign_positive() == incoming && !e.value.is_zero())
+            .map(|e| e.value.abs())
+            .sum()
+    };
+    Ok(Some((sum(true), sum(false))))
+}
+
 struct StockLedger;
+
+/// One stock entry as a document shows it under its posting. Quantities
+/// and values are decimals as text. Codes and names are absent for a
+/// reader who may not read items or warehouses.
+#[derive(JsonSchema)]
+#[allow(dead_code)] // describes the rows `entries` builds in SQL
+struct StockEntryRow {
+    /// Entry id.
+    id: Option<Uuid>,
+    /// Position within the posting, from 1.
+    line_no: Option<i32>,
+    /// The document line the entry comes from.
+    source_line_id: Option<Uuid>,
+    item_id: Option<Uuid>,
+    /// Item code.
+    item_code: Option<String>,
+    /// Item name.
+    item_name: Option<String>,
+    /// Unit of measure.
+    uom: Option<String>,
+    warehouse_id: Option<Uuid>,
+    /// Warehouse code.
+    warehouse_code: Option<String>,
+    /// Quantity in (positive) or out (negative).
+    qty: Option<String>,
+    /// Value in or out, in the accounting currency.
+    value: Option<String>,
+    /// Cost of one unit.
+    unit_cost: Option<String>,
+    /// Quantity on hand after the entry.
+    qty_after: Option<String>,
+    /// Value on hand after the entry.
+    value_after: Option<String>,
+    /// Value that went to stock variance.
+    variance: Option<String>,
+}
 
 #[async_trait]
 impl Ledger for StockLedger {
@@ -308,9 +696,23 @@ impl Ledger for StockLedger {
         "stock"
     }
 
-    /// Take back each original entry, last first. The ledger refuses if the
-    /// stock has since moved on: a receipt cannot be reversed once what it
-    /// brought in has been issued.
+    fn label(&self) -> String {
+        "Stock".into()
+    }
+
+    fn entry_schema(&self) -> Value {
+        erpcraft_kernel::document::row_schema::<StockEntryRow>()
+    }
+
+    fn entry_tables(&self) -> &'static [&'static str] {
+        &["stock_entry"]
+    }
+
+    /// Take back each original entry, last first, with its variance. The
+    /// ledger refuses if the stock has since moved on: a receipt cannot be
+    /// reversed once what it brought in has been issued. Taking back a
+    /// receipt that arrived on a level below zero may leave the level as
+    /// far below zero as it stood before, not further.
     async fn reverse(
         &self,
         conn: &mut PgConnection,
@@ -354,6 +756,56 @@ impl Ledger for StockLedger {
         }
         Ok(())
     }
+
+    /// The movements of the posting with their items and warehouses.
+    /// Names come only with the right to read what they name, and what is
+    /// withheld on stock entries, such as their value, is withheld here.
+    async fn entries(
+        &self,
+        ctx: &mut Ctx<'_>,
+        posting: &Posting,
+    ) -> Result<Option<Vec<serde_json::Value>>> {
+        const READ: &str = "stock_entry:read";
+        let actor = ctx.actor;
+        if !actor.can(READ, posting.company_id) {
+            return Ok(None);
+        }
+        let named = |permission: &str, allowed: bool| {
+            allowed
+                && !["code", "name"]
+                    .iter()
+                    .any(|field| actor.may_withhold(permission, field))
+        };
+        let items = named("item:read", actor.can_any("item:read"));
+        let warehouses = named(
+            "warehouse:read",
+            actor.can("warehouse:read", posting.company_id),
+        );
+        let mut rows: Vec<serde_json::Value> = sqlx::query_scalar(
+            "SELECT jsonb_build_object(
+                'id', e.id, 'line_no', e.line_no, 'source_line_id', e.source_line_id,
+                'item_id', e.item_id,
+                'item_code', CASE WHEN $2 THEN i.code END,
+                'item_name', CASE WHEN $2 THEN i.name END,
+                'uom', i.uom,
+                'warehouse_id', e.warehouse_id,
+                'warehouse_code', CASE WHEN $3 THEN w.code END,
+                'qty', e.qty::text, 'value', e.value::text, 'unit_cost', e.unit_cost::text,
+                'qty_after', e.qty_after::text, 'value_after', e.value_after::text,
+                'variance', e.variance::text)
+             FROM stock_entry e
+             JOIN item i ON i.id = e.item_id
+             JOIN warehouse w ON w.id = e.warehouse_id
+             WHERE e.posting_id = $1 ORDER BY e.line_no",
+        )
+        .bind(posting.id)
+        .bind(items)
+        .bind(warehouses)
+        .fetch_all(&mut *ctx.conn)
+        .await?;
+        erpcraft_kernel::document::withhold(actor, READ, &mut rows);
+        Ok(Some(rows))
+    }
 }
 
 // ------------------------------------------------------------------ on hand
@@ -361,6 +813,7 @@ impl Ledger for StockLedger {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct OnHandInput {
+    /// The company to report on.
     company_id: Uuid,
     /// Only this item.
     item_id: Option<Uuid>,
@@ -368,7 +821,7 @@ struct OnHandInput {
     warehouse_id: Option<Uuid>,
 }
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize, JsonSchema, sqlx::FromRow)]
 struct OnHandRow {
     item_id: Uuid,
     /// Absent for a caller who may not read items.
@@ -381,11 +834,12 @@ struct OnHandRow {
     qty: Decimal,
     /// Absent for a caller from whom the value of stock entries is withheld.
     value: Option<Decimal>,
-    /// Value divided by quantity: what the next issue goes out at.
+    /// Value divided by quantity: what the next issue goes out at. For a
+    /// quantity below zero, what the missing goods are carried at per unit.
     average_cost: Option<Decimal>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 struct OnHandOutput {
     company_id: Uuid,
     currency: String,
@@ -404,25 +858,24 @@ impl Command for OnHand {
         CommandSpec::query(
             "stock.on_hand",
             "Quantity, value and average cost of every item on hand in a company's warehouses, \
-             in its accounting currency. Items with nothing on hand are left out. Values are \
-             left out for a caller from whom the value of stock entries is withheld.",
+             in its accounting currency. Items with nothing on hand are left out. An item that \
+             the company's policy let go below zero is listed with a negative quantity and a \
+             negative value: the estimate its missing goods left stock at, so that the total \
+             still equals the inventory accounts. Values are left out for a caller from whom \
+             the value of stock entries is withheld.",
         )
+        .report("Stock on hand")
         .permission("stock_entry:read")
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: OnHandInput) -> Result<OnHandOutput> {
         ctx.require("stock_entry:read", input.company_id)?;
-        let currency: String =
-            sqlx::query_scalar("SELECT base_currency FROM company WHERE id = $1")
-                .bind(input.company_id)
-                .fetch_optional(&mut *ctx.conn)
-                .await?
-                .ok_or_else(|| Error::not_found("company"))?;
+        let currency = company::base_currency(&mut *ctx.conn, input.company_id).await?;
         // This report is built from stock entries, so what is withheld on
         // them is withheld here, and names come only with the right to
         // read what they name.
         let actor = ctx.actor;
-        let values = !["value", "unit_cost", "value_after"]
+        let values = !["value", "unit_cost", "value_after", "variance"]
             .iter()
             .any(|field| actor.may_withhold("stock_entry:read", field));
         let items = actor.can_any("item:read");
@@ -437,7 +890,7 @@ impl Command for OnHand {
              FROM stock_level l
              JOIN item i ON i.id = l.item_id
              JOIN warehouse w ON w.id = l.warehouse_id
-             WHERE l.company_id = $1 AND l.qty > 0
+             WHERE l.company_id = $1 AND l.qty <> 0
                AND ($2::uuid IS NULL OR l.item_id = $2)
                AND ($3::uuid IS NULL OR l.warehouse_id = $3)
              ORDER BY i.code, w.code",

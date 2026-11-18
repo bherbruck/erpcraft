@@ -1,0 +1,44 @@
+<!--HEAD-->
+<section class="parties">
+  <div>
+    <h2>Bill to</h2>
+    <div class="party-name">{{ doc.summary.customer_id | ref or doc.summary.customer_name }}</div>
+    {%- if parties and parties.buyer and parties.buyer.city %}
+    {%- set b = parties.buyer %}
+    <div class="address">{% if b.street %}{{ b.street }}<br>{% endif %}{% if b.additional_street %}{{ b.additional_street }}<br>{% endif %}{{ b.postcode or "" }} {{ b.city }}{% if b.country_code %}, {{ b.country_code }}{% endif %}</div>
+    {%- if b.vat_id %}<div class="muted">VAT ID {{ b.vat_id }}</div>{% endif %}
+    {%- if b.buyer_reference %}<div class="muted">Your reference {{ b.buyer_reference }}</div>{% endif %}
+    {%- endif %}
+  </div>
+  <div>
+    <h2>Order</h2>
+    <div>{{ doc.body.sales_order_id | ref }}</div>
+  </div>
+</section>
+<table class="lines">
+  <thead>
+    <tr><th class="num">#</th><th>Item</th><th class="num">Quantity</th><th>Unit</th><th class="num">Unit price</th><th class="num">Discount</th><th>Tax</th><th class="num">Tax amount</th><th class="num">Amount</th></tr>
+  </thead>
+  <tbody>
+  {%- for line in doc.body.lines %}
+    {%- set ordered = refs[line.order_line_id].record if line.order_line_id else none %}
+    <tr>
+      <td class="num">{{ line.line_no }}</td>
+      <td>{% if line.order_line_id %}{{ line.order_line_id | ref }}{% elif line.charge_id %}{{ line.description or (line.charge_id | ref) }}{% else %}{{ line.description or (line.account_id | ref) }}{% endif %}</td>
+      <td class="num">{{ line.qty | decimal }}</td>
+      <td>{% if ordered and ordered.item_id %}{{ refs[ordered.item_id].record.uom }}{% endif %}</td>
+      <td class="num">{{ line.unit_price | price }}</td>
+      <td class="num">{% if line.discount_percent %}{{ line.discount_percent | decimal }} %{% endif %}{% if line.discount_amount %} {{ line.discount_amount | money }}{% endif %}</td>
+      <td class="short">{{ line.tax_code_id | ref("short") }}</td>
+      <td class="num">{{ line.tax_amount | money }}</td>
+      <td class="num">{% if line.net_amount is defined and line.net_amount is not none %}{{ line.net_amount | money }}{% else %}{{ line.qty | mul(line.unit_price) | money }}{% endif %}</td>
+    </tr>
+  {%- endfor %}
+  </tbody>
+</table>
+<table class="totals">
+  <tr><th>Net</th><td class="num">{{ doc.summary.total_net | money }}</td></tr>
+  <tr><th>Tax</th><td class="num">{{ doc.summary.total_tax | money }}</td></tr>
+  <tr class="grand"><th>Total {{ company.currency }}</th><td class="num">{{ doc.summary.total_gross | money }}</td></tr>
+</table>
+<!--FOOT-->

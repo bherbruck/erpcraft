@@ -1,0 +1,19 @@
+[package]
+name = "erpcraft-payments"
+description = "erpcraft payments module: paying vendors and being paid by customers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+erpcraft-kernel.workspace = true
+erpcraft-gl.workspace = true
+erpcraft-openitems.workspace = true
+erpcraft-tax.workspace = true
+chrono.workspace = true
+rust_decimal.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+uuid.workspace = true

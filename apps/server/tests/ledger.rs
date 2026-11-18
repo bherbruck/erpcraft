@@ -52,10 +52,8 @@ async fn post_through_mcp_retry_through_http_then_reverse() {
         )
         .await;
     assert_eq!(init["serverInfo"]["name"], "erpcraft");
-    let tools = t.mcp(&t.admin, "tools/list", json!({})).await;
-    let tool = tools["tools"]
-        .as_array()
-        .unwrap()
+    let tools = t.all_tools(&t.admin).await;
+    let tool = tools
         .iter()
         .find(|tool| tool["name"] == "journal_entry_post")
         .expect("journal_entry_post is listed");
@@ -925,9 +923,14 @@ async fn the_registry_describes_the_system() {
         ["kernel", "auth", "gl", "accounting"]
     );
     assert!(names("entities").contains(&"account".to_owned()));
-    assert_eq!(names("doc_types")[0], "journal_entry");
+    assert!(names("doc_types").contains(&"journal_entry".to_owned()));
     assert!(names("commands").contains(&"journal_entry.post".to_owned()));
-    let journal = &meta["doc_types"][0];
+    let journal = meta["doc_types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "journal_entry")
+        .unwrap();
     assert_eq!(journal["states"].as_array().unwrap().len(), 3);
     assert_eq!(journal["collections"][0]["name"], "lines");
 
@@ -1059,6 +1062,89 @@ async fn a_rate_on_record_is_used_when_none_is_stated() {
             .contains("an exchange rate from EUR to USD is required"),
         "{body}"
     );
+
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn a_reversal_is_listed_after_what_was_recorded_before_it() {
+    let t = TestApp::start().await;
+    let c = t.company("ACME", "USD").await;
+    // Several lines each, so that an order left to chance would show.
+    let post = |amount: &'static str| {
+        let (t, c) = (&t, &c);
+        async move {
+            let lines: Vec<Value> = (0..4)
+                .flat_map(|_| {
+                    [
+                        json!({ "account_id": c.cash, "debit": amount }),
+                        json!({ "account_id": c.revenue, "credit": amount }),
+                    ]
+                })
+                .collect();
+            let (status, draft) = t
+                .post(
+                    &t.admin,
+                    "/api/documents/journal_entry",
+                    json!({ "company_id": c.id, "doc_date": "2026-03-15", "body": { "lines": lines } }),
+                )
+                .await;
+            assert_eq!(status, StatusCode::CREATED, "{draft}");
+            let (status, posted) = t
+                .command(&t.admin, "journal_entry.post", json!({ "id": id(&draft) }))
+                .await;
+            assert_eq!(status, StatusCode::OK, "{posted}");
+            posted
+        }
+    };
+
+    // Everything on one day: first, second, the reversal of the first, third.
+    let first = post("10.00").await;
+    let second = post("20.00").await;
+    let (status, reversed) = t
+        .command(
+            &t.admin,
+            "journal_entry.reverse",
+            json!({ "id": id(&first) }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{reversed}");
+    let third = post("30.00").await;
+    let reversal = reversed["postings"][1].clone();
+    assert_eq!(
+        reversal["posting_date"],
+        first["postings"][0]["posting_date"]
+    );
+
+    // The ledger lists by posting date, then in the order of recording.
+    let (status, page) = t
+        .get(
+            &t.admin,
+            &format!("/api/entities/gl_entry?company_id={}", c.id),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let listed: Vec<(&str, i64)> = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["posting_id"].as_str().unwrap(),
+                e["line_no"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    let expected: Vec<(&str, i64)> = [
+        &first["postings"][0],
+        &second["postings"][0],
+        &reversal,
+        &third["postings"][0],
+    ]
+    .into_iter()
+    .flat_map(|posting| (1..=8).map(|line| (posting["id"].as_str().unwrap(), line)))
+    .collect();
+    assert_eq!(listed, expected);
 
     t.stop().await;
 }

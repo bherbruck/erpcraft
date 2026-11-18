@@ -46,13 +46,13 @@ async fn purchasing(t: &TestApp) -> Purchasing {
         "purchasing_settings",
         json!({
             "company_id": c.id,
-            "inventory_account_id": accounts[0],
             "grni_account_id": accounts[1],
             "payable_account_id": accounts[2],
             "price_variance_account_id": accounts[3],
         }),
     )
     .await;
+    t.inventory_rule(&c.id, &accounts[0]).await;
     Purchasing {
         company: c.id,
         item,
@@ -299,6 +299,7 @@ async fn the_on_hand_report_withholds_what_stock_entries_withhold() {
             json!({ "company_id": c.id, "code": "MAIN", "name": "Main" }),
         )
         .await;
+    t.inventory_rule(&c.id, &c.cash).await;
     let (status, draft) = t
         .post(
             &t.admin,
@@ -306,7 +307,7 @@ async fn the_on_hand_report_withholds_what_stock_entries_withhold() {
             json!({
                 "company_id": c.id, "doc_date": "2026-03-15",
                 "body": {
-                    "inventory_account_id": c.cash, "offset_account_id": c.revenue,
+                    "offset_account_id": c.revenue,
                     "lines": [{ "item_id": item, "warehouse_id": warehouse, "qty": "10", "unit_cost": "2.00" }],
                 },
             }),

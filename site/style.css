@@ -1,0 +1,185 @@
+:root {
+  --bg: #fbfaf7;
+  --fg: #1d1d1b;
+  --muted: #5f5e58;
+  --rule: #dcd9d0;
+  --accent: #1f5f8b;
+  --note-bg: #f1ede2;
+  --note-border: #c9a54a;
+  --table-head: #efece4;
+  --code-bg: #efece4;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17181a;
+    --fg: #e6e4de;
+    --muted: #a3a19a;
+    --rule: #34363a;
+    --accent: #7db4dd;
+    --note-bg: #26241d;
+    --note-border: #9c823d;
+    --table-head: #222427;
+    --code-bg: #222427;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: Charter, "Bitstream Charter", "Iowan Old Style", Georgia, Cambria, "Times New Roman", serif;
+  font-size: 1.0625rem;
+  line-height: 1.6;
+}
+
+main, header.page, footer.page {
+  max-width: 44rem;
+  margin: 0 auto;
+  padding: 0 1rem;
+}
+
+header.page { padding-top: 2.5rem; }
+
+h1, h2, h3 {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+h1 { font-size: 2rem; margin: 0 0 0.5rem; }
+h2 {
+  font-size: 1.4rem;
+  margin: 3rem 0 0.75rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+}
+h3 { font-size: 1.1rem; margin: 1.75rem 0 0.5rem; }
+
+p, ul, ol { margin: 0 0 1rem; }
+li { margin-bottom: 0.35rem; }
+
+a { color: var(--accent); }
+a:hover { text-decoration-thickness: 2px; }
+
+.subtitle { color: var(--muted); margin: 0 0 1.25rem; font-size: 1.1rem; }
+
+.draft {
+  background: var(--note-bg);
+  border-left: 4px solid var(--note-border);
+  padding: 0.75rem 1rem;
+  margin: 0 0 1.5rem;
+  font-size: 0.97rem;
+}
+.draft p { margin: 0 0 0.4rem; }
+.draft p:last-child { margin: 0; }
+
+.placeholder {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  background: var(--code-bg);
+  padding: 0.05em 0.3em;
+  border-radius: 3px;
+}
+
+nav.toc {
+  border: 1px solid var(--rule);
+  padding: 0.75rem 1.25rem;
+  margin: 0 0 1rem;
+}
+nav.toc h2 {
+  border: 0;
+  margin: 0 0 0.4rem;
+  padding: 0;
+  font-size: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+nav.toc ol { margin: 0; padding-left: 1.4rem; }
+nav.toc li { margin: 0.15rem 0; }
+
+.lead { font-size: 1.12rem; }
+
+.callout {
+  border: 1px solid var(--rule);
+  padding: 0.75rem 1rem;
+  margin: 0 0 1rem;
+}
+.callout p:last-child { margin: 0; }
+
+.table-wrap {
+  overflow-x: auto;
+  margin: 0 0 1.25rem;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.93rem;
+  line-height: 1.45;
+}
+caption {
+  text-align: left;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--muted);
+  padding-bottom: 0.35rem;
+}
+th, td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid var(--rule);
+}
+thead th {
+  background: var(--table-head);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+ol.questions > li { margin-bottom: 0.6rem; }
+
+footer.page {
+  margin-top: 3rem;
+  padding-bottom: 3rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+footer.page p {
+  border-top: 1px solid var(--rule);
+  padding-top: 1rem;
+}
+
+@media (max-width: 480px) {
+  body { font-size: 1rem; }
+  h1 { font-size: 1.6rem; }
+  h2 { font-size: 1.25rem; }
+  table { font-size: 0.85rem; }
+  th, td { padding: 0.4rem 0.4rem; }
+}
+
+@media print {
+  :root {
+    --bg: #fff; --fg: #000; --muted: #444; --rule: #999;
+    --accent: #000; --note-bg: #fff; --note-border: #000; --table-head: #eee;
+  }
+  body { font-size: 10.5pt; line-height: 1.45; }
+  main, header.page, footer.page { max-width: none; padding: 0; }
+  nav.toc { display: none; }
+  h2 { break-after: avoid; page-break-after: avoid; margin-top: 1.5rem; }
+  h3 { break-after: avoid; page-break-after: avoid; }
+  table, .callout, .draft { break-inside: avoid; page-break-inside: avoid; }
+  .table-wrap { overflow: visible; }
+  thead { display: table-header-group; }
+  tr { break-inside: avoid; page-break-inside: avoid; }
+  a { text-decoration: none; color: inherit; }
+}

@@ -11,6 +11,7 @@
 
 mod access;
 mod actor;
+mod delegate;
 mod directory;
 
 pub use access::{Access, EntityAccess, FieldReach};

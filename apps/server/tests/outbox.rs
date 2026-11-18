@@ -268,7 +268,10 @@ async fn expired_keys_and_old_events_are_cleaned_up() {
         "an undelivered event is kept however old it is"
     );
     assert_eq!(
-        t.count("SELECT count(*) FROM outbox_delivery").await,
+        // Counting the two subscribers of this test. The webhooks module is
+        // a subscriber too and notes every event, wanted by a webhook or not.
+        t.count("SELECT count(*) FROM outbox_delivery WHERE subscriber <> 'webhooks'")
+            .await,
         2,
         "the delivery notes of a removed event go with it; the other event keeps its two"
     );

@@ -1,0 +1,17 @@
+[package]
+name = "erpcraft-tax"
+description = "erpcraft tax: tax codes, the accounts they post to, and a record of tax by posting"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+erpcraft-kernel.workspace = true
+chrono.workspace = true
+rust_decimal.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+erpcraft-gl.workspace = true
+uuid.workspace = true

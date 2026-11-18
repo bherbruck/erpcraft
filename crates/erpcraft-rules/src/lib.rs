@@ -19,11 +19,23 @@
 //! literals, fields of `record` and attributes of `user`. [`Rule::to_sql`]
 //! refuses everything else, and rules are checked with it when they are
 //! saved, so a stored rule can always filter.
+//!
+//! An [`Expression`] is the wider form for conditions that are only ever
+//! evaluated in memory, such as business policies: it adds arithmetic and
+//! comparisons between any two values, and can never become SQL.
+
+mod cache;
+mod expression;
+mod parse;
+
+pub use expression::Expression;
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use cache::Origin;
+use cel::Program;
 use cel::common::ast::{Expr, LiteralValue, operators as op};
-use cel::{Context, Program, Value as CelValue};
 use erpcraft_core::{Error, Result};
 use serde_json::Value;
 
@@ -78,7 +90,8 @@ pub struct SqlScope<'a> {
 #[derive(Debug)]
 pub struct Rule {
     source: String,
-    program: Program,
+    /// Shared with every other rule and expression of the same source.
+    program: Arc<Program>,
 }
 
 fn invalid(source: &str, why: impl std::fmt::Display) -> Error {
@@ -86,13 +99,34 @@ fn invalid(source: &str, why: impl std::fmt::Display) -> Error {
 }
 
 impl Rule {
-    /// Parse a rule. It may refer only to `record` and `user`.
+    /// Parse a rule that a caller sent with a request, such as the
+    /// `where` of a list. It may refer only to `record` and `user`.
+    ///
+    /// What parsing a source gave is remembered, so parsing the same text
+    /// again is a lookup. Rules parsed this way share a small cache that
+    /// they can push only each other out of.
     pub fn parse(source: &str) -> Result<Rule> {
+        Rule::parsed(source, Origin::Sent)
+    }
+
+    /// Parse a rule the installation keeps, such as a permission rule of
+    /// a role. The same as [`Rule::parse`], except for where it is
+    /// remembered: with the other stored rules, out of reach of whatever
+    /// callers send. Use it only for sources that someone trusted to
+    /// configure the installation wrote.
+    pub fn parse_stored(source: &str) -> Result<Rule> {
+        Rule::parsed(source, Origin::Stored)
+    }
+
+    fn parsed(source: &str, origin: Origin) -> Result<Rule> {
+        parse::check_length(source, "a rule")?;
         let source = source.trim();
         if source.is_empty() {
             return Err(Error::validation("a rule cannot be empty"));
         }
-        let program = Program::compile(source).map_err(|e| invalid(source, format!("{e:?}")))?;
+        // Length and depth are limited here, before anything recursive
+        // sees the rule; see the `parse` module.
+        let program = parse::compile(source, origin).map_err(|why| invalid(source, why))?;
         for variable in program.references().variables() {
             if variable != "record" && variable != "user" {
                 return Err(invalid(
@@ -114,17 +148,19 @@ impl Rule {
     /// Is the rule true for this record and user? An error means it could
     /// not be decided, for example because a field it needs is missing.
     /// Callers must treat that as the unsafe outcome for their case.
+    ///
+    /// It is decided as strictly as an [`Expression`] is, and never more
+    /// generously than [`Rule::to_sql`] filters:
+    ///
+    /// - a user attribute that is null is an attribute the user does not
+    ///   have, so anything that reads it is undecided;
+    /// - a record field that is null can be asked `== null` or `!= null`,
+    ///   and compared with nothing else: the database would not say that
+    ///   it differs from a value either.
     pub fn matches(&self, record: &Value, user: &Value) -> Result<bool> {
-        let mut context = Context::default();
-        context
-            .add_variable("record", record.clone())
-            .and_then(|()| context.add_variable("user", user.clone()))
-            .map_err(|e| invalid(&self.source, e))?;
-        match self.program.execute(&context) {
-            Ok(CelValue::Bool(result)) => Ok(result),
-            Ok(_) => Err(invalid(&self.source, "the result is not true or false")),
-            Err(e) => Err(invalid(&self.source, e)),
-        }
+        let variables = serde_json::json!({ "record": record, "user": without_nulls(user) });
+        expression::decide(&self.program.expression().expr, &variables)
+            .map_err(|why| invalid(&self.source, why))
     }
 
     /// Compile the rule to a SQL condition. Parameters are numbered from
@@ -147,9 +183,28 @@ impl Rule {
     }
 }
 
+/// A user as a rule sees them: an attribute set to null is left out, at
+/// any level, so that it reads as missing.
+fn without_nulls(user: &Value) -> Value {
+    match user {
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .filter(|(_, value)| !value.is_null())
+                .map(|(name, value)| (name.clone(), without_nulls(value)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 enum Operand {
     Column(String, ColumnType),
     Value(Value),
+    /// An attribute the user does not have, or has as null. Nothing can
+    /// be decided from it: whatever uses it is neither true nor false, so
+    /// an allow rule does not match and a deny rule does.
+    Unknown,
     /// An already compiled condition.
     Condition(String),
 }
@@ -207,6 +262,7 @@ impl Compiler<'_, '_> {
                 for element in &list.elements {
                     match self.operand(&element.expr)? {
                         Operand::Value(value) => items.push(value),
+                        Operand::Unknown => items.push(Value::Null),
                         _ => return Err("a list in a rule may hold only values, not fields".into()),
                     }
                 }
@@ -241,7 +297,10 @@ impl Compiler<'_, '_> {
                         for key in &path {
                             value = value.get(key).unwrap_or(&Value::Null);
                         }
-                        Ok(Operand::Value(value.clone()))
+                        Ok(match value {
+                            Value::Null => Operand::Unknown,
+                            value => Operand::Value(value.clone()),
+                        })
                     }
                     other => Err(format!("unknown name `{other}`; use `record` or `user`")),
                 }
@@ -289,14 +348,32 @@ impl Compiler<'_, '_> {
                 Ok(format!("{}::boolean", self.bind(Bind::Bool(Some(b)))))
             }
             // An attribute the user does not have: neither true nor false.
-            Operand::Value(Value::Null) => Ok(format!("{}::boolean", self.bind(Bind::Bool(None)))),
+            Operand::Unknown | Operand::Value(Value::Null) => Ok(self.unknown()),
             Operand::Value(_) => {
                 Err("a value that is not true or false is used as a condition".into())
             }
         }
     }
 
+    /// A condition that is neither true nor false.
+    fn unknown(&mut self) -> String {
+        format!("{}::boolean", self.bind(Bind::Bool(None)))
+    }
+
     fn compare(&mut self, left: Operand, right: Operand, sql_op: &str) -> Compiled<Operand> {
+        // Only `null` as it is written tests a field for null. An
+        // attribute the user lacks must not: `record.parent_id ==
+        // user.manager` would otherwise match every record without a
+        // parent for a user without a manager.
+        if matches!(
+            (&left, &right),
+            (
+                Operand::Unknown,
+                Operand::Column(..) | Operand::Value(_) | Operand::Unknown
+            ) | (Operand::Column(..) | Operand::Value(_), Operand::Unknown)
+        ) {
+            return Ok(Operand::Condition(self.unknown()));
+        }
         let null_test = |column: String| match sql_op {
             "=" => Ok(Operand::Condition(format!("({column} IS NULL)"))),
             "<>" => Ok(Operand::Condition(format!("({column} IS NOT NULL)"))),
@@ -327,8 +404,9 @@ impl Compiler<'_, '_> {
                 let param = self.bind(Bind::Text(Some(scalar_text(&value)?)));
                 format!("({param}::{} {sql_op} {column})", ty.pg())
             }
+            (Operand::Unknown, _) | (_, Operand::Unknown) => unreachable!("handled above"),
             (Operand::Value(a), Operand::Value(b)) => {
-                // A missing attribute compares as unknown, which filters the row out.
+                // A null compares as unknown, which filters the row out.
                 let ty = if a.is_null() {
                     value_type(&b)
                 } else {
@@ -353,11 +431,18 @@ impl Compiler<'_, '_> {
         let texts = |value: &Value| -> Compiled<Vec<String>> {
             match value {
                 Value::Array(items) => items.iter().map(scalar_text).collect(),
-                // An attribute the user does not have: an empty list, so nothing matches.
-                Value::Null => Ok(vec![]),
                 _ => Err("the right side of `in` must be a list".into()),
             }
         };
+        // Whether something is in a list the user does not have, or
+        // whether a value the user does not have is in a list, is not
+        // known. "It is not" would let a deny rule pass.
+        if matches!(item, Operand::Unknown) || matches!(list, Operand::Unknown) {
+            if matches!(item, Operand::Condition(_)) || matches!(list, Operand::Condition(_)) {
+                return Err("the right side of `in` must be a list".into());
+            }
+            return Ok(Operand::Condition(self.unknown()));
+        }
         let sql = match (item, list) {
             (Operand::Column(name, ty), Operand::Value(list)) => {
                 if ty == ColumnType::TextArray {
@@ -554,8 +639,89 @@ mod tests {
             "record.warehouse in user.warehouses || user.is_manager",
             json!({}),
         );
-        assert_eq!(sql, "((t.warehouse = ANY($1::text[])) OR $2::boolean)");
-        assert_eq!(binds, [Bind::Texts(vec![]), Bind::Bool(None)]);
+        assert_eq!(sql, "($1::boolean OR $2::boolean)");
+        assert_eq!(binds, [Bind::Bool(None), Bind::Bool(None)]);
+    }
+
+    #[test]
+    fn a_null_decides_nothing_in_memory_or_in_sql() {
+        // In memory: a null attribute is a missing one, and a null field
+        // compares with nothing.
+        let undecided = |rule: &str, record: Value, user: Value| {
+            let error = Rule::parse(rule)
+                .unwrap()
+                .matches(&record, &user)
+                .expect_err(rule);
+            error.to_string()
+        };
+        let restricted = json!({ "restricted": null, "team": { "lead": null } });
+        for rule in [
+            "user.restricted != true",
+            "!(user.restricted == true)",
+            "user.restricted == null",
+            "record.owner_id == user.restricted",
+            "record.owner_id != user.team.lead",
+            "record.warehouse in user.restricted",
+            "!user.restricted",
+        ] {
+            let why = undecided(
+                rule,
+                json!({ "owner_id": null, "warehouse": "W1" }),
+                restricted.clone(),
+            );
+            assert!(why.contains("is not there"), "{why}");
+            // Exactly what a user without the attribute gets.
+            let missing = undecided(
+                rule,
+                json!({ "owner_id": null, "warehouse": "W1" }),
+                json!({ "team": {} }),
+            );
+            assert_eq!(why, missing);
+        }
+        let user = json!({ "id": "u1", "is_manager": false });
+        let orphan = json!({ "owner_id": null, "warehouse": null });
+        for rule in [
+            "record.owner_id != user.id",
+            "record.owner_id == user.id",
+            "record.owner_id == record.warehouse",
+            "record.warehouse in ['W1']",
+        ] {
+            let why = undecided(rule, orphan.clone(), user.clone());
+            assert!(why.contains("null cannot be compared"), "{why}");
+        }
+        // A field can still be asked whether it is null.
+        let is = |rule: &str| Rule::parse(rule).unwrap().matches(&orphan, &user).unwrap();
+        assert!(is("record.owner_id == null"));
+        assert!(!is("record.owner_id != null"));
+        assert!(is("record.owner_id == null || record.owner_id == user.id"));
+
+        // In SQL: the same questions are unknown, never an `IS NULL` test.
+        let unknown = ("$1::boolean".to_owned(), vec![Bind::Bool(None)]);
+        for rule in [
+            "record.parent_id == user.manager",
+            "record.parent_id != user.manager",
+            "user.manager == record.parent_id",
+            "user.restricted != true",
+            "user.restricted == null",
+            "record.warehouse in user.warehouses",
+            "user.home in record.tags",
+        ] {
+            for user in [
+                json!({}),
+                json!({ "manager": null, "restricted": null, "warehouses": null, "home": null }),
+            ] {
+                assert_eq!(sql(rule, user), unknown, "{rule}");
+            }
+        }
+        assert_eq!(
+            sql("!(user.restricted == true)", json!({ "restricted": null })).0,
+            "(NOT $1::boolean)"
+        );
+        // Written out, `null` still tests the field.
+        assert_eq!(
+            sql("record.parent_id == null", json!({})).0,
+            "(t.parent_id IS NULL)"
+        );
     }
 
     #[test]

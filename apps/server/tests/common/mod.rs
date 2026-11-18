@@ -166,6 +166,23 @@ impl TestApp {
         body["result"].clone()
     }
 
+    /// Every tool `tools/list` shows the caller, following `nextCursor`
+    /// through all its pages.
+    pub async fn all_tools(&self, token: &str) -> Vec<Value> {
+        let mut tools = vec![];
+        let mut cursor = Value::Null;
+        loop {
+            let page = self
+                .mcp(token, "tools/list", json!({ "cursor": cursor }))
+                .await;
+            tools.extend(page["tools"].as_array().unwrap().iter().cloned());
+            match page.get("nextCursor") {
+                Some(next) => cursor = next.clone(),
+                None => return tools,
+            }
+        }
+    }
+
     /// Call an MCP tool and return the whole tool result.
     pub async fn tool(&self, token: &str, name: &str, arguments: Value) -> Value {
         self.mcp(
@@ -197,12 +214,14 @@ impl TestApp {
             async move {
                 self.create(
                     "account",
-                    json!({ "company_id": company, "code": code, "name": name, "account_type": kind, "is_group": group }),
+                    json!({ "company_id": company, "code": code, "name": name, "account_type": kind,
+                            "is_group": group, "is_bank": code == "1000" }),
                 )
                 .await
             }
         };
         let group = account("1", "Assets", "asset", true).await;
+        // Cash is where payments go through.
         let cash = account("1000", "Cash", "asset", false).await;
         let revenue = account("4000", "Revenue", "income", false).await;
         let period = self
@@ -322,6 +341,16 @@ impl TestApp {
             )
             .await;
         assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    /// Say which account carries the value of a company's stock: the
+    /// default account rule for the purpose `inventory`.
+    pub async fn inventory_rule(&self, company_id: &str, account_id: &str) -> String {
+        self.create(
+            "account_rule",
+            json!({ "company_id": company_id, "purpose": "inventory", "account_id": account_id }),
+        )
+        .await
     }
 
     pub async fn count(&self, sql: &str) -> i64 {

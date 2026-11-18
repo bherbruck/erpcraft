@@ -14,6 +14,7 @@ use std::fmt::Write;
 
 use erpcraft_core::{Error, Result, new_id};
 use erpcraft_rules::{Bind, ColumnType, Rule, SqlScope};
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use sqlx::Arguments;
@@ -22,7 +23,9 @@ use uuid::Uuid;
 
 use crate::authz::{Actor, RowScope, Target};
 use crate::command::Ctx;
+use crate::placeholders::checked;
 use crate::registry::{EntityMeta, FieldType};
+use crate::schema::{self, TableInfo};
 
 pub const DEFAULT_LIMIT: i64 = 50;
 pub const MAX_LIMIT: i64 = 500;
@@ -59,10 +62,15 @@ pub struct ListQuery {
     pub sort: Vec<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    /// Leave out the records that are no longer to be used: those whose
+    /// `active_field` is false. Without effect on an entity that has none.
+    pub active_only: bool,
+    /// Do not count the whole list: `total` is then the size of the page.
+    pub skip_total: bool,
 }
 
 /// One page of a list, with the number of records the whole list has.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Page<T> {
     pub items: Vec<T>,
     pub total: i64,
@@ -153,7 +161,7 @@ fn target_of(meta: &EntityMeta, row: &Value, writing: bool) -> Target {
             .and_then(Value::as_str)
             .and_then(|id| Uuid::parse_str(id).ok())
             .map_or(Target::Global, Target::Company),
-        None if writing => Target::Global,
+        None if writing || meta.read_needs_global => Target::Global,
         None => Target::Any,
     }
 }
@@ -181,44 +189,92 @@ fn present(actor: &Actor, meta: &EntityMeta, row: Value) -> Value {
 
 fn check_fields(meta: &EntityMeta, data: &Map<String, Value>, creating: bool) -> Result<()> {
     for (key, value) in data {
-        let field = meta
-            .fields
-            .iter()
-            .find(|f| &f.name == key)
-            .ok_or_else(|| Error::validation(format!("unknown field '{key}'")))?;
+        let field =
+            meta.fields.iter().find(|f| &f.name == key).ok_or_else(|| {
+                Error::validation(format!("unknown field '{key}'")).with_field(key)
+            })?;
         if field.readonly {
-            return Err(Error::validation(format!(
-                "field '{key}' is set by the system"
-            )));
+            return Err(Error::field(key, "is set by the system"));
         }
         if field.immutable && !creating {
-            return Err(Error::validation(format!(
-                "field '{key}' cannot change after creation"
-            )));
+            return Err(Error::field(key, "cannot change after creation"));
         }
         if field.required && value.is_null() {
-            return Err(Error::validation(format!("field '{key}' is required")));
+            return Err(Error::field(key, "is required"));
         }
-        if let (FieldType::Enum { values }, Some(text)) = (&field.ty, value.as_str()) {
-            if !values.iter().any(|v| v == text) {
-                return Err(Error::validation(format!(
-                    "field '{key}' must be one of: {}",
-                    values.join(", ")
-                )));
-            }
+        if let (FieldType::Enum { values, .. }, Some(text)) = (&field.ty, value.as_str())
+            && !values.iter().any(|v| v == text)
+        {
+            return Err(Error::field(
+                key,
+                format_args!("must be one of: {}", values.join(", ")),
+            ));
         }
     }
     if creating {
         for field in meta.fields.iter().filter(|f| f.required) {
             if !data.contains_key(&field.name) {
-                return Err(Error::validation(format!(
-                    "field '{}' is required",
-                    field.name
-                )));
+                return Err(Error::field(&field.name, "is required"));
             }
         }
     }
     Ok(())
+}
+
+/// Refuse a decimal that is not a number, or that has more decimal places
+/// than its column keeps: Postgres would round it without saying so.
+fn check_decimals(meta: &EntityMeta, table: &TableInfo, data: &Map<String, Value>) -> Result<()> {
+    for field in meta
+        .fields
+        .iter()
+        .filter(|f| matches!(f.ty, FieldType::Decimal))
+    {
+        let name = &field.name;
+        let places = match data.get(name) {
+            None | Some(Value::Null) => continue,
+            Some(Value::String(text)) => decimal_places(text.trim()),
+            Some(Value::Number(number)) => decimal_places(&number.to_string()),
+            Some(_) => None,
+        };
+        let places = places.ok_or_else(|| {
+            Error::field(
+                name,
+                "must be a number, written as a string such as \"12.50\"",
+            )
+        })?;
+        if let Some(scale) = table.scale(name)
+            && places > i64::from(scale)
+        {
+            return Err(Error::field(
+                name,
+                format_args!("has at most {scale} decimal places"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// How many decimal places a number written as text needs, not counting
+/// trailing zeros: 1 for `1.5000`, 3 for `25e-3`. `None` if the text is not
+/// a decimal number. The text is examined as written, so no digit is lost
+/// to a parser's own precision.
+fn decimal_places(text: &str) -> Option<i64> {
+    let (mantissa, exponent) = match text.find(['e', 'E']) {
+        Some(at) => (&text[..at], text[at + 1..].parse::<i32>().ok()?),
+        None => (text, 0),
+    };
+    let unsigned = mantissa.strip_prefix(['+', '-']).unwrap_or(mantissa);
+    let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    let digits = || whole.bytes().chain(fraction.bytes());
+    if digits().count() == 0 || !digits().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let trailing_zeros = digits().rev().take_while(|b| *b == b'0').count();
+    if trailing_zeros == digits().count() {
+        return Some(0);
+    }
+    let places = fraction.len() as i64 - trailing_zeros as i64 - i64::from(exponent);
+    Some(places.max(0))
 }
 
 fn into_object(data: Value) -> Result<Map<String, Value>> {
@@ -239,7 +295,7 @@ fn writable(meta: &EntityMeta) -> Result<()> {
 }
 
 fn withheld(field: &str) -> Error {
-    Error::forbidden(format!("you may not set field '{field}'"))
+    Error::forbidden(format!("you may not set field '{field}'")).with_field(field)
 }
 
 pub async fn list(ctx: &mut Ctx<'_>, entity: &str, query: &ListQuery) -> Result<Page<Value>> {
@@ -258,16 +314,27 @@ pub async fn list(ctx: &mut Ctx<'_>, entity: &str, query: &ListQuery) -> Result<
     let mut conditions = String::from("true");
     for (name, value) in &query.filters {
         if field(name).is_none() {
-            return Err(Error::validation(format!("unknown filter field '{name}'")));
+            return Err(
+                Error::validation(format!("unknown filter field '{name}'")).with_field(name)
+            );
         }
         // Filtering by a field would reveal its values.
         if actor.may_withhold(&permission, name) {
-            return Err(Error::forbidden(format!(
-                "you may not filter by field '{name}'"
-            )));
+            return Err(
+                Error::forbidden(format!("you may not filter by field '{name}'")).with_field(name),
+            );
         }
         binds.push(Bind::Text(Some(value.clone())));
         let _ = write!(conditions, " AND t.{name}::text = ${}", binds.len());
+    }
+    if let (true, Some(name)) = (query.active_only, &meta.active_field) {
+        // As with any filter: it would reveal a field's values.
+        if actor.may_withhold(&permission, name) {
+            return Err(
+                Error::forbidden(format!("you may not filter by field '{name}'")).with_field(name),
+            );
+        }
+        let _ = write!(conditions, " AND t.{name}");
     }
     if let Some(q) = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
         // A field that may be withheld is not searched, or a search would
@@ -301,7 +368,9 @@ pub async fn list(ctx: &mut Ctx<'_>, entity: &str, query: &ListQuery) -> Result<
         let sql = caller_condition(actor, source, &visible, &mut binds)?;
         let _ = write!(conditions, " AND ({sql})");
     }
-    if let Some(filter) = actor.row_filter(&permission, &scope, false, &mut binds)? {
+    if let Some(filter) =
+        actor.row_filter(&permission, &scope, meta.read_needs_global, &mut binds)?
+    {
         let _ = write!(conditions, " AND {filter}");
     }
 
@@ -310,13 +379,15 @@ pub async fn list(ctx: &mut Ctx<'_>, entity: &str, query: &ListQuery) -> Result<
         let (name, direction) = sort_key(key);
         match field(name) {
             Some(f) if !matches!(f.ty, FieldType::Json) => {}
-            _ => return Err(Error::validation(format!("cannot sort by '{name}'"))),
+            _ => {
+                return Err(Error::validation(format!("cannot sort by '{name}'")).with_field(name));
+            }
         }
         // Sorting by a field would reveal the order of its values.
         if actor.may_withhold(&permission, name) {
-            return Err(Error::forbidden(format!(
-                "you may not sort by field '{name}'"
-            )));
+            return Err(
+                Error::forbidden(format!("you may not sort by field '{name}'")).with_field(name),
+            );
         }
         order.push(format!("t.{name} {direction}"));
     }
@@ -333,15 +404,18 @@ pub async fn list(ctx: &mut Ctx<'_>, entity: &str, query: &ListQuery) -> Result<
     // The id makes the order total, so pages never overlap.
     order.push("t.id".into());
 
-    let total: i64 = sqlx::query_scalar_with(
-        &format!(
+    let total: Option<i64> = if query.skip_total {
+        None
+    } else {
+        let sql = format!(
             "SELECT count(*) FROM {} AS t WHERE {conditions}",
             meta.table
-        ),
-        arguments(&binds)?,
-    )
-    .fetch_one(&mut *ctx.conn)
-    .await?;
+        );
+        let count = sqlx::query_scalar_with(&sql, checked(&sql, arguments(&binds)?)?)
+            .fetch_one(&mut *ctx.conn)
+            .await?;
+        Some(count)
+    };
 
     let sql = format!(
         "SELECT {} FROM {} AS t WHERE {conditions} ORDER BY {} LIMIT ${} OFFSET ${}",
@@ -356,15 +430,15 @@ pub async fn list(ctx: &mut Ctx<'_>, entity: &str, query: &ListQuery) -> Result<
         .add(query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT))
         .and_then(|()| arguments.add(query.offset.unwrap_or(0).max(0)))
         .map_err(Error::internal)?;
-    let rows = sqlx::query_scalar_with::<_, Value, _>(&sql, arguments)
+    let rows = sqlx::query_scalar_with::<_, Value, _>(&sql, checked(&sql, arguments)?)
         .fetch_all(&mut *ctx.conn)
         .await?;
     Ok(Page {
+        total: total.unwrap_or(rows.len() as i64),
         items: rows
             .into_iter()
             .map(|row| present(actor, meta, row))
             .collect(),
-        total,
     })
 }
 
@@ -384,14 +458,83 @@ pub async fn get(ctx: &mut Ctx<'_>, entity: &str, id: Uuid) -> Result<Value> {
         select_expr(meta),
         meta.table
     );
-    if let Some(filter) = actor.row_filter(&format!("{entity}:read"), &scope, false, &mut binds)? {
+    if let Some(filter) = actor.row_filter(
+        &format!("{entity}:read"),
+        &scope,
+        meta.read_needs_global,
+        &mut binds,
+    )? {
         let _ = write!(sql, " AND {filter}");
     }
-    let row = sqlx::query_scalar_with::<_, Value, _>(&sql, arguments(&binds)?)
+    let row = sqlx::query_scalar_with::<_, Value, _>(&sql, checked(&sql, arguments(&binds)?)?)
         .fetch_optional(&mut *ctx.conn)
         .await?
         .ok_or_else(|| Error::not_found(entity))?;
     Ok(present(actor, meta, row))
+}
+
+/// Of `ids`, the records of `entity` the actor may read, by the same rules
+/// as reading them: for showing what a document copied from records it
+/// links to. An actor without the right to read the entity reads none.
+pub async fn readable_ids(
+    ctx: &mut Ctx<'_>,
+    entity: &str,
+    ids: &[Uuid],
+) -> Result<std::collections::BTreeSet<Uuid>> {
+    let (kernel, actor) = (ctx.kernel, ctx.actor);
+    let meta = kernel.registry().entity(entity)?;
+    if ids.is_empty() {
+        return Ok(Default::default());
+    }
+    let columns = meta.rule_columns();
+    let scope = RowScope {
+        alias: "t",
+        columns: &columns,
+        company_column: meta.company_field.as_deref(),
+    };
+    let mut binds = vec![Bind::Texts(ids.iter().map(Uuid::to_string).collect())];
+    let mut sql = format!(
+        "SELECT t.id FROM {} AS t WHERE t.id = ANY($1::uuid[])",
+        meta.table
+    );
+    match actor.row_filter(
+        &format!("{entity}:read"),
+        &scope,
+        meta.read_needs_global,
+        &mut binds,
+    ) {
+        Ok(Some(filter)) => {
+            let _ = write!(sql, " AND {filter}");
+        }
+        Ok(None) => {}
+        Err(Error::Forbidden(_)) => return Ok(Default::default()),
+        Err(error) => return Err(error),
+    }
+    let found: Vec<Uuid> = sqlx::query_scalar_with(&sql, checked(&sql, arguments(&binds)?)?)
+        .fetch_all(&mut *ctx.conn)
+        .await?;
+    Ok(found.into_iter().collect())
+}
+
+/// Whether the actor reads every record of `entity` and its `field`
+/// without a condition: what filtering or sorting by a copy of that field
+/// needs, since no record is then left out.
+pub fn reads_all(actor: &Actor, meta: &EntityMeta, field: &str) -> bool {
+    if actor.is_admin {
+        return true;
+    }
+    let permission = format!("{}:read", meta.name);
+    let columns = meta.rule_columns();
+    let scope = RowScope {
+        alias: "t",
+        columns: &columns,
+        company_column: meta.company_field.as_deref(),
+    };
+    let mut binds = vec![];
+    matches!(
+        actor.row_filter(&permission, &scope, meta.read_needs_global, &mut binds),
+        Ok(None)
+    ) && !actor.may_withhold(&permission, field)
 }
 
 pub async fn create(ctx: &mut Ctx<'_>, entity: &str, data: Value) -> Result<Value> {
@@ -410,7 +553,7 @@ pub async fn create(ctx: &mut Ctx<'_>, entity: &str, data: Value) -> Result<Valu
                 .get(field)
                 .and_then(Value::as_str)
                 .and_then(|s| Uuid::parse_str(s).ok())
-                .ok_or_else(|| Error::validation(format!("field '{field}' is required")))?;
+                .ok_or_else(|| Error::field(field, "is required"))?;
             Target::Company(company)
         }
     };
@@ -420,8 +563,13 @@ pub async fn create(ctx: &mut Ctx<'_>, entity: &str, data: Value) -> Result<Valu
     if let Some(field) = data.keys().find(|key| !access.allows(key)) {
         return Err(withheld(field));
     }
+    let table = kernel.tables().get(&mut *ctx.conn, &meta.table).await?;
+    check_decimals(meta, &table, &data)?;
     if let Some(validate) = meta.validator {
         validate(kernel.registry(), &data)?;
+    }
+    if let Some(check) = meta.write_check {
+        check(actor, None, &data)?;
     }
 
     let id = new_id();
@@ -443,7 +591,8 @@ pub async fn create(ctx: &mut Ctx<'_>, entity: &str, data: Value) -> Result<Valu
     let row = sqlx::query_scalar::<_, Value>(&sql)
         .bind(Value::Object(data))
         .fetch_one(&mut *ctx.conn)
-        .await?;
+        .await
+        .map_err(|error| schema::describe(meta, &table, error))?;
 
     Ok(written(actor, meta, row))
 }
@@ -482,6 +631,21 @@ pub async fn update(
         return Err(Error::validation("no fields to update"));
     }
     check_fields(meta, &data, false)?;
+    for group in &meta.written_together {
+        let sent: Vec<&String> = group.iter().filter(|f| data.contains_key(*f)).collect();
+        if !sent.is_empty()
+            && let Some(missing) = group.iter().find(|f| !data.contains_key(*f))
+        {
+            return Err(Error::validation(format!(
+                "send '{missing}' together with {}, so that they can be checked against each other",
+                sent.iter()
+                    .map(|f| format!("'{f}'"))
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            ))
+            .with_field(missing));
+        }
+    }
 
     // Lock the record as it is now, if the actor may update it.
     let permission = format!("{entity}:update");
@@ -502,16 +666,16 @@ pub async fn update(
         let _ = write!(sql, " AND {filter}");
     }
     sql.push_str(" FOR UPDATE");
-    let current = sqlx::query_scalar_with::<_, Value, _>(&sql, arguments(&binds)?)
+    let current = sqlx::query_scalar_with::<_, Value, _>(&sql, checked(&sql, arguments(&binds)?)?)
         .fetch_optional(&mut *ctx.conn)
         .await?
         .ok_or_else(|| Error::not_found(entity))?;
-    if let Some(version) = version {
-        if current.get(VERSION_KEY).and_then(Value::as_str) != Some(version) {
-            return Err(Error::conflict(format!(
-                "this {entity} was changed by someone else after you read it"
-            )));
-        }
+    if let Some(version) = version
+        && current.get(VERSION_KEY).and_then(Value::as_str) != Some(version)
+    {
+        return Err(Error::stale(format!(
+            "this {entity} was changed by someone else after you read it"
+        )));
     }
 
     let access = actor.fields(
@@ -522,8 +686,13 @@ pub async fn update(
     if let Some(field) = data.keys().find(|key| !access.allows(key)) {
         return Err(withheld(field));
     }
+    let table = kernel.tables().get(&mut *ctx.conn, &meta.table).await?;
+    check_decimals(meta, &table, &data)?;
     if let Some(validate) = meta.validator {
         validate(kernel.registry(), &data)?;
+    }
+    if let Some(check) = meta.write_check {
+        check(actor, Some(&current), &data)?;
     }
 
     let assignments: Vec<String> = meta
@@ -543,7 +712,8 @@ pub async fn update(
         .bind(Value::Object(data))
         .bind(id)
         .fetch_one(&mut *ctx.conn)
-        .await?;
+        .await
+        .map_err(|error| schema::describe(meta, &table, error))?;
 
     // The record must still be one the actor may update, or a user could
     // hand a record to a place they have no business with.
@@ -591,16 +761,19 @@ pub async fn delete(
         let _ = write!(sql, " AND {filter}");
     }
     sql.push_str(" FOR UPDATE");
-    let current = sqlx::query_scalar_with::<_, Value, _>(&sql, arguments(&binds)?)
+    let current = sqlx::query_scalar_with::<_, Value, _>(&sql, checked(&sql, arguments(&binds)?)?)
         .fetch_optional(&mut *ctx.conn)
         .await?
         .ok_or_else(|| Error::not_found(entity))?;
-    if let Some(version) = version {
-        if current.get(VERSION_KEY).and_then(Value::as_str) != Some(version) {
-            return Err(Error::conflict(format!(
-                "this {entity} was changed by someone else after you read it"
-            )));
-        }
+    if let Some(version) = version
+        && current.get(VERSION_KEY).and_then(Value::as_str) != Some(version)
+    {
+        return Err(Error::stale(format!(
+            "this {entity} was changed by someone else after you read it"
+        )));
+    }
+    if let Some(check) = meta.write_check {
+        check(actor, Some(&current), &Map::new())?;
     }
 
     let deleted = sqlx::query(&format!("DELETE FROM {} WHERE id = $1", meta.table))
@@ -611,8 +784,40 @@ pub async fn delete(
         Ok(_) => Ok(()),
         // A foreign key still points at the record.
         Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("23503") => Err(
-            Error::conflict(format!("this {entity} is in use and cannot be deleted")),
+            Error::in_use(format!("this {entity} is in use and cannot be deleted")),
         ),
         Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decimal_places;
+
+    #[test]
+    fn decimal_places_are_counted_as_written() {
+        for (text, places) in [
+            ("1", 0),
+            ("1.5", 1),
+            ("-1.5000000", 1),
+            ("+0.123456", 6),
+            ("0.1234567", 7),
+            (".5", 1),
+            ("5.", 0),
+            ("0.000", 0),
+            ("25e-3", 3),
+            ("100e-1", 0),
+            ("1.25E1", 1),
+            ("1e-7", 7),
+            ("0e-9", 0),
+            ("1.00000000000000000000000000000000000001", 38),
+        ] {
+            assert_eq!(decimal_places(text), Some(places), "{text}");
+        }
+        for text in [
+            "", ".", "-", "many", "1,5", "1.2.3", "1e", "NaN", "0x10", "1 000",
+        ] {
+            assert_eq!(decimal_places(text), None, "{text}");
+        }
     }
 }
