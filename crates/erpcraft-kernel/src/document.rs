@@ -1156,6 +1156,10 @@ pub async fn list(
     } else {
         let sql = format!("SELECT count(*) FROM document AS t WHERE {conditions}");
         let count = sqlx::query_scalar_with(&sql, checked(&sql, arguments(&binds)?)?)
+            // A list's SQL varies with its conditions and is planned with the
+            // values each time: a cached generic plan would cast a bound list
+            // per row and could not hash it.
+            .persistent(false)
             .fetch_one(&mut *ctx.conn)
             .await?;
         Some(count)
@@ -1176,6 +1180,10 @@ pub async fn list(
         .and_then(|()| arguments.add(query.offset.unwrap_or(0).max(0)))
         .map_err(Error::internal)?;
     let mut items = sqlx::query_as_with::<_, Document, _>(&sql, checked(&sql, arguments)?)
+        // A list's SQL varies with its conditions and is planned with the
+        // values each time: a cached generic plan would cast a bound list
+        // per row and could not hash it.
+        .persistent(false)
         .fetch_all(&mut *ctx.conn)
         .await?;
     redact_summaries(ctx, &mut items.iter_mut().collect::<Vec<_>>()).await?;

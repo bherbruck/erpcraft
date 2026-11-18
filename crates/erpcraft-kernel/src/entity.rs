@@ -477,6 +477,8 @@ pub async fn list(ctx: &mut Ctx<'_>, entity: &str, query: &ListQuery) -> Result<
     // Values the order needs (the choices of a field, in their order) are
     // bound after the conditions', and only the page's query uses them.
     let mut sort_binds = vec![];
+    // Joins only the order needs, for the page's query.
+    let mut joins: Vec<String> = vec![];
     let mut order = vec![];
     for key in &query.sort {
         let SortKey {
@@ -498,7 +500,7 @@ pub async fn list(ctx: &mut Ctx<'_>, entity: &str, query: &ListQuery) -> Result<
         }
         order.push(format!(
             "{} {direction}{nulls}",
-            sort_expression(kernel, actor, f, &mut sort_binds, binds.len())?
+            sort_expression(kernel, actor, f, &mut sort_binds, binds.len(), &mut joins)?
         ));
     }
     if order.is_empty() {
@@ -522,6 +524,10 @@ pub async fn list(ctx: &mut Ctx<'_>, entity: &str, query: &ListQuery) -> Result<
             meta.table
         );
         let count = sqlx::query_scalar_with(&sql, checked(&sql, arguments(&binds)?)?)
+            // A list's SQL varies with its conditions and is planned with the
+            // values each time: a cached generic plan would cast a bound list
+            // per row and could not hash it.
+            .persistent(false)
             .fetch_one(&mut *ctx.conn)
             .await?;
         Some(count)
@@ -529,9 +535,10 @@ pub async fn list(ctx: &mut Ctx<'_>, entity: &str, query: &ListQuery) -> Result<
 
     binds.extend(sort_binds);
     let sql = format!(
-        "SELECT {} FROM {} AS t WHERE {conditions} ORDER BY {} LIMIT ${} OFFSET ${}",
+        "SELECT {} FROM {} AS t {} WHERE {conditions} ORDER BY {} LIMIT ${} OFFSET ${}",
         select_expr(meta),
         meta.table,
+        joins.join(" "),
         order.join(", "),
         binds.len() + 1,
         binds.len() + 2
@@ -542,6 +549,10 @@ pub async fn list(ctx: &mut Ctx<'_>, entity: &str, query: &ListQuery) -> Result<
         .and_then(|()| arguments.add(query.offset.unwrap_or(0).max(0)))
         .map_err(Error::internal)?;
     let rows = sqlx::query_scalar_with::<_, Value, _>(&sql, checked(&sql, arguments)?)
+        // A list's SQL varies with its conditions and is planned with the
+        // values each time: a cached generic plan would cast a bound list
+        // per row and could not hash it.
+        .persistent(false)
         .fetch_all(&mut *ctx.conn)
         .await?;
     Ok(Page {
@@ -643,6 +654,7 @@ fn sort_expression(
     field: &crate::registry::FieldMeta,
     binds: &mut Vec<Bind>,
     offset: usize,
+    joins: &mut Vec<String>,
 ) -> Result<String> {
     let name = &field.name;
     match &field.ty {
@@ -663,10 +675,22 @@ fn sort_expression(
                         && linked.fields.iter().any(|f| &f.name == display)
                         && reads_all(actor, linked, display) =>
                 {
-                    Ok(format!(
-                        "(SELECT l.{display} FROM {} AS l WHERE l.{key} = t.{name} LIMIT 1)",
-                        linked.table
-                    ))
+                    // By id, the linked record is one: a join the planner can
+                    // hash. By another key, which need not be unique, the
+                    // first match.
+                    if key == "id" {
+                        let alias = format!("s{}", joins.len());
+                        joins.push(format!(
+                            "LEFT JOIN {} AS {alias} ON {alias}.id = t.{name}",
+                            linked.table
+                        ));
+                        Ok(format!("{alias}.{display}"))
+                    } else {
+                        Ok(format!(
+                            "(SELECT l.{display} FROM {} AS l WHERE l.{key} = t.{name} LIMIT 1)",
+                            linked.table
+                        ))
+                    }
                 }
                 _ => Ok(format!("t.{name}")),
             }
