@@ -8,7 +8,8 @@ import { type KeyboardEvent, useEffect, useState } from "react";
 import type { FieldMeta, Json } from "@/api/types";
 import { t } from "@/i18n/t";
 import { formatTimestamp } from "@/lib/dates";
-import { formatDecimal, isDecimalDraft, trimDecimal } from "@/lib/decimal";
+import { trimDecimal } from "@/lib/decimal";
+import { DecimalInput } from "./decimal-input";
 import { enumLabel } from "@/lib/meta";
 import { useMinFraction } from "./decimal-value";
 import { toRowContext } from "./field-value";
@@ -85,31 +86,25 @@ export interface FieldInputProps {
   onKeyDown?: (event: KeyboardEvent<HTMLElement>) => void;
 }
 
-/** A decimal: typed as a string (never a JS number), shown with its currency's decimals when not focused. */
-function DecimalInput(props: FieldInputProps & { text: string; status: { type: "error"; message: string } | undefined }) {
+/** A decimal field: the shared DecimalInput, at its currency's decimals while not being edited. */
+function DecimalField(props: FieldInputProps) {
   const minFraction = useMinFraction(props.field.decimal, toRowContext(props.context));
-  const [focused, setFocused] = useState(false);
-  const shown = !focused && props.text !== "" ? formatDecimal(props.text, { minFraction }) : props.text;
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: tracks focus of the input inside to format at rest
-    <div className="num" onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}>
-      <TextInput
-        label={props.label ?? props.field.label}
-        isLabelHidden={props.isLabelHidden}
-        isRequired={props.field.required}
-        size={props.size}
-        inputMode="decimal"
-        value={shown}
-        onChange={(next) => {
-          if (isDecimalDraft(next)) props.onChange(next === "" ? null : next);
-        }}
-        onKeyDown={props.onKeyDown}
-        isDisabled={props.disabled}
-        status={props.status}
-        statusVariant={props.isLabelHidden ? "tooltip" : undefined}
-        width="100%"
-      />
-    </div>
+    <DecimalInput
+      label={props.label ?? props.field.label}
+      isLabelHidden={props.isLabelHidden}
+      isRequired={props.field.required}
+      isDisabled={props.disabled}
+      labelTooltip={props.isLabelHidden ? undefined : (props.field.help ?? undefined)}
+      size={props.size}
+      scale={props.field.decimal?.scale}
+      minFraction={minFraction}
+      value={typeof props.value === "string" ? props.value : props.value == null ? null : String(props.value)}
+      onChange={(next) => props.onChange(next)}
+      onKeyDown={props.onKeyDown}
+      error={props.error}
+      isCompactStatus={props.isLabelHidden}
+    />
   );
 }
 
@@ -164,7 +159,8 @@ export function FieldInput(props: FieldInputProps) {
     size: props.size,
     status,
     // In a grid cell the error sits behind the status icon, so a row does not grow.
-    statusVariant: props.isLabelHidden ? ("tooltip" as const) : undefined,
+    // In a form it floats below the field instead of the large attached box.
+    statusVariant: props.isLabelHidden ? ("tooltip" as const) : ("detached" as const),
     // The registry's help sits behind an info button on the label, so it does not push the form apart.
     labelTooltip: props.isLabelHidden ? undefined : (field.help ?? undefined),
   };
@@ -172,7 +168,7 @@ export function FieldInput(props: FieldInputProps) {
 
   switch (type.kind) {
     case "decimal":
-      return <DecimalInput {...props} text={text} status={status} />;
+      return <DecimalField {...props} />;
     case "int":
       return (
         <div className="num">

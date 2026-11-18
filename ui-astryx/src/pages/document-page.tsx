@@ -545,7 +545,8 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
         // Everything typed stays; the error goes to its field or line, in the server's words.
         const placed = problemsOf(error, docType);
         if (placed) setProblems(placed);
-        setFormError(error.message);
+        // An error placed at its field is said there once; the banner only points to it.
+        setFormError(placed ? t("spike.see_marked_field") : error.message);
       }
     }
     setSaving(false);

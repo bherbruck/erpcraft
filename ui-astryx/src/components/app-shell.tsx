@@ -75,7 +75,8 @@ export function AppShell() {
   const topNav = (
     <TopNav
       label={t("nav.label")}
-      startContent={
+      // The heading slot stays in the compact bar below the breakpoint, so the company is always visible.
+      heading={
         company ? (
           <Text type="label" weight="semibold">
             {company.name} <Text type="supporting">({company.code})</Text>

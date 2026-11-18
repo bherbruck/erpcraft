@@ -17,6 +17,7 @@ import { useCompany } from "@/app/context";
 import { t } from "@/i18n/t";
 import { askable, type InputProperty, type ResourceAction } from "@/lib/meta";
 import { newKey } from "@/lib/text";
+import { DecimalInput } from "./decimal-input";
 import { FieldInput } from "./field-input";
 import { Postings } from "./postings";
 
@@ -93,13 +94,23 @@ function InputControl({ input, value, onChange }: { input: InputProperty; value:
         onChange={(next) => onChange(next ?? null)}
       />
     );
+  if (input.decimal)
+    return (
+      <DecimalInput
+        label={input.label}
+        description={input.description ?? undefined}
+        isRequired={input.required}
+        value={text === "" ? null : text}
+        onChange={(next) => onChange(next)}
+      />
+    );
   return (
     <TextInput
       label={input.label}
       description={input.description ?? undefined}
       isRequired={input.required}
       type={input.secret ? "password" : "text"}
-      inputMode={input.decimal || input.type === "integer" ? "decimal" : undefined}
+      inputMode={input.type === "integer" ? "numeric" : undefined}
       value={text}
       width="100%"
       onChange={(next) => onChange(next === "" ? null : input.type === "integer" && /^-?\d+$/.test(next) ? parseInt(next, 10) : next)}

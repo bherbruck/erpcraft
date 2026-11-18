@@ -77,6 +77,15 @@ try {
   await Bun.sleep(1500);
   await browser.settle();
   check((await browser.location()).endsWith("/d/sales_order"), "deleted, back on the list");
+  // Nothing leaves the origin (no Google Fonts), the theme font is the bundled one, and the
+  // server's CSP (served by the preview too) blocked nothing.
+  const foreign = await browser.evaluate(
+    `performance.getEntriesByType("resource").map((e) => e.name).filter((u) => !u.startsWith(location.origin)).join(" ")`,
+  );
+  check(foreign === "", `no request to another origin${foreign ? `: ${String(foreign)}` : ""}`);
+  check((await browser.evaluate(`document.fonts.check("16px Figtree") && [...document.fonts].some((f) => f.family.replaceAll('"', "") === "Figtree" && f.status === "loaded")`)) === true, "Figtree loaded from the bundle");
+  const blocked = browser.errors.filter((e) => /Content Security Policy|Refused to/i.test(e));
+  check(blocked.length === 0, `no CSP violations${blocked.length ? `: ${blocked.join("; ")}` : ""}`);
   if (browser.errors.length) console.log(`page errors:\n${browser.errors.join("\n")}`);
 } finally {
   await browser.close();
