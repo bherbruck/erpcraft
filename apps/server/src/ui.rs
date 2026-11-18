@@ -23,9 +23,12 @@ use tower_http::services::{ServeDir, ServeFile};
 /// The UI loads its script and stylesheet from this server and talks only
 /// to this server. Inline styles are allowed because the dialog component
 /// (Radix, through react-remove-scroll) adds a `<style>` element while a
-/// dialog is open; inline scripts are not.
+/// dialog is open; inline scripts are not. Images may also be `data:` URLs:
+/// a printed document carries the company logo inline, and the print
+/// preview inherits this policy. Such an image cannot run script.
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
-                   object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+                   img-src 'self' data:; object-src 'none'; base-uri 'self'; \
+                   form-action 'self'; frame-ancestors 'none'";
 /// Always ask the server, so a new build is picked up at once.
 const REVALIDATE: &str = "no-cache";
 /// Vite names the files under `assets/` after their content.

@@ -107,6 +107,8 @@ async fn the_ui_is_served_next_to_the_api() {
         assert!(csp.contains("default-src 'self'"), "{csp}");
         assert!(csp.contains("script-src 'self';"), "{csp}");
         assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+        // Inline images (a document's logo) and nothing else from data: URLs.
+        assert!(csp.contains("img-src 'self' data:;"), "{csp}");
         // Scripts never come from anywhere but this server.
         let scripts = csp
             .split(';')
