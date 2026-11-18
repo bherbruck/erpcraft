@@ -1121,3 +1121,56 @@ async fn a_routing_absorbs_standard_time_and_posts_the_variance() {
     assert_ne!(status, StatusCode::OK);
     t.stop().await;
 }
+
+/// Absorbed cost credited to an account that carries stock would be
+/// debited back with the product, and stock would be worth more than the
+/// ledger says: such an account is refused, saying which.
+#[tokio::test]
+async fn absorbed_cost_is_not_credited_to_a_stock_account() {
+    let t = TestApp::start().await;
+    let p = setup(&t).await;
+    p.stock_up(&t).await;
+    let baking = t
+        .create(
+            "cost_activity",
+            json!({ "code": "BAKE", "name": "Baking", "kind": "labor", "unit": "h" }),
+        )
+        .await;
+    t.create(
+        "bom_activity",
+        json!({ "bom_id": p.bom, "activity_id": baking, "qty": "1.5" }),
+    )
+    .await;
+    t.create(
+        "cost_activity_rate",
+        json!({ "company_id": p.c.id, "activity_id": baking, "rate": "40.00" }),
+    )
+    .await;
+    // The finished goods account, which carries the cake.
+    t.create(
+        "account_rule",
+        json!({ "company_id": p.c.id, "purpose": "absorbed_cost", "account_id": p.finished }),
+    )
+    .await;
+    let order = p.released(&t, "1").await;
+    let (status, body) = step(&t, "complete", &order).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        message(&body).contains("absorbed cost of BAKE is 1310, which carries stock"),
+        "{body}"
+    );
+    // The materials account carries stock too, of other items.
+    sqlx::query("UPDATE account_rule SET account_id = $1::uuid WHERE purpose = 'absorbed_cost'")
+        .bind(&p.materials)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let (status, body) = step(&t, "complete", &order).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        message(&body).contains("is 1300, which carries stock"),
+        "{body}"
+    );
+    assert_eq!(p.books(&t).await, (70.0, 0.0));
+    t.stop().await;
+}

@@ -849,6 +849,37 @@ impl Command for Complete {
                 &[("cost_activity", activity.activity_id)],
             )
             .await?;
+            // Absorbed cost is credited to an expense or absorption
+            // account. Credited to an account that carries stock, it would
+            // be debited back with the product, and stock would be worth
+            // more than the ledger says.
+            let holds_stock = account == product_account
+                || accounts.contains(&account)
+                || sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS (SELECT 1 FROM account_rule WHERE company_id = $1
+                                    AND purpose = 'inventory'
+                                    AND account_id = $2)",
+                )
+                .bind(doc.company_id)
+                .bind(account)
+                .fetch_one(&mut *ctx.conn)
+                .await?;
+            if holds_stock {
+                let (activity_code, account_code): (String, String) = sqlx::query_as(
+                    "SELECT (SELECT code FROM cost_activity WHERE id = $1),
+                            (SELECT code FROM account WHERE id = $2)",
+                )
+                .bind(activity.activity_id)
+                .bind(account)
+                .fetch_one(&mut *ctx.conn)
+                .await?;
+                return Err(Error::validation(format!(
+                    "the account for the absorbed cost of {activity_code} is {account_code}, \
+                     which carries stock (an inventory account): absorbed \
+                     cost must be credited to an expense or absorption account; change the \
+                     absorbed_cost account rule"
+                )));
+            }
             absorbed.push((account, amount, activity.id));
         }
         // The routing's standard hours are absorbed the same way, at the
