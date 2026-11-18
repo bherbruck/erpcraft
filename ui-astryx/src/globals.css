@@ -1,0 +1,60 @@
+@import "@astryxdesign/core/reset.css";
+@import "@astryxdesign/core/astryx.css";
+@import "@astryxdesign/theme-neutral/theme.css";
+@import "@astryxdesign/theme-neutral/fonts.css";
+
+/* Only layout glue lives here; colors, sizes and fonts come from the theme's tokens. */
+.num {
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+.cell-input {
+  min-inline-size: 0;
+}
+.sticky-head {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 2;
+  background: var(--color-background-surface);
+}
+.header-grid {
+  display: grid;
+  gap: var(--spacing-4, 1rem);
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  align-items: start;
+}
+.span-2 {
+  grid-column: span 2;
+}
+@media (max-width: 40rem) {
+  .span-2 {
+    grid-column: auto;
+  }
+}
+.col-no { inline-size: 2.5rem; }
+.col-ref { inline-size: 22%; }
+.col-num { inline-size: 7.5rem; }
+.col-pct { inline-size: 6rem; }
+.col-net { inline-size: 9rem; }
+.col-act { inline-size: 3rem; }
+.visually-hidden {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.lines-table {
+  table-layout: fixed;
+  inline-size: 100%;
+  min-inline-size: 56rem;
+}
+.num input {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+.page-fill {
+  block-size: 100%;
+  min-block-size: 0;
+}
