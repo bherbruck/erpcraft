@@ -1303,3 +1303,164 @@ async fn tax_the_buyer_accounts_for_is_owed_and_reclaimed_by_the_company() {
     assert!(close(books["2300"], -95.0), "nothing more is owed");
     t.stop().await;
 }
+
+/// Tax rules propose a line's code when it names none: the party's rule
+/// before the item's, the item's before the company's default. A code
+/// given is kept.
+#[tokio::test]
+async fn tax_rules_propose_a_lines_code() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let code = |code: &'static str, rate: &'static str| {
+        let t = &t;
+        let f = &f;
+        async move {
+            let id = t
+                .create(
+                    "tax_code",
+                    json!({ "code": code, "name": code, "rate": rate }),
+                )
+                .await;
+            t.create(
+                "tax_settings",
+                json!({ "company_id": f.c.id, "tax_code_id": id,
+                        "collected_account_id": f.account["2300"],
+                        "paid_account_id": f.account["1400"] }),
+            )
+            .await;
+            id
+        }
+    };
+    let reduced = code("VAT7", "7").await;
+    let exempt = code("EXEMPT", "0").await;
+    // The company's default is 19 %, the widget is at 7 %.
+    t.create(
+        "tax_rule",
+        json!({ "company_id": f.c.id, "tax_code_id": f.vat }),
+    )
+    .await;
+    t.create(
+        "tax_rule",
+        json!({ "company_id": f.c.id, "scope_type": "item", "scope_id": f.item,
+                "tax_code_id": reduced }),
+    )
+    .await;
+    // One default per company.
+    let (status, body) = t
+        .post(
+            &t.admin,
+            "/api/entities/tax_rule",
+            json!({ "company_id": f.c.id, "tax_code_id": exempt }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::CREATED, "{body}");
+
+    let invoice_lines = |order: Value, extra: Value| {
+        let line = order["body"]["lines"][0].clone();
+        let mut first = json!({ "order_line_id": line["id"], "qty": line["qty"],
+                                "unit_price": line["unit_price"] });
+        for (key, value) in extra.as_object().unwrap() {
+            first[key] = value.clone();
+        }
+        json!({ "sales_order_id": order["id"], "lines": [
+            first,
+            { "account_id": f.c.revenue, "description": "Setup", "qty": "1",
+              "unit_price": "50.00" } ] })
+    };
+    let stock = f.order(&t, "purchase", "100", "1.00", json!({})).await;
+    f.posted(
+        &t,
+        "purchase_receipt",
+        "2026-01-02",
+        json!({ "purchase_order_id": stock["id"],
+                "lines": [{ "order_line_id": stock["body"]["lines"][0]["id"], "qty": "100" }] }),
+    )
+    .await;
+    let deliver = |order: Value| {
+        let f = &f;
+        let t = &t;
+        async move {
+            let line = order["body"]["lines"][0].clone();
+            f.posted(
+                t,
+                "sales_delivery",
+                "2026-03-01",
+                json!({ "sales_order_id": order["id"],
+                        "lines": [{ "order_line_id": line["id"], "qty": line["qty"] }] }),
+            )
+            .await;
+        }
+    };
+
+    // The item's code for the widget, the company's for the rest.
+    let order = f.order(&t, "sales", "2", "10.00", json!({})).await;
+    deliver(order.clone()).await;
+    let draft = f
+        .draft(
+            &t,
+            "sales_invoice",
+            "2026-03-01",
+            invoice_lines(order, json!({})),
+        )
+        .await;
+    assert_eq!(draft["body"]["lines"][0]["tax_code_id"], reduced.as_str());
+    assert_eq!(draft["body"]["lines"][1]["tax_code_id"], f.vat.as_str());
+    // A code given is kept.
+    let order = f.order(&t, "sales", "2", "10.00", json!({})).await;
+    deliver(order.clone()).await;
+    let draft = f
+        .draft(
+            &t,
+            "sales_invoice",
+            "2026-03-01",
+            invoice_lines(order, json!({ "tax_code_id": exempt })),
+        )
+        .await;
+    assert_eq!(draft["body"]["lines"][0]["tax_code_id"], exempt.as_str());
+
+    // An exempt customer: its rule comes before the item's.
+    t.create(
+        "tax_rule",
+        json!({ "company_id": f.c.id, "scope_type": "customer", "scope_id": f.customer,
+                "tax_code_id": exempt }),
+    )
+    .await;
+    let order = f.order(&t, "sales", "2", "10.00", json!({})).await;
+    deliver(order.clone()).await;
+    let draft = f
+        .draft(
+            &t,
+            "sales_invoice",
+            "2026-03-01",
+            invoice_lines(order, json!({})),
+        )
+        .await;
+    assert_eq!(draft["body"]["lines"][0]["tax_code_id"], exempt.as_str());
+    assert_eq!(draft["body"]["lines"][1]["tax_code_id"], exempt.as_str());
+    let (status, posted) = f.post(&t, "sales_invoice", &draft).await;
+    assert_eq!(status, StatusCode::OK, "{posted}");
+    assert_eq!(dec(&posted["summary"]["total_gross"]), 70.0);
+
+    // A vendor invoice goes by the vendor's rule, else the item's.
+    let order = f.order(&t, "purchase", "3", "2.00", json!({})).await;
+    let line = order["body"]["lines"][0].clone();
+    f.posted(
+        &t,
+        "purchase_receipt",
+        "2026-03-02",
+        json!({ "purchase_order_id": order["id"],
+                "lines": [{ "order_line_id": line["id"], "qty": "3" }] }),
+    )
+    .await;
+    let draft = f
+        .draft(
+            &t,
+            "vendor_invoice",
+            "2026-03-02",
+            json!({ "purchase_order_id": order["id"], "lines": [
+                { "order_line_id": line["id"], "qty": "3", "unit_price": "2.00" } ] }),
+        )
+        .await;
+    assert_eq!(draft["body"]["lines"][0]["tax_code_id"], reduced.as_str());
+    t.stop().await;
+}

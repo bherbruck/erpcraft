@@ -79,6 +79,11 @@ impl Module for TaxModule {
                 name: "self_assessed",
                 sql: include_str!("../migrations/0007_self_assessed.sql"),
             },
+            Migration {
+                version: 8,
+                name: "tax_rule",
+                sql: include_str!("../migrations/0008_tax_rule.sql"),
+            },
         ]
     }
 
@@ -146,6 +151,42 @@ impl Module for TaxModule {
                 .field(created())
                 .order_by(&["code"])
                 .search(&["code", "name"]),
+            EntityMeta::new("tax_rule", "Tax rule")
+                .field(
+                    FieldMeta::new("company_id", "Company", FieldType::link("company"))
+                        .required()
+                        .immutable(),
+                )
+                .field(
+                    FieldMeta::new(
+                        "scope_type",
+                        "For",
+                        FieldType::labelled(&[
+                            ("customer", "Customer"),
+                            ("vendor", "Vendor"),
+                            ("item", "Item"),
+                        ]),
+                    )
+                    .help("Empty: the company's default code."),
+                )
+                .field(FieldMeta::new(
+                    "scope_id",
+                    "Record",
+                    FieldType::entity_named_by("scope_type"),
+                ))
+                .field(
+                    FieldMeta::new("tax_code_id", "Tax code", FieldType::link("tax_code"))
+                        .required()
+                        .help(
+                            "What an invoice line starts with when it names no code: the \
+                             party's rule first, then the item's, then the charge's own code, \
+                             then the company's default.",
+                        ),
+                )
+                .field(created())
+                .order_by(&["scope_type", "scope_id"])
+                .written_together(&["scope_type", "scope_id"])
+                .company_field("company_id"),
             EntityMeta::new("tax_code_component", "Tax group component")
                 .field(
                     FieldMeta::new("group_id", "Group", FieldType::link("tax_code"))
@@ -347,6 +388,57 @@ pub fn line_net(
         .unwrap_or_default();
     let net = gross - percent - discount_amount.unwrap_or_default();
     (net >= Decimal::ZERO).then_some(net)
+}
+
+/// The tax code an invoice line of `company_id` starts with when it names
+/// none: the rule for its party (`("customer", id)` or `("vendor", id)`),
+/// else the rule for its item, else its charge's own code, else the
+/// company's default rule. `None` when nothing says.
+pub async fn proposed_code(
+    conn: &mut PgConnection,
+    company_id: Uuid,
+    party: (&str, Uuid),
+    item_id: Option<Uuid>,
+    charge_id: Option<Uuid>,
+) -> Result<Option<Uuid>> {
+    let rules: Vec<(Option<String>, Option<Uuid>, Uuid)> = sqlx::query_as(
+        "SELECT scope_type, scope_id, tax_code_id FROM tax_rule
+         WHERE company_id = $1
+           AND (scope_type IS NULL
+                OR (scope_type = $2 AND scope_id = $3)
+                OR (scope_type = 'item' AND scope_id = $4))",
+    )
+    .bind(company_id)
+    .bind(party.0)
+    .bind(party.1)
+    .bind(item_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    let rule = |scope: Option<&str>| {
+        rules
+            .iter()
+            .find(|(t, ..)| t.as_deref() == scope)
+            .map(|(.., code)| *code)
+    };
+    if let Some(code) = rule(Some(party.0)) {
+        return Ok(Some(code));
+    }
+    if item_id.is_some()
+        && let Some(code) = rule(Some("item"))
+    {
+        return Ok(Some(code));
+    }
+    if let Some(charge) = charge_id {
+        let own: Option<Uuid> = sqlx::query_scalar("SELECT tax_code_id FROM charge WHERE id = $1")
+            .bind(charge)
+            .fetch_optional(&mut *conn)
+            .await?
+            .flatten();
+        if own.is_some() {
+            return Ok(own);
+        }
+    }
+    Ok(rule(None))
 }
 
 /// The policy point asked by [`quote`]: may an invoice line be taxed with

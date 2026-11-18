@@ -1983,8 +1983,8 @@ impl DocumentHandler for SalesInvoice {
             None => save_direct(ctx, doc, &body).await?,
         }
         // A line of an order takes the order line's discounts unless it
-        // gives its own, the amount in proportion to the quantity; a
-        // charge line its charge's tax code.
+        // gives its own, the amount in proportion to the quantity.
+        let party = invoice_customer(&mut *ctx.conn, doc.id).await?;
         let ordered: BTreeMap<Uuid, OrderLine> = match body.sales_order_id {
             Some(order_id) => order_lines(&mut *ctx.conn, order_id)
                 .await?
@@ -2010,12 +2010,18 @@ impl DocumentHandler for SalesInvoice {
             }
             line.discount_percent = line.discount_percent.filter(|p| !p.is_zero());
             line.discount_amount = line.discount_amount.filter(|a| !a.is_zero());
-            if let (Some(charge), None) = (line.charge_id, line.tax_code_id) {
-                line.tax_code_id =
-                    sqlx::query_scalar("SELECT tax_code_id FROM charge WHERE id = $1")
-                        .bind(charge)
-                        .fetch_one(&mut *ctx.conn)
-                        .await?;
+            // No code given: what the tax rules propose for the party, the
+            // item or the charge.
+            if line.tax_code_id.is_none() {
+                let ordered_line = line.order_line_id.and_then(|id| ordered.get(&id));
+                line.tax_code_id = erpcraft_tax::proposed_code(
+                    &mut *ctx.conn,
+                    doc.company_id,
+                    ("customer", party),
+                    ordered_line.and_then(|l| l.item_id),
+                    line.charge_id.or(ordered_line.and_then(|l| l.charge_id)),
+                )
+                .await?;
             }
         }
         if body
