@@ -33,6 +33,7 @@ erpcraft-setup = { path = "modules/setup" }
 erpcraft-banking = { path = "modules/banking" }
 erpcraft-assets = { path = "modules/assets" }
 erpcraft-einvoice = { path = "modules/einvoice" }
+erpcraft-planning = { path = "modules/planning" }
 
 # Used only by erpcraft-printing: every rendered page and every saved
 # template goes through it. Built on html5ever, a spec-compliant parser.

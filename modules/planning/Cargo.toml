@@ -1,0 +1,16 @@
+[package]
+name = "erpcraft-planning"
+description = "erpcraft planning module: what stock will be available, given open orders and production"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+erpcraft-kernel.workspace = true
+erpcraft-manufacturing.workspace = true
+erpcraft-purchasing.workspace = true
+erpcraft-sales.workspace = true
+serde.workspace = true
+sqlx.workspace = true
+uuid.workspace = true

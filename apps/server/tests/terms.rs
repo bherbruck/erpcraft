@@ -1464,3 +1464,124 @@ async fn tax_rules_propose_a_lines_code() {
     assert_eq!(draft["body"]["lines"][0]["tax_code_id"], reduced.as_str());
     t.stop().await;
 }
+
+/// What stock will be available: on hand, less what open sales orders
+/// and released production orders will take, plus what open purchase
+/// orders and production will bring.
+#[tokio::test]
+async fn availability_counts_what_open_orders_will_move() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    // 100 received, 50 more ordered.
+    let bought = f.order(&t, "purchase", "100", "1.00", json!({})).await;
+    f.posted(
+        &t,
+        "purchase_receipt",
+        "2026-01-02",
+        json!({ "purchase_order_id": bought["id"],
+                "lines": [{ "order_line_id": bought["body"]["lines"][0]["id"], "qty": "100" }] }),
+    )
+    .await;
+    f.order(&t, "purchase", "50", "1.00", json!({})).await;
+    // 30 sold, 10 of them delivered.
+    let sold = f.order(&t, "sales", "30", "5.00", json!({})).await;
+    f.posted(
+        &t,
+        "sales_delivery",
+        "2026-01-03",
+        json!({ "sales_order_id": sold["id"],
+                "lines": [{ "order_line_id": sold["body"]["lines"][0]["id"], "qty": "10" }] }),
+    )
+    .await;
+    // Five gadgets to make, each from two widgets.
+    let gadget = t
+        .create("item", json!({ "code": "GADGET", "name": "Gadget" }))
+        .await;
+    let bom = t
+        .create(
+            "bom",
+            json!({ "item_id": gadget, "code": "G-1", "name": "Gadget" }),
+        )
+        .await;
+    t.create(
+        "bom_line",
+        json!({ "bom_id": bom, "item_id": f.item, "qty": "2" }),
+    )
+    .await;
+    let order = f
+        .draft(
+            &t,
+            "production_order",
+            "2026-01-04",
+            json!({ "bom_id": bom, "qty": "5", "warehouse_id": f.warehouse }),
+        )
+        .await;
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "production_order.release",
+            json!({ "id": order["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, out) = t
+        .command(
+            &t.admin,
+            "stock.availability",
+            json!({ "company_id": f.c.id }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    let row = |code: &str| {
+        out["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["item_code"] == code)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {code}: {out}"))
+    };
+    let widget = row("WIDGET");
+    assert_eq!(dec(&widget["on_hand"]), 90.0);
+    assert_eq!(dec(&widget["committed"]), 20.0);
+    assert_eq!(dec(&widget["needed_for_production"]), 10.0);
+    assert_eq!(dec(&widget["available"]), 60.0);
+    assert_eq!(dec(&widget["on_order"]), 50.0);
+    assert_eq!(dec(&widget["projected"]), 110.0);
+    let gadget = row("GADGET");
+    assert_eq!(dec(&gadget["in_production"]), 5.0);
+    assert_eq!(dec(&gadget["projected"]), 5.0);
+
+    // A large order makes the widget fall short.
+    f.order(&t, "sales", "200", "5.00", json!({})).await;
+    let (_, short) = t
+        .command(
+            &t.admin,
+            "stock.availability",
+            json!({ "company_id": f.c.id, "short_only": true }),
+        )
+        .await;
+    let rows = short["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{short}");
+    assert_eq!(rows[0]["item_code"], "WIDGET");
+    assert_eq!(dec(&rows[0]["projected"]), -90.0);
+
+    // It takes the right to read the orders it counts.
+    let (clerk, _) = t
+        .user_with_rules(
+            "clerk@example.com",
+            json!(["stock_entry:read"]),
+            Some(&f.c.id),
+        )
+        .await;
+    let (status, _) = t
+        .command(
+            &clerk,
+            "stock.availability",
+            json!({ "company_id": f.c.id }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    t.stop().await;
+}

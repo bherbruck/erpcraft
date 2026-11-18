@@ -30,6 +30,7 @@ erpcraft-banking.workspace = true
 erpcraft-assets.workspace = true
 erpcraft-party.workspace = true
 erpcraft-einvoice.workspace = true
+erpcraft-planning.workspace = true
 erpcraft-stock.workspace = true
 erpcraft-tax.workspace = true
 erpcraft-webhooks.workspace = true

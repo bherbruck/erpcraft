@@ -290,6 +290,38 @@ struct Component {
     qty: Decimal,
 }
 
+/// What released production orders of a company will take and make, per
+/// item and warehouse: the components they will consume, and the products
+/// they will bring in.
+pub async fn released(
+    conn: &mut PgConnection,
+    company_id: Uuid,
+) -> Result<(Vec<(Uuid, Uuid, Decimal)>, Vec<(Uuid, Uuid, Decimal)>)> {
+    let needs = sqlx::query_as(
+        "SELECT c.item_id, o.warehouse_id, sum(c.qty)
+         FROM production_order_component c
+         JOIN production_order o ON o.document_id = c.document_id
+         JOIN document d ON d.id = c.document_id
+         WHERE d.company_id = $1 AND d.status = 'released'
+         GROUP BY c.item_id, o.warehouse_id",
+    )
+    .bind(company_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    let makes = sqlx::query_as(
+        "SELECT b.item_id, o.warehouse_id, sum(o.qty)
+         FROM production_order o
+         JOIN bom b ON b.id = o.bom_id
+         JOIN document d ON d.id = o.document_id
+         WHERE d.company_id = $1 AND d.status = 'released'
+         GROUP BY b.item_id, o.warehouse_id",
+    )
+    .bind(company_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok((needs, makes))
+}
+
 async fn load_order(conn: &mut PgConnection, document_id: Uuid) -> Result<Order> {
     let order = sqlx::query_as(
         "SELECT o.bom_id, o.qty, o.warehouse_id, b.item_id

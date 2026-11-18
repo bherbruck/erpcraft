@@ -697,6 +697,29 @@ async fn save_order_ref(
     }
 }
 
+/// What open sales orders of a company still have to deliver, per item
+/// and warehouse: each stock line's quantity less what was delivered and
+/// kept (delivered less returned). Closed, cancelled and draft orders count
+/// for nothing.
+pub async fn open_demand(
+    conn: &mut PgConnection,
+    company_id: Uuid,
+) -> Result<Vec<(Uuid, Uuid, Decimal)>> {
+    Ok(sqlx::query_as(
+        "SELECT l.item_id, l.warehouse_id,
+                sum(GREATEST(l.qty - COALESCE(p.qty_delivered - p.qty_returned, 0), 0))
+         FROM sales_order_line l
+         JOIN document d ON d.id = l.document_id
+         LEFT JOIN sales_order_progress p ON p.line_id = l.id
+         WHERE d.company_id = $1 AND d.status = 'open' AND l.item_id IS NOT NULL
+         GROUP BY l.item_id, l.warehouse_id
+         HAVING sum(GREATEST(l.qty - COALESCE(p.qty_delivered - p.qty_returned, 0), 0)) > 0",
+    )
+    .bind(company_id)
+    .fetch_all(&mut *conn)
+    .await?)
+}
+
 /// The customer of an order, for the summary of the order and of the
 /// documents that follow from it.
 async fn party_of(conn: &mut PgConnection, order_id: Uuid) -> Result<Option<(Uuid, String)>> {

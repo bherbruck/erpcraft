@@ -1001,6 +1001,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "erpcraft-planning"
+version = "0.1.0"
+dependencies = [
+ "erpcraft-kernel",
+ "erpcraft-manufacturing",
+ "erpcraft-purchasing",
+ "erpcraft-sales",
+ "serde",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
 name = "erpcraft-printing"
 version = "0.1.0"
 dependencies = [
@@ -1082,6 +1095,7 @@ dependencies = [
  "erpcraft-openitems",
  "erpcraft-party",
  "erpcraft-payments",
+ "erpcraft-planning",
  "erpcraft-printing",
  "erpcraft-purchasing",
  "erpcraft-sales",

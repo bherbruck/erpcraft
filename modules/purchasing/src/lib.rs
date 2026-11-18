@@ -1245,6 +1245,28 @@ fn currency_field() -> FieldMeta {
 }
 
 /// The payment terms an order or invoice is on.
+/// What open purchase orders of a company still have to bring in, per
+/// item and warehouse: each stock line's quantity less what was received
+/// and kept (received less returned).
+pub async fn open_supply(
+    conn: &mut PgConnection,
+    company_id: Uuid,
+) -> Result<Vec<(Uuid, Uuid, Decimal)>> {
+    Ok(sqlx::query_as(
+        "SELECT l.item_id, l.warehouse_id,
+                sum(GREATEST(l.qty - COALESCE(p.qty_received - p.qty_returned, 0), 0))
+         FROM purchase_order_line l
+         JOIN document d ON d.id = l.document_id
+         LEFT JOIN purchase_order_progress p ON p.line_id = l.id
+         WHERE d.company_id = $1 AND d.status = 'open' AND l.item_id IS NOT NULL
+         GROUP BY l.item_id, l.warehouse_id
+         HAVING sum(GREATEST(l.qty - COALESCE(p.qty_received - p.qty_returned, 0), 0)) > 0",
+    )
+    .bind(company_id)
+    .fetch_all(&mut *conn)
+    .await?)
+}
+
 /// The vendor's address a document names: where it sells from.
 fn vendor_address_field() -> FieldMeta {
     erpcraft_party::address_field(
