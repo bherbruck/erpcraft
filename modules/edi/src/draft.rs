@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::partner;
-use crate::policy::DUPLICATE_ORDER;
+use crate::policy::{AUTO_APPROVE, AUTO_DRAFT, DUPLICATE_ORDER};
 use crate::proposal::{self, Choices, Finding, Proposal, Severity};
 use crate::x12::po850::PurchaseOrder;
 
@@ -27,6 +27,9 @@ pub struct Request {
     pub remember: bool,
     /// The notes were read; draft anyway.
     pub accept_notes: bool,
+    /// Drafted without a person: the policy edi.auto_draft decides, and
+    /// edi.auto_approve whether the draft is approved at once.
+    pub automatic: bool,
 }
 
 fn listed(findings: &[&Finding]) -> String {
@@ -92,7 +95,21 @@ pub async fn draft(ctx: &mut Ctx<'_>, request: Request) -> Result<DocumentView> 
         .iter()
         .filter(|f| f.severity == Severity::Note && f.code != "duplicate_order")
         .collect();
-    if !notes.is_empty() && !request.accept_notes {
+    if request.automatic {
+        // Whoever allowed this read the notes in the rule's condition.
+        ctx.decide(
+            AUTO_DRAFT,
+            partner.company_id,
+            json!({
+                "partner_code": partner.code,
+                "message": "850",
+                "notes": notes.len(),
+                "lines": proposal.lines.len(),
+                "total_net": proposal.total_net.unwrap_or_default(),
+            }),
+        )
+        .await?;
+    } else if !notes.is_empty() && !request.accept_notes {
         return Err(Error::validation(format!(
             "the proposal has {} note(s); read them with edi.proposal and draft with \
              accept_notes: {}",
@@ -171,6 +188,43 @@ pub async fn draft(ctx: &mut Ctx<'_>, request: Request) -> Result<DocumentView> 
     .bind(view.header.id)
     .execute(&mut *ctx.conn)
     .await?;
+    if request.automatic {
+        let approve = ctx
+            .policy(AUTO_APPROVE, partner.company_id)
+            .await?
+            .evaluate(json!({
+                "partner_code": partner.code,
+                "lines": proposal.lines.len(),
+                "total_net": proposal.total_net.unwrap_or_default(),
+            }))?;
+        if approve == erpcraft_kernel::Decision::Allowed {
+            // The normal approval, with every policy of sales_order.approve,
+            // then the 855 the approval owes the partner.
+            let handler = ctx
+                .kernel
+                .registry()
+                .command("sales_order.approve")?
+                .handler
+                .clone();
+            handler
+                .run_json(ctx, json!({ "id": view.header.id }))
+                .await?;
+            match crate::outbound::generate(
+                ctx,
+                "sales_order",
+                view.header.id,
+                crate::outbound::Message::Ack855,
+                false,
+            )
+            .await
+            {
+                Ok(_) => {}
+                Err(e @ Error::Internal(_)) => return Err(e),
+                Err(e) => tracing::info!(error = %e, "no 855 for an order approved by itself"),
+            }
+            return document::get(ctx, "sales_order", view.header.id).await;
+        }
+    }
     Ok(view)
 }
 

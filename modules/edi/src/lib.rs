@@ -30,14 +30,19 @@ pub mod segment;
 pub mod x12;
 
 pub mod commands;
+pub mod commands_out;
 pub mod control;
 pub mod draft;
 pub mod entities;
 pub mod inbound;
+pub mod label;
+pub mod outbound;
 pub mod partner;
 pub mod policy;
 pub mod proposal;
+pub mod shipment;
 pub mod store;
+pub mod subscriber;
 
 pub use segment::{Delimiters, EdiError, Element, Segment};
 
@@ -78,11 +83,18 @@ impl Module for EdiModule {
     }
 
     fn migrations(&self) -> Vec<Migration> {
-        vec![Migration {
-            version: 1,
-            name: "edi",
-            sql: include_str!("../migrations/0001_edi.sql"),
-        }]
+        vec![
+            Migration {
+                version: 1,
+                name: "edi",
+                sql: include_str!("../migrations/0001_edi.sql"),
+            },
+            Migration {
+                version: 2,
+                name: "shipment",
+                sql: include_str!("../migrations/0002_shipment.sql"),
+            },
+        ]
     }
 
     fn entities(&self) -> Vec<EntityMeta> {
@@ -91,6 +103,10 @@ impl Module for EdiModule {
 
     fn policies(&self) -> Vec<PolicyPoint> {
         policy::points()
+    }
+
+    fn subscribers(&self) -> Vec<Arc<dyn erpcraft_kernel::Subscriber>> {
+        vec![Arc::new(subscriber::EdiSubscriber)]
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
@@ -102,6 +118,13 @@ impl Module for EdiModule {
             command(commands::Explain),
             command(commands::ContentOf),
             command(commands::MarkSent),
+            command(commands_out::Generate),
+            command(commands_out::Pack),
+            command(commands_out::AutoPack),
+            command(commands_out::Ship),
+            command(commands_out::LabelOf),
+            command(commands_out::Pending),
+            command(commands_out::Resend),
         ]
     }
 }

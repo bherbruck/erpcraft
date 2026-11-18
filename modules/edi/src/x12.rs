@@ -23,7 +23,11 @@ use crate::segment::{
 };
 
 pub mod ack;
+pub mod asn856;
+pub mod fields;
+pub mod invoice810;
 pub mod po850;
+pub mod poack855;
 pub mod ta1;
 
 /// Interchanges in one file. A mailbox pickup may hold several.

@@ -2,10 +2,11 @@
 
 Electronic data interchange: ANSI X12 and UN/EDIFACT read and written by the ERP itself, so that a company trades orders, ship notices and invoices with its partners without a value-added network or a translation service in between.
 
-What is built today (PLAN.md phase 1):
+What is built today (PLAN.md phases 1 and 2):
 
 - the format layer: one tokenizer for both syntaxes, which takes the separators from the file (the ISA of X12, the UNA of EDIFACT); X12 interchanges, functional groups and transaction sets, read and written; the 850 purchase order as a typed structure; the 997 and the 999 functional acknowledgements, built for what was received and read back; the TA1 for an interchange; a sentence per segment (`explain`); EDIFACT interchanges and messages, read (an ORDERS in the tests); GS1 check digits and the SSCC of a carton;
-- the module (`edi`): trading partners and their numbers for items, units and places as entities; the log of every interchange with its bytes, stored before it is read and never changed; `edi.receive` (store, read, route, acknowledge), `edi.proposal`, `edi.draft` (a sales order through the normal document code), `edi.dismiss`, `edi.explain`, `edi_interchange.content` and `.mark_sent`; the policy points `edi.auto_draft` and `edi_order.duplicate`.
+- the module (`edi`): trading partners and their numbers for items, units and places as entities; the log of every interchange with its bytes, stored before it is read and never changed; `edi.receive` (store, read, route, acknowledge), `edi.proposal`, `edi.draft` (a sales order through the normal document code), `edi.dismiss`, `edi.explain`, `edi_interchange.content` and `.mark_sent`; the policy points `edi.auto_draft` and `edi_order.duplicate`;
+- answering (phase 2): the 855, 856 and 810 as typed messages, read and written; `edi.generate`, `edi_shipment.pack`, `.auto_pack` and `.ship`, `edi.label` (GS1-128 data and ZPL), `edi.pending`, `edi_message.resend`; a subscriber that drafts, approves and answers as the partner's run-as user where the policies `edi.auto_draft`, `edi.auto_approve`, `edi.send` and `edi_invoice.before_asn` allow; the partner's 997s and 999s matched to what they answer.
 
 ARCHITECTURE.md, "Electronic data interchange (EDI)", says what the module becomes. [PLAN.md](PLAN.md) is the order it is built in.
 

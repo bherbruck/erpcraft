@@ -789,3 +789,696 @@ async fn an_agent_takes_an_order_over_mcp() {
     );
     t.stop().await;
 }
+
+// ------------------------------------------------------------- phase 2
+
+/// The rest an order-to-cash exchange needs: stock, a GS1 prefix, a tax
+/// on every line, and the partner's automation running as the
+/// administrator.
+async fn answering(t: &TestApp, f: &Fixture) {
+    let adjustments = t
+        .create(
+            "account",
+            json!({ "company_id": f.c.id, "code": "5100", "name": "Adjustments",
+                    "account_type": "expense" }),
+        )
+        .await;
+    let (status, draft) = t
+        .post(
+            &t.admin,
+            "/api/documents/stock_adjustment",
+            json!({ "company_id": f.c.id, "doc_date": "2026-11-01", "body": {
+                "offset_account_id": adjustments,
+                "lines": [
+                    { "item_id": f.hammer, "warehouse_id": f.warehouse, "qty": "500", "unit_cost": "6" },
+                    { "item_id": f.tape, "warehouse_id": f.warehouse, "qty": "5000", "unit_cost": "2" },
+                    { "item_id": f.knife, "warehouse_id": f.warehouse, "qty": "500", "unit_cost": "3" },
+                ] } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{draft}");
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "stock_adjustment.post",
+            json!({ "id": draft["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    t.create(
+        "edi_settings",
+        json!({ "company_id": f.c.id, "gs1_company_prefix": "0400001" }),
+    )
+    .await;
+    let tax_payable = t
+        .create(
+            "account",
+            json!({ "company_id": f.c.id, "code": "2100", "name": "Sales tax",
+                    "account_type": "liability" }),
+        )
+        .await;
+    let tax = t
+        .create(
+            "tax_code",
+            json!({ "code": "ST5", "name": "Sales tax 5 %", "rate": "5" }),
+        )
+        .await;
+    t.create(
+        "tax_settings",
+        json!({ "company_id": f.c.id, "tax_code_id": tax, "collected_account_id": tax_payable,
+                "paid_account_id": tax_payable }),
+    )
+    .await;
+    t.create(
+        "tax_rule",
+        json!({ "company_id": f.c.id, "tax_code_id": tax }),
+    )
+    .await;
+    let admin: String = sqlx::query_scalar("SELECT id::text FROM app_user WHERE is_admin LIMIT 1")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    let (status, body) = t
+        .patch(
+            &t.admin,
+            &format!("/api/entities/edi_partner/{}", f.partner),
+            json!({ "run_as_user_id": admin }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// Receives the fixture and drafts it; returns the draft.
+async fn drafted(t: &TestApp, f: &Fixture, content: &str) -> Value {
+    let got = received(t, content).await;
+    let (status, order) = t
+        .command(
+            &t.admin,
+            "edi.draft",
+            json!({ "message_id": got["messages"][0]["id"], "items": knife_choice(f),
+                    "remember": true, "accept_notes": true }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{order}");
+    order
+}
+
+async fn run(t: &TestApp, name: &str, input: Value) -> Value {
+    let (status, body) = t.command(&t.admin, name, input).await;
+    assert_eq!(status, StatusCode::OK, "{name}: {body}");
+    body
+}
+
+async fn deliver_events(t: &TestApp) {
+    erpcraft_kernel::outbox::deliver_batch(&t.kernel, 100)
+        .await
+        .unwrap();
+}
+
+/// The newest message made for a document, and its bytes.
+async fn made(t: &TestApp, document: &Value, message: &str) -> (Value, String) {
+    let (id, interchange, state): (String, Option<String>, String) = sqlx::query_as(
+        "SELECT id::text, interchange_id::text, state FROM edi_message
+         WHERE document_id = $1::uuid AND message = $2 AND direction = 'out'
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(document["id"].as_str().unwrap())
+    .bind(message)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap_or_else(|_| panic!("no {message} for {}", document["id"]));
+    let bytes = match &interchange {
+        Some(i) => content(t, &json!({ "id": i })).await,
+        None => String::new(),
+    };
+    (
+        json!({ "id": id, "interchange_id": interchange, "state": state }),
+        bytes,
+    )
+}
+
+/// The partner's 997 for one of our messages.
+fn partner_997(control: u32, group: &str, functional_id: &str, set: &str, status: &str) -> String {
+    let isa = format!(
+        "ISA*00*          *00*          *ZZ*NORTHFIELDMERC *ZZ*CEDARHOLLOW    *261121*0800*U*00401*{control:09}*0*P*>~"
+    );
+    let body = if status == "A" {
+        format!("AK1*{functional_id}*{group}~AK2*{set}*0001~AK5*A~AK9*A*1*1*1~")
+    } else {
+        format!(
+            "AK1*{functional_id}*{group}~AK2*{set}*0001~AK3*IT1*5**8~AK4*2**6*X~AK5*R*5~AK9*R*1*1*0~"
+        )
+    };
+    let segments = body.matches('~').count() + 2;
+    format!(
+        "{isa}GS*FA*NORTHFIELDMERC*CEDARHOLLOW*20261121*0800*{control}*X*004010~ST*997*0001~{body}SE*{segments}*0001~GE*1*{control}~IEA*1*{control:09}~"
+    )
+}
+
+async fn group_of(t: &TestApp, message: &Value) -> String {
+    sqlx::query_scalar("SELECT group_control FROM edi_message WHERE id = $1::uuid")
+        .bind(message["id"].as_str().unwrap())
+        .fetch_one(&t.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_order_to_cash_exchange_runs_on_fixtures() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    answering(&t, &f).await;
+    let order = drafted(&t, &f, PO850).await;
+
+    // The cross-reference changes after the order came: what is sent
+    // still quotes the order.
+    sqlx::query("UPDATE edi_item_xref SET value = '10400001000219' WHERE kind = 'gtin' AND value = '10400001000202'")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+
+    // Approved: the 855 is made by itself, every line accepted.
+    let order = run(&t, "sales_order.approve", json!({ "id": order["id"] })).await;
+    deliver_events(&t).await;
+    let (ack, bytes) = made(&t, &order, "855").await;
+    assert_eq!(ack["state"], "ready", "{ack}");
+    assert!(bytes.contains("BAK*00*AD*4500018842*20261118"), "{bytes}");
+    assert_eq!(bytes.matches("ACK*IA*").count(), 3, "{bytes}");
+    assert!(
+        bytes.contains(
+            "PO1*2*120*CA*31.2**UK*10400001000202*VN*CH-2040-C*IN*88213002~ACK*IA*120*CA~"
+        ),
+        "{bytes}"
+    );
+    assert!(
+        bytes.contains("*0*P*>~"),
+        "a production partner's message: {bytes}"
+    );
+
+    // Delivered: shipping one carton short is refused, and nothing posts.
+    let delivery = run(&t, "sales_order.deliver", json!({ "id": order["id"] })).await;
+    let lines = delivery["body"]["lines"].as_array().unwrap().clone();
+    let short: Vec<Value> = lines
+        .iter()
+        .map(|l| {
+            let qty = if l["order_line_id"] == order["body"]["lines"][1]["id"] {
+                "714".to_owned()
+            } else {
+                l["qty"].as_str().unwrap().to_owned()
+            };
+            json!({ "kind": "carton", "lines": [{ "delivery_line_id": l["id"], "qty": qty }] })
+        })
+        .collect();
+    let packed = run(
+        &t,
+        "edi_shipment.pack",
+        json!({ "delivery_id": delivery["id"], "packs": short, "carrier_scac": "ABCD",
+                "bill_of_lading": "BOL778" }),
+    )
+    .await;
+    assert_eq!(packed["state"], "packing");
+    assert_eq!(packed["missing"].as_array().unwrap().len(), 1, "{packed}");
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "edi_shipment.ship",
+            json!({ "delivery_id": delivery["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (_, still) = t
+        .get(
+            &t.admin,
+            &format!("/api/documents/sales_delivery/{}", id(&delivery)),
+        )
+        .await;
+    assert_eq!(still["status"], "draft");
+
+    // Packed case by case, it ships: posted and noticed in one go.
+    let packed = run(
+        &t,
+        "edi_shipment.auto_pack",
+        json!({ "delivery_id": delivery["id"] }),
+    )
+    .await;
+    assert_eq!(packed["state"], "packed", "{packed}");
+    let cartons = packed["packs"].as_array().unwrap();
+    assert_eq!(cartons.len(), 48 + 120 + 24);
+    for carton in cartons {
+        assert!(erpcraft_edi::gs1::is_valid(
+            carton["sscc"].as_str().unwrap()
+        ));
+    }
+    let shipped = run(
+        &t,
+        "edi_shipment.ship",
+        json!({ "delivery_id": delivery["id"] }),
+    )
+    .await;
+    assert_eq!(shipped["delivery"]["status"], "posted", "{shipped}");
+    assert_eq!(shipped["notice"]["state"], "ready", "{shipped}");
+    let (notice, bytes) = made(&t, &delivery, "856").await;
+    // 720 each went as 120 cases of 6, one per carton, quoting the order.
+    assert_eq!(
+        bytes
+            .matches("LIN*2*UK*10400001000202*VN*CH-2040-C*IN*88213002~SN1**1*CA**120*CA~")
+            .count(),
+        120,
+        "{bytes}"
+    );
+    assert!(bytes.contains("PRF*4500018842***20261118~"), "{bytes}");
+    assert!(bytes.contains("REF*BM*BOL778~"), "{bytes}");
+    let label = run(&t, "edi.label", json!({ "pack_id": cartons[0]["id"] })).await;
+    assert_eq!(label["sscc"], cartons[0]["sscc"]);
+    assert!(
+        label["zpl"]
+            .as_str()
+            .unwrap()
+            .contains(&format!(">;>800{}", label["sscc"].as_str().unwrap()))
+    );
+    assert_eq!(
+        (label["number"].as_i64(), label["of"].as_i64()),
+        (Some(1), Some(192))
+    );
+
+    // Invoiced: the 810 comes to the invoice's total in cents, tax and all.
+    let draft = run(&t, "sales_order.invoice", json!({ "id": order["id"] })).await;
+    let invoice = run(&t, "sales_invoice.post", json!({ "id": draft["id"] })).await;
+    deliver_events(&t).await;
+    let (bill, bytes) = made(&t, &invoice, "810").await;
+    assert_eq!(bill["state"], "ready", "{bill} {bytes}");
+    let gross = dec(&invoice["summary"]["total_gross"]);
+    assert_eq!(gross, (600.0 + 3744.0 + 190.8) * 1.05);
+    assert!(
+        bytes.contains(&format!("TDS*{}~", (gross * 100.0).round() as i64)),
+        "{bytes}"
+    );
+    assert!(bytes.contains("TXI*ST*226.74*5~"), "{bytes}");
+    assert!(
+        bytes.contains("IT1*2*120*CA*31.2**UK*10400001000202*VN*CH-2040-C*IN*88213002~"),
+        "{bytes}"
+    );
+
+    // Everything is handed over, and the partner acknowledges all three.
+    let ready: Vec<String> = sqlx::query_scalar(
+        "SELECT id::text FROM edi_interchange WHERE direction = 'out' AND state = 'ready'",
+    )
+    .fetch_all(&t.pool)
+    .await
+    .unwrap();
+    for id in ready {
+        run(&t, "edi_interchange.mark_sent", json!({ "id": id })).await;
+    }
+    for (n, (message, functional_id, set)) in [
+        (&ack, "PR", "855"),
+        (&notice, "SH", "856"),
+        (&bill, "IN", "810"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let group = group_of(&t, message).await;
+        let got = received(
+            &t,
+            &partner_997(900 + n as u32, &group, functional_id, set, "A"),
+        )
+        .await;
+        assert!(
+            got["acknowledgements"].as_array().unwrap().is_empty(),
+            "never acknowledged"
+        );
+    }
+    for message in [&ack, &notice, &bill] {
+        let state: String = sqlx::query_scalar("SELECT state FROM edi_message WHERE id = $1::uuid")
+            .bind(message["id"].as_str().unwrap())
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+        assert_eq!(state, "acknowledged");
+    }
+    let pending = run(&t, "edi.pending", json!({ "company_id": f.c.id })).await;
+    for list in [
+        "proposals",
+        "invalid",
+        "rejected",
+        "overdue",
+        "ready",
+        "deliveries_without_notice",
+    ] {
+        assert!(
+            pending[list].as_array().unwrap().is_empty(),
+            "{list}: {pending}"
+        );
+    }
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn a_cut_quantity_a_rejection_a_resend_and_a_delivery_without_packing() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    answering(&t, &f).await;
+    let order = drafted(&t, &f, PO850).await;
+
+    // A quantity cut on the draft before approval: IQ with the new
+    // quantity, and the acknowledgement says it changed.
+    let mut lines = order["body"]["lines"].as_array().unwrap().clone();
+    lines[1]["qty"] = json!("600");
+    let (status, body) = t
+        .patch(
+            &t.admin,
+            &format!("/api/documents/sales_order/{}", id(&order)),
+            json!({ "version": order["version"], "body": {
+                "customer_id": order["body"]["customer_id"],
+                "shipping_address_id": order["body"]["shipping_address_id"],
+                "lines": lines } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let order = run(&t, "sales_order.approve", json!({ "id": order["id"] })).await;
+    let generated = run(
+        &t,
+        "edi.generate",
+        json!({ "doc_type": "sales_order", "id": order["id"], "message": "855" }),
+    )
+    .await;
+    assert_eq!(generated["state"], "ready", "{generated}");
+    let (ack, bytes) = made(&t, &order, "855").await;
+    assert!(bytes.contains("BAK*00*AC*"), "{bytes}");
+    assert!(
+        bytes.contains(
+            "PO1*2*120*CA*31.2**UK*10400001000202*VN*CH-2040-C*IN*88213002~ACK*IQ*100*CA~"
+        ),
+        "{bytes}"
+    );
+    // Made once: again is refused, and the subscriber's try changes nothing.
+    let (status, _) = t
+        .command(
+            &t.admin,
+            "edi.generate",
+            json!({ "doc_type": "sales_order", "id": order["id"], "message": "855" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    deliver_events(&t).await;
+    assert_eq!(
+        t.count("SELECT count(*) FROM edi_message WHERE message = '855'")
+            .await,
+        1
+    );
+
+    // Sent, then sent again: the same bytes.
+    run(
+        &t,
+        "edi_interchange.mark_sent",
+        json!({ "id": ack["interchange_id"] }),
+    )
+    .await;
+    let resent = run(&t, "edi_message.resend", json!({ "id": ack["id"] })).await;
+    assert_eq!(resent["interchange"]["state"], "ready");
+    assert_eq!(resent["interchange"]["id"], ack["interchange_id"]);
+    assert_eq!(
+        content(&t, &json!({ "id": ack["interchange_id"] })).await,
+        bytes
+    );
+
+    // The partner rejects it: rejected, with the place in words; made
+    // again, it supersedes the rejected one under a new control number.
+    let group = group_of(&t, &ack).await;
+    received(&t, &partner_997(950, &group, "PR", "855", "R")).await;
+    let (state, findings): (String, Value) =
+        sqlx::query_as("SELECT state, findings FROM edi_message WHERE id = $1::uuid")
+            .bind(ack["id"].as_str().unwrap())
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+    assert_eq!(state, "rejected");
+    assert!(
+        findings.to_string().contains("Segment IT1 at position 5"),
+        "{findings}"
+    );
+    let again = run(
+        &t,
+        "edi.generate",
+        json!({ "doc_type": "sales_order", "id": order["id"], "message": "855" }),
+    )
+    .await;
+    assert_eq!(again["supersedes"], ack["id"]);
+    assert_ne!(
+        again["message"]["group_control"].as_str(),
+        Some(group.as_str())
+    );
+
+    // A delivery posted without packing makes no notice and waits.
+    let delivery = run(&t, "sales_order.deliver", json!({ "id": order["id"] })).await;
+    run(&t, "sales_delivery.post", json!({ "id": delivery["id"] })).await;
+    deliver_events(&t).await;
+    let pending = run(&t, "edi.pending", json!({ "company_id": f.c.id })).await;
+    let waiting = pending["deliveries_without_notice"].as_array().unwrap();
+    assert_eq!(waiting.len(), 1, "{pending}");
+    assert_eq!(waiting[0]["delivery_id"], delivery["id"]);
+    assert_eq!(waiting[0]["packed"], false);
+    // Made by hand now, it is kept invalid with the reason.
+    let invalid = run(
+        &t,
+        "edi.generate",
+        json!({ "doc_type": "sales_delivery", "id": delivery["id"], "message": "856" }),
+    )
+    .await;
+    assert_eq!(invalid["state"], "invalid");
+    assert_eq!(invalid["findings"][0]["code"], "not_packed");
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn ssccs_are_never_issued_twice_and_a_test_partner_is_told_so() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    answering(&t, &f).await;
+    // A partner still in test: everything sent says T.
+    let (status, body) = t
+        .patch(
+            &t.admin,
+            &format!("/api/entities/edi_partner/{}", f.partner),
+            json!({ "usage": "test" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let got = received(&t, PO850).await;
+    assert_eq!(got["messages"][0]["state"], "test");
+    let ack = content(
+        &t,
+        &json!({ "id": got["acknowledgements"][0]["interchange_id"] }),
+    )
+    .await;
+    assert!(
+        ack.contains("*0*P*>~"),
+        "the 997 echoes the interchange's own usage: {ack}"
+    );
+    sqlx::query("UPDATE edi_partner SET usage = 'production'")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let order = drafted(&t, &f, &renumbered(PO850, 431)).await;
+    sqlx::query("UPDATE edi_partner SET usage = 'test'")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let order = run(&t, "sales_order.approve", json!({ "id": order["id"] })).await;
+    deliver_events(&t).await;
+    let (_, bytes) = made(&t, &order, "855").await;
+    assert!(bytes.contains("*0*T*>~"), "{bytes}");
+
+    // Two packings at once take different serials.
+    let first = run(&t, "sales_order.deliver", json!({ "id": order["id"] })).await;
+    let line = &first["body"]["lines"][0];
+    let pack = |delivery: &Value| {
+        json!({ "delivery_id": delivery["id"], "packs": [
+            { "kind": "pallet" },
+            { "kind": "carton", "parent": 1,
+              "lines": [{ "delivery_line_id": line["id"], "qty": "48" }] },
+        ] })
+    };
+    let (a, b) = tokio::join!(
+        t.command(&t.admin, "edi_shipment.pack", pack(&first)),
+        t.command(&t.admin, "edi_shipment.pack", pack(&first)),
+    );
+    assert_eq!(
+        (a.0, b.0),
+        (StatusCode::OK, StatusCode::OK),
+        "{} {}",
+        a.1,
+        b.1
+    );
+    let all: Vec<String> = sqlx::query_scalar("SELECT sscc FROM edi_pack ORDER BY sscc")
+        .fetch_all(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 4);
+    let mut unique = all.clone();
+    unique.dedup();
+    assert_eq!(unique, all);
+    // The database refuses a repeat, and a change of an SSCC.
+    let repeat = sqlx::query(
+        "INSERT INTO edi_pack (id, delivery_id, kind, sscc, position)
+         SELECT gen_random_uuid(), delivery_id, 'pallet', sscc, 9 FROM edi_pack LIMIT 1",
+    )
+    .execute(&t.pool)
+    .await;
+    assert!(repeat.is_err());
+    assert!(
+        sqlx::query("UPDATE edi_pack SET sscc = '000400001999999995'")
+            .execute(&t.pool)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query("DELETE FROM edi_pack")
+            .execute(&t.pool)
+            .await
+            .is_err()
+    );
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn automation_drafts_approves_and_invoices_with_a_tax_group_and_a_credit() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    answering(&t, &f).await;
+
+    // Two taxes on every line: one TXI each.
+    let tax_payable: String =
+        sqlx::query_scalar("SELECT collected_account_id::text FROM tax_settings LIMIT 1")
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+    let state = t
+        .create(
+            "tax_code",
+            json!({ "code": "STATE", "name": "State 4 %", "rate": "4" }),
+        )
+        .await;
+    let county = t
+        .create(
+            "tax_code",
+            json!({ "code": "COUNTY", "name": "County 1 %", "rate": "1" }),
+        )
+        .await;
+    for code in [&state, &county] {
+        t.create(
+            "tax_settings",
+            json!({ "company_id": f.c.id, "tax_code_id": code,
+                    "collected_account_id": tax_payable, "paid_account_id": tax_payable }),
+        )
+        .await;
+    }
+    let group = t
+        .create(
+            "tax_code",
+            json!({ "code": "BOTH", "name": "State and county", "rate": "5" }),
+        )
+        .await;
+    for (position, component) in [(1, &state), (2, &county)] {
+        t.create(
+            "tax_code_component",
+            json!({ "group_id": group, "component_id": component, "position": position }),
+        )
+        .await;
+    }
+    sqlx::query("UPDATE tax_rule SET tax_code_id = $1::uuid")
+        .bind(&group)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+
+    // The knife is known now, and the company lets the partner's orders
+    // in without a person, and approved.
+    t.create(
+        "edi_item_xref",
+        json!({ "partner_id": f.partner, "item_id": f.knife, "kind": "seller_item",
+                "value": "CH-3310" }),
+    )
+    .await;
+    for point in ["edi.auto_draft", "edi.auto_approve"] {
+        let (status, body) = t
+            .post(
+                &t.admin,
+                "/api/entities/policy_rule",
+                json!({ "company_id": f.c.id, "point": point, "effect": "allow",
+                        "condition": "facts.partner_code == 'NM'" }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let got = received(&t, PO850).await;
+    deliver_events(&t).await;
+    let (state, order_id): (String, Option<String>) =
+        sqlx::query_as("SELECT state, document_id::text FROM edi_message WHERE id = $1::uuid")
+            .bind(got["messages"][0]["id"].as_str().unwrap())
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+    assert_eq!(state, "drafted");
+    let (_, order) = t
+        .get(
+            &t.admin,
+            &format!("/api/documents/sales_order/{}", order_id.unwrap()),
+        )
+        .await;
+    assert_eq!(order["status"], "open", "approved by itself: {order}");
+    let (ack, _) = made(&t, &order, "855").await;
+    assert_eq!(ack["state"], "ready");
+
+    let delivery = run(&t, "sales_order.deliver", json!({ "id": order["id"] })).await;
+    run(&t, "sales_delivery.post", json!({ "id": delivery["id"] })).await;
+    let draft = run(&t, "sales_order.invoice", json!({ "id": order["id"] })).await;
+    let invoice = run(&t, "sales_invoice.post", json!({ "id": draft["id"] })).await;
+    deliver_events(&t).await;
+    let (bill, bytes) = made(&t, &invoice, "810").await;
+    assert_eq!(bill["state"], "ready", "{bytes}");
+    // Each component of the group on its own: 4 % and 1 % of 4,534.80.
+    assert!(bytes.contains("TXI*ST*181.39*4~TXI*ST*45.35*1~"), "{bytes}");
+    let gross = dec(&invoice["summary"]["total_gross"]);
+    assert!(
+        bytes.contains(&format!("TDS*{}~", (gross * 100.0).round() as i64)),
+        "{bytes}"
+    );
+
+    // A credit for line 2's price: an 810 marked as a credit.
+    let (status, body) = t
+        .post(
+            &t.admin,
+            "/api/entities/policy_rule",
+            json!({ "company_id": f.c.id, "point": "sales_credit_note.without_return",
+                    "effect": "allow", "condition": "true" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let line = invoice["body"]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["order_line_id"] == order["body"]["lines"][1]["id"])
+        .unwrap();
+    let (status, credit) = t
+        .post(
+            &t.admin,
+            "/api/documents/sales_credit_note",
+            json!({ "company_id": f.c.id, "doc_date": "2026-11-25", "body": {
+                "sales_invoice_id": invoice["id"],
+                "lines": [{ "invoice_line_id": line["id"], "qty": "6", "unit_price": "5.2" }] } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{credit}");
+    let credit = run(&t, "sales_credit_note.post", json!({ "id": credit["id"] })).await;
+    deliver_events(&t).await;
+    let (note, bytes) = made(&t, &credit, "810").await;
+    assert_eq!(note["state"], "ready", "{bytes}");
+    assert!(bytes.contains("*CR~"), "{bytes}");
+    assert!(
+        bytes.contains("IT1*2*1*CA*31.2**UK*10400001000202"),
+        "{bytes}"
+    );
+    t.stop().await;
+}

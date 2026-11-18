@@ -164,6 +164,17 @@ Inbound 997s are now matched: `edi.receive` of a group `FA` sets `ack_status` on
 
 **Done when** the whole order-to-cash exchange runs on fixtures: 850 in, 997 out, 855 out, 856 out, 810 out, three 997s in, nothing pending.
 
+**Built** (phase 2). The format layer's tests are `tests/messages.rs` (each writer read back, an edited count or total caught, the 856 tree both ways round, a parent that comes later and a tree nested too deep refused, every byte of each message changed); the module's are in `apps/server/tests/edi.rs`, whose `the_order_to_cash_exchange_runs_on_fixtures` is the "done when" above. Decided while building:
+
+- `edi_settings` has an `id` (it is an entity, written with the generic commands); its serial only goes up (a trigger). A pack is never deleted: packing again voids the packs before, and their SSCCs stay issued. A pack's SSCC, delivery and kind never change.
+- The packing check is in Rust (`ship` refuses with what is missing) and, for a shipment marked `packed`, in a deferred trigger.
+- The writer writes the 856 as pick and pack (`BSN05` `0001`), with pallets above the cartons when there are any. Both layouts are read and written by the format layer; choosing standard carton per partner is the guide's `hierarchy` (phase 4).
+- The 810 writes every tax as `TXI01` `ST`, one per tax code the ledger recorded, in the order it recorded them (a group's components in their order); a line's discount as a line allowance and a charge line as a charge (`SAC` `ZZZZ` with a description). Which codes a partner wants instead is its guide's (phase 4). A credit note is an 810 with `BIG07` `CR`, its lines found through the invoice lines they credit.
+- Automatic drafting is `edi.draft` with `automatic`, run by the subscriber as the partner's run-as user: `edi.auto_draft` decides in place of `accept_notes`, and when `edi.auto_approve` allows, the draft is approved through `sales_order.approve` and its 855 made in the same transaction.
+- The subscriber makes an 856 for a posted delivery only when it is packed; `edi_shipment.ship` is the normal way, and makes it itself.
+- `edi.pending` also lists messages ready and not sent, and messages the partner rejected that nothing replaced.
+- Not built: the events `edi.invalid` and `edi.rejected` (no kernel API yet, see the table above); an invalid message is in `edi.pending`.
+
 ## Phase 3: EDIFACT
 
 Same typed messages, second syntax. `src/edifact/orders.rs` reads ORDERS D.96A into `PurchaseOrder` (generalised where needed: rename nothing, add what EDIFACT has and X12 lacks behind `Option`); `ordrsp.rs`, `desadv.rs`, `invoic.rs` write from the typed messages of phase 2; `contrl.rs` builds and reads CONTRL (`UCI`, `UCM` with action 7 acknowledged, 4 rejected, and the codes the envelope reader already keeps).

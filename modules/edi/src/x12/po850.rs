@@ -20,7 +20,7 @@ use std::str::FromStr;
 
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::segment::Segment;
 use crate::x12::TransactionSet;
@@ -66,7 +66,7 @@ pub struct PurchaseOrder {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reference {
     /// REF01, such as `DP` department, `IA` the vendor number the buyer
     /// assigned, `PD` promotion.
@@ -75,7 +75,7 @@ pub struct Reference {
     pub description: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DateOf {
     /// DTM01, such as `002` delivery requested, `010` requested ship,
     /// `037` ship not before, `038` ship no later, `001` cancel after.
@@ -83,7 +83,7 @@ pub struct DateOf {
     pub date: NaiveDate,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Terms {
     /// ITD01.
     pub type_code: String,
@@ -96,7 +96,7 @@ pub struct Terms {
     pub description: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Party {
     /// N101: `BY` buyer, `ST` ship to, `BT` bill to, `VN` vendor,
     /// `SF` ship from, `Z7` mark for.
@@ -137,7 +137,7 @@ pub struct Line {
     pub parties: Vec<Party>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProductId {
     /// Such as `UP` a UPC of 12 digits, `EN` an EAN of 13, `UK` a GTIN of
     /// 14, `VN` or `VP` the seller's number, `IN` or `BP` the buyer's.

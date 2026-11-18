@@ -159,6 +159,11 @@ pub struct DraftInput {
     /// the draft's memo.
     #[serde(default)]
     accept_notes: bool,
+    /// Drafted by automation as the partner's run-as user: the policy
+    /// edi.auto_draft decides instead of accept_notes, and edi.auto_approve
+    /// whether the draft is approved at once.
+    #[serde(default)]
+    automatic: bool,
 }
 
 pub struct Draft;
@@ -199,6 +204,7 @@ impl Command for Draft {
                 },
                 remember: input.remember,
                 accept_notes: input.accept_notes,
+                automatic: input.automatic,
             },
         )
         .await

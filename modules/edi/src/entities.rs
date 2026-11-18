@@ -24,6 +24,7 @@ pub fn all() -> Vec<EntityMeta> {
         location_xref(),
         interchange(),
         message(),
+        settings(),
     ]
 }
 
@@ -358,4 +359,31 @@ fn message() -> EntityMeta {
         .plural("EDI messages")
         .company_field("company_id")
         .read_only()
+}
+
+pub fn settings() -> EntityMeta {
+    EntityMeta::new("edi_settings", "EDI settings")
+        .field(
+            FieldMeta::new("company_id", "Company", FieldType::link("company"))
+                .required()
+                .immutable(),
+        )
+        .field(
+            FieldMeta::new("gs1_company_prefix", "GS1 company prefix", FieldType::Text).help(
+                "The 7 to 10 digits GS1 gave the company: what its cartons' SSCCs begin with.",
+            ),
+        )
+        .field(
+            FieldMeta::new("sscc_extension", "SSCC extension digit", FieldType::Int)
+                .help("The digit in front of the prefix, 0 to 9; 0 unless you have a reason."),
+        )
+        .field(
+            FieldMeta::new("next_sscc_serial", "Next SSCC serial", FieldType::Int)
+                .help("The serial the next carton gets. It only goes up: a serial is used once."),
+        )
+        .field(created())
+        .order_by(&["company_id"])
+        .display(&["gs1_company_prefix"])
+        .plural("EDI settings")
+        .company_field("company_id")
 }

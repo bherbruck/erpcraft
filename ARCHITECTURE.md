@@ -55,7 +55,7 @@ modules/
   assets            fixed assets: register, depreciation runs, disposals
   einvoice          electronic invoices after EN 16931: XRechnung (UBL, CII), ZUGFeRD / Factur-X XML
   planning          stock availability; reorder rules, suggestions, drafted purchase and production orders
-  edi               X12 and EDIFACT read and written; partners, the interchange log, 850s received, acknowledged and drafted as sales orders; see Electronic data interchange
+  edi               X12 and EDIFACT read and written; partners, the interchange log, 850s received and drafted, 855, 856 and 810 sent; see Electronic data interchange
 apps/
   server            the `erpcraft` binary
 ```
@@ -500,7 +500,7 @@ The module `einvoice` writes and reads structured electronic invoices after the 
 
 ### Electronic data interchange (EDI)
 
-Decided 2026-11-18. **Built** (phase 1 of `modules/edi/PLAN.md`): the format layer (the tokenizer, X12 and EDIFACT envelopes, the 850 as a typed order, the 997, the 999 and the TA1, a sentence per segment), partners and cross-references, the interchange log, receiving (store, read, route, acknowledge), proposals and drafts of sales orders, and the policy points `edi.auto_draft` and `edi_order.duplicate`. Everything else in this section is **planned**, in the order of the plan. The research behind it, with its sources and what could and could not be verified, is in [docs/research/2026-11-edi](docs/research/2026-11-edi/README.md).
+Decided 2026-11-18. **Built** (phases 1 and 2 of `modules/edi/PLAN.md`): the format layer (the tokenizer, X12 and EDIFACT envelopes, the 850 as a typed order, the 997, the 999 and the TA1, a sentence per segment), partners and cross-references, the interchange log, receiving (store, read, route, acknowledge), proposals and drafts of sales orders; the 855, 856 and 810 made from the approved order, the posted and packed delivery and the posted invoice or credit note, checked against the books; packing with SSCCs and labels; shipping in one transaction with the delivery's post; the partner's 997s matched; automation as the partner's run-as user; and the policy points `edi.auto_draft`, `edi.auto_approve`, `edi_order.duplicate`, `edi.send` and `edi_invoice.before_asn`. Everything else in this section is **planned**, in the order of the plan. The research behind it, with its sources and what could and could not be verified, is in [docs/research/2026-11-edi](docs/research/2026-11-edi/README.md).
 
 **Why.** A manufacturer that sells to a retailer or supplies an OEM is told to trade by EDI: orders come as X12 850 or EDIFACT ORDERS, and the buyer wants an acknowledgement, a ship notice before the truck and an invoice back the same way. A small supplier cannot read these files, so it rents a value-added network (VAN) or an EDI service that carries and translates them, and pays per document or per kilocharacter, plus a fee to map each new partner. Nothing in this needs a middleman. The files are text, the transports are SFTP and HTTP, and what differs between partners is a document, their implementation guide. erpcraft reads and writes the files itself, connects to the partner directly, and keeps what differs per partner as data. A partner that accepts only a VAN is still reached: through that VAN's mailbox, in the partner's own format, so the VAN carries bytes and translates nothing.
 

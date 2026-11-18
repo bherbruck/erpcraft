@@ -279,22 +279,25 @@ pub async fn receive(
     for (group, reads) in interchange.groups.iter().zip(sets) {
         let mut verdicts = Vec::new();
         let mut kinds = Vec::new();
+        let mut answers = Vec::new();
         for read in reads {
             match read {
                 SetRead::Order(order, verdict) => {
                     verdicts.push(verdict);
                     kinds.push(Some(order));
+                    answers.push(None);
                 }
                 SetRead::Other(verdict) => {
                     verdicts.push(verdict);
                     kinds.push(None);
+                    answers.push(None);
                 }
                 SetRead::Ack(ack) => {
+                    // An acknowledgement is never acknowledged: it is
+                    // matched to what it answers.
                     verdicts.push(SetVerdict::default());
-                    // An acknowledgement is never acknowledged; phase 2
-                    // matches it to what it answers.
                     kinds.push(None);
-                    let _ = ack;
+                    answers.push(Some(ack));
                 }
             }
         }
@@ -302,7 +305,9 @@ pub async fn receive(
         let mut next = verdicts.iter();
         let ack = FunctionalAck::of(group, |_| next.next().cloned().unwrap_or_default());
         let mut ids = Vec::new();
-        for ((set, set_ack), order) in group.sets.iter().zip(&ack.sets).zip(kinds) {
+        for (((set, set_ack), order), answer) in
+            group.sets.iter().zip(&ack.sets).zip(kinds).zip(answers)
+        {
             position += 1;
             let mut findings: Vec<Finding> = Vec::new();
             let state = if is_ack_group {
@@ -368,6 +373,11 @@ pub async fn receive(
             .await?;
             ctx.touch("edi_message", message_id);
             ids.push(message_id);
+            if let Some(answer) = answer
+                && !duplicate
+            {
+                match_ack(ctx, &partner, message_id, answer).await?;
+            }
         }
         if !is_ack_group && !duplicate && matches!(partner.ack_form.as_str(), "997" | "999") {
             let ack_id = acknowledge(ctx, &partner, &interchange, &ack, id).await?;
@@ -392,6 +402,83 @@ pub async fn receive(
         send_ta1(ctx, &partner, &interchange, &ta1, id).await?;
     }
     output(ctx.conn, id, false).await
+}
+
+/// Marks the messages a partner's 997 or 999 answers: acknowledged,
+/// acknowledged with errors, or rejected with the place in words.
+async fn match_ack(
+    ctx: &mut Ctx<'_>,
+    partner: &Partner,
+    ack_message: Uuid,
+    answer: std::result::Result<FunctionalAck, String>,
+) -> Result<()> {
+    let ack = match answer {
+        Ok(ack) => ack,
+        Err(why) => {
+            let finding = Finding::note(
+                "unreadable_ack",
+                None,
+                format!("This acknowledgement could not be read: {why}"),
+            );
+            sqlx::query("UPDATE edi_message SET findings = $2 WHERE id = $1")
+                .bind(ack_message)
+                .bind(json!([finding]))
+                .execute(&mut *ctx.conn)
+                .await?;
+            return Ok(());
+        }
+    };
+    let state_of = |status: Status| match status {
+        Status::Accepted => ("A", "acknowledged"),
+        Status::AcceptedWithErrors | Status::PartiallyAccepted => ("E", "acknowledged_with_errors"),
+        Status::Rejected => ("R", "rejected"),
+    };
+    let mut answered = Vec::new();
+    for set in &ack.sets {
+        let (code, state) = state_of(set.status);
+        let findings: Vec<Finding> = if set.status == Status::Rejected {
+            crate::x12::ack::describe(set)
+                .into_iter()
+                .map(|s| Finding::blocking("partner_rejected", None, s))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        sqlx::query(
+            "UPDATE edi_message SET ack_status = $5, state = $6, ack_message_id = $7,
+                 findings = findings || $8
+             WHERE partner_id = $1 AND direction = 'out' AND group_control = $2
+               AND control = $3 AND message = $4",
+        )
+        .bind(partner.id)
+        .bind(&ack.group_control)
+        .bind(&set.control)
+        .bind(&set.id)
+        .bind(code)
+        .bind(state)
+        .bind(ack_message)
+        .bind(json!(findings))
+        .execute(&mut *ctx.conn)
+        .await?;
+        answered.push(set.control.clone());
+    }
+    // A group answered as a whole (no AK2): every set in it.
+    if ack.sets.is_empty() {
+        let (code, state) = state_of(ack.status);
+        sqlx::query(
+            "UPDATE edi_message SET ack_status = $3, state = $4, ack_message_id = $5
+             WHERE partner_id = $1 AND direction = 'out' AND group_control = $2
+               AND message NOT IN ('997', '999', 'TA1')",
+        )
+        .bind(partner.id)
+        .bind(&ack.group_control)
+        .bind(code)
+        .bind(state)
+        .bind(ack_message)
+        .execute(&mut *ctx.conn)
+        .await?;
+    }
+    Ok(())
 }
 
 async fn unreadable(ctx: &mut Ctx<'_>, id: Uuid, why: &str) -> Result<ReceiveOutput> {
