@@ -1821,3 +1821,52 @@ async fn planning_suggests_and_drafts_what_to_buy() {
     assert_eq!(dec(&order["body"]["qty"]), 3.0);
     t.stop().await;
 }
+
+/// A vendor's volume rebate, not tied to an invoice: it takes the amount
+/// off the account it names and the tax off the account it was reclaimed
+/// on, and leaves a credit with the vendor, applied to its invoices.
+#[tokio::test]
+async fn a_vendor_rebate_is_a_credit_without_an_invoice() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let order = f.order(&t, "purchase", "10", "10.00", json!({})).await;
+    let invoice = f.bought(&t, &order, "2026-03-01", json!({})).await;
+    let before = f.books(&t).await;
+    let credit = f
+        .posted(
+            &t,
+            "vendor_credit",
+            "2026-03-10",
+            json!({ "vendor_id": f.vendor, "lines": [
+                { "account_id": f.account["5200"], "description": "Volume rebate", "qty": "1",
+                  "unit_price": "20.00", "tax_code_id": f.vat } ] }),
+        )
+        .await;
+    assert_eq!(dec(&credit["summary"]["total_gross"]), 23.8, "{credit}");
+    let books = f.books(&t).await;
+    let at = |b: &BTreeMap<String, f64>, code: &str| b.get(code).copied().unwrap_or(0.0);
+    assert!(
+        close(at(&books, "2000"), at(&before, "2000") + 23.8),
+        "less is owed"
+    );
+    assert!(
+        close(at(&books, "1400"), at(&before, "1400") - 3.8),
+        "less tax reclaimed"
+    );
+    assert!(close(at(&books, "5200"), at(&before, "5200") - 20.0));
+    let item = f.item_of(&t, "payable", &credit).await;
+    assert_eq!(dec(&item["txn_amount"]), -23.8);
+    let debt = f.item_of(&t, "payable", &invoice).await;
+    let (status, applied) = t
+        .command(
+            &t.admin,
+            "payment.apply_credit",
+            json!({ "company_id": f.c.id, "credit_item_id": item["id"],
+                    "debt_item_id": debt["id"], "doc_date": "2026-03-11" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+    let debt = f.item_of(&t, "payable", &invoice).await;
+    assert_eq!(dec(&debt["txn_open"]), 119.0 - 23.8);
+    t.stop().await;
+}

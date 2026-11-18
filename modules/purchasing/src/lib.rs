@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+mod credit;
 mod policy;
 mod returns;
 
@@ -108,6 +109,11 @@ impl Module for PurchasingModule {
                 name: "addresses",
                 sql: include_str!("../migrations/0011_addresses.sql"),
             },
+            Migration {
+                version: 12,
+                name: "credit",
+                sql: include_str!("../migrations/0012_credit.sql"),
+            },
         ]
     }
 
@@ -159,6 +165,7 @@ impl Module for PurchasingModule {
             Arc::new(VendorInvoice),
             Arc::new(returns::PurchaseReturn),
             Arc::new(returns::VendorCreditNote),
+            Arc::new(credit::VendorCredit),
         ]
     }
 
@@ -219,6 +226,8 @@ impl Module for PurchasingModule {
             command(returns::DraftCreditNote),
             command(returns::PostCreditNote),
             command(returns::ReverseCreditNote),
+            command(credit::PostCredit),
+            command(credit::ReverseCredit),
         ]
     }
 }

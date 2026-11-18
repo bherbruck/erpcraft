@@ -905,6 +905,7 @@ async fn policy_points_are_described_for_interfaces_and_agents() {
             "stock.negative",
             "tax_code.use",
             VENDOR_INACTIVE,
+            "vendor_credit.without_invoice",
             "vendor_credit_note.without_return",
             PRICE_DIFFERS,
             "vendor_invoice.without_order",

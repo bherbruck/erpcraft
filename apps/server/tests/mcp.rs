@@ -881,6 +881,7 @@ async fn an_agent_finds_the_tools_it_needs_without_reading_them_all() {
             "Purchase order",
             "Purchase receipt",
             "Purchase return",
+            "Vendor credit",
             "Vendor credit note",
             "Vendor invoice"
         ])
@@ -1129,6 +1130,7 @@ async fn reference_material_is_served_as_resources() {
             "purchase_order",
             "purchase_receipt",
             "purchase_return",
+            "vendor_credit",
             "vendor_credit_note",
             "vendor_invoice"
         ]

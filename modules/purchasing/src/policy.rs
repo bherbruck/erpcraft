@@ -10,10 +10,26 @@ pub(crate) const CLOSED_ORDER: &str = "purchase_order.closed";
 pub(crate) const CREDIT_WITHOUT_RETURN: &str = "vendor_credit_note.without_return";
 pub(crate) const REOPEN_ON_RETURN: &str = "purchase_order.reopen_on_return";
 pub(crate) const WITHOUT_ORDER: &str = "vendor_invoice.without_order";
+pub(crate) const WITHOUT_INVOICE: &str = "vendor_credit.without_invoice";
 pub(crate) const APPROVE_ORDER: &str = "purchase_order.approve";
 
 pub(crate) fn points() -> Vec<PolicyPoint> {
     vec![
+        PolicyPoint::new(
+            WITHOUT_INVOICE,
+            "Asked when a vendor credit not tied to an invoice (a volume rebate, goodwill) is \
+             posted: may it be posted? Unless configured otherwise it is allowed; a company \
+             that wants such credits checked can require approval, for example above an \
+             amount with `facts.total > 1000`.",
+        )
+        .number(
+            "total",
+            "What the vendor credits, tax included, in the credit's currency",
+        )
+        .as_money(Some("currency"))
+        .text("currency", "The credit's currency")
+        .text("vendor_code", "The vendor's code")
+        .refusal("a credit without an invoice needs approval"),
         PolicyPoint::new(
             WITHOUT_ORDER,
             "Asked when a vendor invoice without a purchase order (rent, a service, a machine) \
@@ -277,6 +293,11 @@ fn percent(part: Decimal, whole: Decimal) -> Decimal {
     } else {
         (part * Decimal::ONE_HUNDRED / whole).round_dp(6)
     }
+}
+
+/// The facts of [`WITHOUT_INVOICE`] for a vendor credit.
+pub(crate) fn without_invoice(total: Decimal, currency: &str, vendor_code: &str) -> Value {
+    json!({ "total": shown(total), "currency": currency, "vendor_code": vendor_code })
 }
 
 /// The facts of [`WITHOUT_ORDER`] for a direct vendor invoice.
