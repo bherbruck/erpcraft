@@ -65,7 +65,11 @@ async fn setup(t: &TestApp) -> Fixture {
     let (controller, _) = t
         .user_with_rules(
             "controller@example.com",
-            json!(["purchase_order:read", "purchase_order:approve_large"]),
+            json!([
+                "purchase_order:read",
+                "purchase_order:approve_large",
+                "approval:delegate"
+            ]),
             Some(&c.id),
         )
         .await;
@@ -913,5 +917,90 @@ async fn a_delegate_decides_in_the_place_of_an_approver() {
         )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    t.stop().await;
+}
+
+/// Delegating approvals hands on one's whole standing as an approver, so it
+/// takes approval:delegate, a limited token cannot do it, and a delegation
+/// stops counting when its giver loses the right.
+#[tokio::test]
+async fn delegating_approvals_takes_its_own_right() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let (deputy, deputy_id) = t
+        .user_with_rules(
+            "deputy@example.com",
+            json!(["purchase_order:read"]),
+            Some(&f.c.id),
+        )
+        .await;
+    let delegate = json!({ "delegate_id": deputy_id, "ends_on": "2099-12-31" });
+
+    // The second controller may approve but not delegate.
+    let (status, body) = t
+        .command(&f.second_controller, "approval.delegate", delegate.clone())
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    // The administrator's read-only token cannot hand on the administrator.
+    let (status, token) = t
+        .command(
+            &t.admin,
+            "auth.create_token",
+            json!({ "name": "reports", "scopes": ["*:read"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{token}");
+    let reader = token["token"].as_str().unwrap().to_owned();
+    let (status, body) = t
+        .command(&reader, "approval.delegate", delegate.clone())
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    // Nor can a token that names the right: a token never hands on its user.
+    let (status, token) = t
+        .command(
+            &f.controller,
+            "auth.create_token",
+            json!({ "name": "agent", "scopes": ["approval:*"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{token}");
+    let agent = token["token"].as_str().unwrap().to_owned();
+    let (status, body) = t
+        .command(&agent, "approval.delegate", delegate.clone())
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot delegate approvals"),
+        "{body}"
+    );
+    assert_eq!(t.count("SELECT count(*) FROM approval_delegation").await, 0);
+
+    // The controller may; the deputy decides in their place.
+    let (status, body) = t
+        .command(&f.controller, "approval.delegate", delegate.clone())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let order = f.order(&t, "100").await;
+    let request = f.pending(&t, &order).await;
+    let (_, list) = t.command(&deputy, "approval.list", json!({})).await;
+    assert_eq!(list["items"].as_array().unwrap().len(), 1, "{list}");
+
+    // The controller loses the right to delegate: the delegation no longer
+    // counts, though it is still on record.
+    sqlx::query(
+        "UPDATE role SET permissions = '[\"purchase_order:read\", \"purchase_order:approve_large\"]'
+         WHERE permissions @> '[\"approval:delegate\"]'",
+    )
+    .execute(&t.pool)
+    .await
+    .unwrap();
+    let (status, body) = t
+        .command(&deputy, "approval.approve", json!({ "id": request }))
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
     t.stop().await;
 }

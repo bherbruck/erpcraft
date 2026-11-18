@@ -504,6 +504,10 @@ async fn standing(ctx: &mut Ctx<'_>, request: &ApprovalRequest) -> Result<Option
         let Ok(actor) = load_actor(ctx.kernel.pool(), delegator, None).await else {
             continue;
         };
+        // A delegation stands only while its giver may delegate.
+        if !actor.can_any(DELEGATE) {
+            continue;
+        }
         if in_own_right(&mut *ctx.conn, &actor, request).await? {
             return Ok(Some(Some(delegator)));
         }
@@ -512,6 +516,9 @@ async fn standing(ctx: &mut Ctx<'_>, request: &ApprovalRequest) -> Result<Option
 }
 
 // ---------------------------------------------------------------- commands
+
+/// The right to let someone else decide one's approvals.
+pub const DELEGATE: &str = "approval:delegate";
 
 pub(crate) fn commands() -> Vec<Arc<dyn DynCommand>> {
     vec![
@@ -1077,15 +1084,27 @@ impl Command for Delegate {
              caller could decide: while away, for example. They decide in the caller's place \
              and their decision says so; it counts as the caller's, so one person is never \
              counted twice. They never decide a request of their own, and what they could \
-             decide in their own right they decide as themselves. Anyone may delegate their \
-             own approvals.",
+             decide in their own right they decide as themselves. Takes approval:delegate \
+             (in any company), and a token limited to some permissions cannot delegate: what \
+             is handed on is the caller's whole standing as an approver. A delegation counts \
+             only while the caller still holds approval:delegate.",
         )
+        .permission(DELEGATE)
         .label("Delegate approvals")
         .resource("approval")
         .target(false)
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: DelegateInput) -> Result<DelegationView> {
+        // The delegate decides with the caller's full standing, not the
+        // token's: a limited token cannot hand that on, as it cannot hand
+        // on a role (`may_delegate` refuses it for the same reason).
+        if ctx.actor.scopes.is_some() {
+            return Err(Error::forbidden(
+                "a token limited to some permissions cannot delegate approvals; sign in or use \
+                 an unlimited token",
+            ));
+        }
         let starts_on = input.starts_on.unwrap_or_else(|| Utc::now().date_naive());
         if input.ends_on < starts_on {
             return Err(Error::field(
