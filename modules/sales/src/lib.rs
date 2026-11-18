@@ -113,6 +113,11 @@ impl Module for SalesModule {
                 name: "rate_precision",
                 sql: include_str!("../migrations/0012_rate_precision.sql"),
             },
+            Migration {
+                version: 13,
+                name: "list_indexes",
+                sql: include_str!("../migrations/0013_list_indexes.sql"),
+            },
         ]
     }
 

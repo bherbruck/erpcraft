@@ -119,6 +119,11 @@ impl Module for PurchasingModule {
                 name: "rate_precision",
                 sql: include_str!("../migrations/0013_rate_precision.sql"),
             },
+            Migration {
+                version: 14,
+                name: "list_indexes",
+                sql: include_str!("../migrations/0014_list_indexes.sql"),
+            },
         ]
     }
 

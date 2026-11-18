@@ -113,3 +113,84 @@ async fn an_item_list_can_find_items_by_part_of_their_name_through_an_index() {
         "{p}"
     );
 }
+
+#[tokio::test]
+async fn party_lists_can_find_parties_by_part_of_their_name_through_an_index() {
+    let t = TestApp::start().await;
+    for table in ["customer", "vendor"] {
+        let p = usable(
+            &t,
+            &format!("SELECT * FROM {table} AS t WHERE (t.name ILIKE $1::text)"),
+            "%son%",
+        )
+        .await;
+        assert!(p.contains(&format!("{table}_name_trgm")), "{table}: {p}");
+        let p = usable(
+            &t,
+            &format!(
+                "SELECT * FROM {table} AS t WHERE (t.code::text ILIKE $1 OR t.name::text ILIKE $1)"
+            ),
+            "%son%",
+        )
+        .await;
+        assert!(p.contains(&format!("{table}_code_trgm")), "{table}: {p}");
+    }
+}
+
+#[tokio::test]
+async fn party_and_summary_sorts_use_their_indexes() {
+    let t = TestApp::start().await;
+    let c = t.company("ACME", "USD").await;
+    for table in ["customer", "vendor"] {
+        sqlx::query(&format!(
+            "INSERT INTO {table} (id, code, name)
+             SELECT gen_random_uuid(), 'P' || n, 'Party ' || n FROM generate_series(1, 5000) n"
+        ))
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    }
+    for (doc_type, field) in [
+        ("sales_order", "customer_name"),
+        ("purchase_order", "vendor_name"),
+    ] {
+        sqlx::query(
+            "INSERT INTO document (id, company_id, doc_type, number, status, doc_date, created_by, summary)
+             SELECT gen_random_uuid(), $1::uuid, $2, 'D-' || n, 'closed', date '2022-01-01' + (n % 1800),
+                    (SELECT id FROM app_user LIMIT 1), jsonb_build_object($3::text, 'Party ' || (n % 900))
+             FROM generate_series(1, 5000) n",
+        )
+        .bind(&c.id)
+        .bind(doc_type)
+        .bind(field)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query("ANALYZE").execute(&t.pool).await.unwrap();
+
+    // Paging deep into a party list by name.
+    for table in ["customer", "vendor"] {
+        let p = plan(
+            &t,
+            &format!("SELECT * FROM {table} AS t ORDER BY t.name ASC NULLS LAST, t.id LIMIT 50 OFFSET 2000"),
+            &[],
+        )
+        .await;
+        assert!(p.contains(&format!("{table}_name")), "{table}: {p}");
+    }
+    // A summary's link sorted by the name the summary copies, as
+    // document.list writes it: the same expression, no cast, ascending,
+    // nulls last.
+    for (doc_type, field, index) in [
+        ("sales_order", "customer_name", "document_customer_name"),
+        ("purchase_order", "vendor_name", "document_vendor_name"),
+    ] {
+        let sql = format!(
+            "SELECT t.* FROM document AS t WHERE t.doc_type = $1::text AND t.company_id = $2::uuid \
+             ORDER BY (t.summary->>'{field}') ASC NULLS LAST, t.id DESC LIMIT 50 OFFSET 2000"
+        );
+        let p = plan(&t, &sql, &[doc_type, &c.id]).await;
+        assert!(p.contains(index), "{doc_type}: {p}");
+    }
+}
