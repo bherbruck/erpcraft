@@ -1,0 +1,41 @@
+{
+  "name": "@erpcraft/grid",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A headless, Excel-style data grid for React on TanStack Table and TanStack Virtual.",
+  "license": "Apache-2.0",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./reference": "./src/reference/index.tsx",
+    "./reference.css": "./src/reference/reference.css"
+  },
+  "scripts": {
+    "demo": "vite --host 127.0.0.1 --port 5175 --strictPort",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test test",
+    "e2e": "playwright test",
+    "check": "tsc --noEmit && bun test test"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0 || ^19.0.0",
+    "react-dom": "^18.2.0 || ^19.0.0"
+  },
+  "dependencies": {
+    "@tanstack/react-table": "8.21.3",
+    "@tanstack/react-virtual": "3.14.26"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/bun": "1.4.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.8"
+  }
+}
