@@ -4,8 +4,8 @@
 
 import { Banner } from "@astryxdesign/core/Banner";
 import { Heading } from "@astryxdesign/core/Heading";
+import { InfoTip } from "@astryxdesign/core/InfoTip";
 import { HStack } from "@astryxdesign/core/HStack";
-import { Text } from "@astryxdesign/core/Text";
 import { VStack } from "@astryxdesign/core/VStack";
 import {
   applyChanges,
@@ -192,7 +192,8 @@ export function LinesGrid({
           },
           minFraction: type === "money" ? decimals : undefined,
           currency: type === "money" ? (currency ?? undefined) : undefined,
-          total: field.readonly && type === "money",
+          // The document's totals are the server's, under the lines; no second sum in the grid.
+          total: false,
           // What the server works out for the line (net) stays in view at the right edge.
           pin: field.readonly && type === "money" && name === firstComputedMoney ? "right" : name === fields[0]?.name ? "left" : undefined,
           hidden: field.type.kind === "json" ? true : undefined,
@@ -210,7 +211,7 @@ export function LinesGrid({
           const seen = new Map<string, string>();
           return {
             ...base,
-            header: kind && kind.label !== field.label ? `${field.label} (${kind.label})` : field.label,
+            header: field.label,
             format: (value) => {
               if (typeof value !== "string" || value === "") return "";
               const label = peekLinkLabel(entity, key, value);
@@ -273,14 +274,10 @@ export function LinesGrid({
       return `${t("lines.line_n", { line })}, ${label}: ${message}`;
     }),
   ]);
-  const height = Math.min(ROW_HEIGHT * (Math.max(lines.length, 1) + 2) + 52, 600);
+  const height = Math.min(ROW_HEIGHT * (Math.max(lines.length, 1) + 1) + 8, 560);
 
   return (
     <VStack gap={2}>
-      <HStack gap={3} vAlign="center" wrap="wrap">
-        <Heading level={2}>{collection.label}</Heading>
-        {editable ? <Text type="supporting">{t("grid.keys")}</Text> : null}
-      </HStack>
       {problemList.length > 0 ? (
         <Banner status="error" title={problemList[0] ?? ""} description={problemList.slice(1).join(" · ") || undefined} />
       ) : null}
@@ -305,6 +302,13 @@ export function LinesGrid({
         rowId={(line) => line.key}
         slots={slots}
         toolbar
+        // The section's heading shares the toolbar row with the columns menu; the keys are behind its info tip.
+        toolbarExtra={
+          <HStack gap={1} vAlign="center">
+            <Heading level={2}>{collection.label}</Heading>
+            {editable ? <InfoTip content={t("grid.keys")} label={t("grid.keys_label")} /> : null}
+          </HStack>
+        }
         height={height}
         rowHeight={ROW_HEIGHT}
         layoutStorage={localStorageLayout("astryx-spike.grid.")}

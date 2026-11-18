@@ -53,6 +53,8 @@ export interface DataTableProps<Row> {
   onPage?: (page: number) => void;
   /** Take the height of the space around it rather than of the rows. */
   fill?: boolean;
+  /** The page's own controls (filters, tabs): they share the table's toolbar row with its columns menu. */
+  toolbar?: ReactNode;
 }
 
 const ROW_HEIGHT = 34;
@@ -136,7 +138,12 @@ export function DataTable<Row>(props: DataTableProps<Row>) {
     );
   }
   if (rows !== undefined && rows.length === 0 && !props.loading) {
-    return box(<EmptyState title={props.empty.title} description={props.empty.description} actions={props.empty.action} isCompact />);
+    return box(
+      <VStack gap={6}>
+        {props.toolbar}
+        <EmptyState title={props.empty.title} description={props.empty.description} actions={props.empty.action} isCompact />
+      </VStack>,
+    );
   }
   const footer = columns.some((column) => column.total) ? 1 : 0;
   const height = props.fill ? "100%" : Math.min(ROW_HEIGHT * (Math.max(rows?.length ?? 6, 1) + 1 + footer) + 12 + (paged ? 48 : 0), 640);
@@ -152,6 +159,7 @@ export function DataTable<Row>(props: DataTableProps<Row>) {
           columns={fitted}
           // A small table needs no toolbar; a page-sized one gets the columns menu.
           toolbar={Boolean(props.fill)}
+          toolbarExtra={props.toolbar}
           rows={rows ?? []}
           rowId={(row) => rowKey(row)}
           total={paged ? props.total : undefined}

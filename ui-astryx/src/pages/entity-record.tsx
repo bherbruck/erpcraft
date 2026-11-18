@@ -1,16 +1,14 @@
+import { FieldGrid, FieldSpan } from "@/components/field-grid";
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
-import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
-import { Card } from "@astryxdesign/core/Card";
 import { Center } from "@astryxdesign/core/Center";
 import { HStack } from "@astryxdesign/core/HStack";
 import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
-import { Text } from "@astryxdesign/core/Text";
 import { VStack } from "@astryxdesign/core/VStack";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { ApiError, api } from "@/api/client";
 import type { EntityMeta, EntityRecord, FieldMeta, Json, JsonObject } from "@/api/types";
@@ -20,6 +18,7 @@ import { ActionButtons, ActionDialog } from "@/components/actions";
 import { FieldInput, type FieldValues, initialValues, toEditable } from "@/components/field-input";
 import { FieldValue, Withheld } from "@/components/field-value";
 import { History } from "@/components/history";
+import { StateFlag } from "@/components/status-badge";
 import { Page } from "@/components/page";
 import { UnsavedDialog, useUnsavedGuard } from "@/components/unsaved-guard";
 import { t } from "@/i18n/t";
@@ -270,10 +269,12 @@ function EntityForm({ entity, id }: { entity: EntityMeta; id: string | null }) {
 
   return (
     <Page
-      back
-      kicker={entity.label}
+      back={{ label: entity.plural, href: paths.entityList(code, entity.name) }}
       title={title}
-      badge={dirty ? <Badge variant="warning" label={t("record.unsaved")} /> : savedAt ? <Badge variant="success" label={t("record.saved")} /> : null}
+      contentWidth={960}
+      meta={[
+        dirty ? <StateFlag key="dirty" tone="warning" label={t("record.unsaved")} /> : savedAt ? <StateFlag key="saved" tone="success" label={t("record.saved")} /> : null,
+      ]}
       actions={
         <>
           <ActionButtons actions={actions} disabledReason={dirty ? t("record.save_first") : null} onChoose={setAction} />
@@ -290,9 +291,9 @@ function EntityForm({ entity, id }: { entity: EntityMeta; id: string | null }) {
           ) : null}
         </>
       }
-      toolbar={
+      tabs={
         isNew ? null : (
-          <TabList value={tab} onChange={(next) => url.set({ tab: next === "details" ? null : next }, { replace: true })} size="sm">
+          <TabList value={tab} onChange={(next) => url.set({ tab: next === "details" ? null : next }, { replace: true })}>
             <Tab value="details" label={t("record.details")} />
             <Tab value="history" label={t("history.title")} />
           </TabList>
@@ -302,7 +303,7 @@ function EntityForm({ entity, id }: { entity: EntityMeta; id: string | null }) {
       {tab === "history" && original ? (
         <History resource={entity.name} id={original.id} version={original._version} />
       ) : (
-        <VStack gap={4} maxWidth={1100}>
+        <VStack gap={8}>
           {!canWrite && !isNew ? <Banner status="info" title={t("record.read_only")} /> : null}
           {formError ? <Banner status="error" title={t("record.save_failed")} description={formError} /> : null}
           {conflict ? (
@@ -327,7 +328,7 @@ function EntityForm({ entity, id }: { entity: EntityMeta; id: string | null }) {
             />
           ) : null}
           {editable.length > 0 ? (
-            <Card padding={4}>
+            <VStack gap={4}>
               <form
                 noValidate
                 onSubmit={(event) => {
@@ -335,22 +336,27 @@ function EntityForm({ entity, id }: { entity: EntityMeta; id: string | null }) {
                   void save();
                 }}
               >
-                <div className="form-grid">
+                <FieldGrid>
                   {editable.map((field) => (
-                    <div key={field.name} className={field.type.kind === "json" ? "span-all" : undefined}>
-                      <FieldInput
+                    <Fragment key={field.name}>{field.type.kind === "json" ? <FieldSpan wide="full"><FieldInput
                         field={field}
                         value={values[field.name]}
                         error={fieldErrors[field.name]}
                         companyId={company?.id}
                         context={{ header: values, fields: entity.fields }}
                         onChange={(value) => change(field, value)}
-                      />
-                    </div>
+                      /></FieldSpan> : <FieldInput
+                        field={field}
+                        value={values[field.name]}
+                        error={fieldErrors[field.name]}
+                        companyId={company?.id}
+                        context={{ header: values, fields: entity.fields }}
+                        onChange={(value) => change(field, value)}
+                      />}</Fragment>
                   ))}
-                </div>
+                </FieldGrid>
               </form>
-            </Card>
+            </VStack>
           ) : null}
           {readOnly.length > 0 && original ? (
             <MetadataList columns="multi">
@@ -365,7 +371,6 @@ function EntityForm({ entity, id }: { entity: EntityMeta; id: string | null }) {
               ))}
             </MetadataList>
           ) : null}
-          {!isNew ? <Text type="supporting">{t("record.save_hint")}</Text> : null}
         </VStack>
       )}
       <UnsavedDialog blocker={blocker} />

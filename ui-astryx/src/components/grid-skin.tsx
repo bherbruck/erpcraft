@@ -17,6 +17,7 @@ import { Popover } from "@astryxdesign/core/Popover";
 import { RadioList, RadioListItem } from "@astryxdesign/core/RadioList";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Spinner } from "@astryxdesign/core/Spinner";
+import { StackItem } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { type SearchableItem, type SearchSource, Typeahead } from "@astryxdesign/core/Typeahead";
@@ -393,19 +394,19 @@ function ChecklistFilter<R>(p: ChecklistFilterSlotProps<R>) {
 // ------------------------------------------------------------ around the grid
 
 function Toolbar(p: ToolbarSlotProps) {
+  // The grid's props must land on a DOM element of the toolbar's own, hence the one div here.
+  // The page's own controls (a heading, the filter bar) come first and take the room; the grid's
+  // columns menu sits at the end of the same row.
   return (
     <div {...p.props} className="ag-toolbar">
+      <StackItem size="fill">{p.extra}</StackItem>
       {p.search}
       {p.chips}
-      {/* Where the grid has no search of its own, the page's filter bar already counts the rows. */}
-      <span className="push-end">
-        {p.search ? (
-          <Text type="supporting">
-            {p.shownRows === p.totalRows ? `${p.totalRows} ${p.labels.rows}` : `${p.shownRows} ${p.labels.of} ${p.totalRows} ${p.labels.rows}`}
-          </Text>
-        ) : null}
-      </span>
-      {p.extra}
+      {p.search ? (
+        <Text type="supporting">
+          {p.shownRows === p.totalRows ? `${p.totalRows} ${p.labels.rows}` : `${p.shownRows} ${p.labels.of} ${p.totalRows} ${p.labels.rows}`}
+        </Text>
+      ) : null}
       {p.columns}
     </div>
   );

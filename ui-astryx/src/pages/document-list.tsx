@@ -216,21 +216,6 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
           {newButton}
         </>
       }
-      padded={false}
-      toolbar={
-        <HStack gap={2} vAlign="center">
-          <FilterBar
-            meta={meta}
-            specs={specs}
-            filters={filters}
-            companyId={company?.id ?? null}
-            resultCount={list.data?.total}
-            label={t("filter.placeholder", { label: docType.plural })}
-            onChange={(next) => url.set({ f: next.length ? JSON.stringify(next) : null, page: null })}
-          />
-          <SavedViews tableKey={`document.${docType.name}`} columns={null} onColumns={() => {}} />
-        </HStack>
-      }
     >
       {bulk || chosenDocs.size > 0 ? (
         <VStack gap={2} padding={3}>
@@ -269,6 +254,18 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
         onEdit={(changes) => {
           for (const change of changes) if (change.columnId === CHOSEN) choose([change.row], change.newValue === true);
         }}
+        toolbar={<HStack gap={2} vAlign="center" width="100%">
+          <FilterBar
+            meta={meta}
+            specs={specs}
+            filters={filters}
+            companyId={company?.id ?? null}
+            resultCount={list.data?.total}
+            label={t("filter.placeholder", { label: docType.plural })}
+            onChange={(next) => url.set({ f: next.length ? JSON.stringify(next) : null, page: null })}
+          />
+          <SavedViews tableKey={`document.${docType.name}`} columns={null} onColumns={() => {}} />
+        </HStack>}
         empty={
           <Center padding={6}>
             <EmptyState

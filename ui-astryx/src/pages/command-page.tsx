@@ -1,3 +1,4 @@
+import { FieldGrid } from "@/components/field-grid";
 // Any command the user may run, as a page of its own at /c/:company/run/:command: its inputs
 // from the JSON Schema (a file is read in the browser and sent as base64), a preview where the
 // command has one, and the answer. ../ui has hand-made pages for two of these (bank statement
@@ -89,12 +90,12 @@ function CommandForm({ command }: { command: CommandMeta }) {
   const waiting = result ? pendingApproval(result.value) : null;
 
   return (
-    <Page title={command.label} kicker={command.name}>
+    <Page title={command.label} meta={[command.name]} contentWidth={960}>
       <VStack gap={4} maxWidth={960}>
         {command.description ? <Text type="supporting">{command.description}</Text> : null}
         <Card padding={4}>
           <VStack gap={4}>
-            <div className="form-grid">
+            <FieldGrid>
               {inputs.map((each) =>
                 isFile(each) ? (
                   <FileInput
@@ -109,7 +110,7 @@ function CommandForm({ command }: { command: CommandMeta }) {
                   <InputControl key={each.name} input={each} value={values[each.name]} onChange={(v) => setValues((previous) => ({ ...previous, [each.name]: v }))} />
                 ) : null,
               )}
-            </div>
+            </FieldGrid>
             <HStack gap={2} hAlign="end">
               {!command.read_only ? (
                 <Button label={t("command.preview")} isLoading={busy === "preview"} isDisabled={busy !== null} onClick={() => void go(true)} />

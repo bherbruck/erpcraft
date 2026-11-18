@@ -101,21 +101,6 @@ function EntityList({ entity }: { entity: EntityMeta }) {
           {newButton}
         </>
       }
-      padded={false}
-      toolbar={
-        <HStack gap={2} vAlign="center">
-          <FilterBar
-            meta={meta}
-            specs={specs}
-            filters={filters}
-            companyId={company?.id ?? null}
-            resultCount={list.data?.total}
-            label={t("filter.placeholder", { label: entity.plural })}
-            onChange={(next) => url.set({ f: next.length ? JSON.stringify(next) : null, page: null })}
-          />
-          <SavedViews tableKey={`entity.${entity.name}`} columns={null} onColumns={() => {}} />
-        </HStack>
-      }
     >
       <ListGrid<EntityRecord>
         key={`${entity.name}|${filterKey}`}
@@ -131,6 +116,18 @@ function EntityList({ entity }: { entity: EntityMeta }) {
         onQuery={setQuery}
         rowHref={(record) => paths.entityRecord(code, entity.name, record.id)}
         linkColumn={firstColumn}
+        toolbar={<HStack gap={2} vAlign="center" width="100%">
+          <FilterBar
+            meta={meta}
+            specs={specs}
+            filters={filters}
+            companyId={company?.id ?? null}
+            resultCount={list.data?.total}
+            label={t("filter.placeholder", { label: entity.plural })}
+            onChange={(next) => url.set({ f: next.length ? JSON.stringify(next) : null, page: null })}
+          />
+          <SavedViews tableKey={`entity.${entity.name}`} columns={null} onColumns={() => {}} />
+        </HStack>}
         empty={
           <Center padding={6}>
             <EmptyState

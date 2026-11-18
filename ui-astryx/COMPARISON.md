@@ -51,3 +51,55 @@
 - [Balance sheet on the grid](docs/screenshots/22-balance-sheet.png)
 - [Command palette](docs/screenshots/21-command-palette.png)
 - [Dark mode](docs/screenshots/13-sales-order-dark.png)
+
+## Polish pass
+The question was whether Astryx looked worse because agents know shadcn and not Astryx. So I ran `astryx init`, read what it generates and the `astryx docs layout/*` pages, condensed both into [AGENTS.md](AGENTS.md), and reworked every screen against it and `ui/GUIDELINES.md`. Checks are still green: smoke 11/11, grid 20/20, invoice 9/9, and axe found 0 violations on 16 pages.
+
+### What the guidance changed
+- **One page frame** (`page.tsx`), following Astryx's `detail-page` and `table-page` templates:
+  - LayoutHeader with a back link ("← Sales orders") above the title;
+  - the number in quieter type after the title;
+  - one metadata line under it (status · who and when);
+  - actions on the right and tabs sitting on the divider;
+  - one padding token (4) for the header and the content.
+- **No card soup.** I removed the Cards around header fields and records ("Section by default, Card only for a hard boundary"). Fields are on an Astryx `Grid` (`field-grid.tsx`) instead of a CSS grid.
+- **Status is a StatusDot with its word**, not a Badge: "Badge is for counts only".
+- **Controls share the table's toolbar row**, so lists, approvals and reports have no stacked control rows:
+  - filter bar, Views, Columns;
+  - approval scope tabs and status;
+  - report filters and their figures.
+- **Fewer buttons at once.** Print and Delete moved into a "⋯" menu, which leaves one primary action.
+- **Totals are right-aligned rows** under a divider, not a card.
+- **Rhythm:** tight gaps inside a field, 8 between sections.
+- **Type and widths:**
+  - read-only text is no longer greyed out;
+  - dense grids use the small type size, as Astryx's own compact Table does;
+  - column tools show on hover over the label's end, so headers no longer read "Quan…";
+  - widths fit the header too.
+
+### Before and after, with shadcn alongside
+| Screen | shadcn (`ui/`) | Astryx before | Astryx after |
+|---|---|---|---|
+| Sales order list | [04](../ui/docs/screenshots/04-document-list.png) | [02](docs/screenshots/02-sales-orders.png) | [polish-01](docs/screenshots/polish-01-sales-order-list.png) |
+| Sales order | [06](../ui/docs/screenshots/06-document-draft.png) | [05](docs/screenshots/05-sales-order.png) | [polish-02](docs/screenshots/polish-02-sales-order.png) |
+| Customer | [03](../ui/docs/screenshots/03-entity-record.png) | [11](docs/screenshots/11-customer.png) | [polish-03](docs/screenshots/polish-03-customer.png) |
+| Trial balance | [08](../ui/docs/screenshots/08-trial-balance.png) | [16](docs/screenshots/16-report-trial-balance.png) | [polish-04](docs/screenshots/polish-04-trial-balance.png) |
+| Approvals | [40](../ui/docs/screenshots/40-approvals-inbox.png) | [17](docs/screenshots/17-approvals.png) | [polish-05](docs/screenshots/polish-05-approvals.png) |
+| Palette | [20](../ui/docs/screenshots/20-palette.png) | [21](docs/screenshots/21-command-palette.png) | [polish-06](docs/screenshots/polish-06-palette.png) |
+| Dark | [14](../ui/docs/screenshots/14-dark-document.png) | [13](docs/screenshots/13-sales-order-dark.png) | [polish-07](docs/screenshots/polish-07-dark-sales-order.png), [polish-08](docs/screenshots/polish-08-dark-sales-order-list.png) |
+| Tablet | [12](../ui/docs/screenshots/12-tablet-document.png) | [15](docs/screenshots/15-sales-order-tablet.png) | [polish-09](docs/screenshots/polish-09-tablet-sales-order.png) |
+
+### Verdict
+**Partly. The guidance closed the layout gap, not the polish gap.**
+- **What improved.**
+  - Headers, spacing rhythm and density now look deliberate, and the record pages are calmer than shadcn's: no card around the fields and no helper text under every field.
+  - The sales order and trial balance are now fair matches for `ui/`.
+  - The guidance was the reason. Every change above came from a rule in `astryx init` or `astryx docs layout`, not from my taste. The user's hunch holds: with the guidance loaded, the first attempt is much closer.
+- **What it didn't close.**
+  - **Agent fluency.** The guidance is short (about 15 rules). Beyond it, an agent still has to read the props of each component (`astryx component X --dense`) before using it. With shadcn, agents already know the components, so pages come out right first time.
+  - **The grid.** The biggest screens are tables, and the grid is our own skin, not Astryx, so the guidance covers it only loosely. The lines grid reads more like a read-only table than shadcn's always-visible inputs. That is denser, but less obviously editable.
+  - **A few rough edges remain:**
+    - the checkbox column reads "Choose";
+    - a short record (customer) leaves a lot of empty page;
+    - Typeahead chips ("C001 · Buyer LLC") read heavier than a plain select value.
+- **Recommendation.** Keep AGENTS.md next to the app whichever UI wins. It costs nothing and removes most of the "agent doesn't know Astryx" penalty. The choice now comes down to the bundle and beta churn listed above, not looks.

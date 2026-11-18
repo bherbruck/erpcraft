@@ -3,7 +3,7 @@
 // rows as a table, both read from the command's JSON Schemas. ../ui's hand-laid-out pages
 // (statements, trial balance, aging, …) are not ported; they render generically here.
 
-import { Card } from "@astryxdesign/core/Card";
+import { StackItem } from "@astryxdesign/core/Stack";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { DateInput } from "@astryxdesign/core/DateInput";
 import { HStack } from "@astryxdesign/core/HStack";
@@ -12,7 +12,6 @@ import { Selector } from "@astryxdesign/core/Selector";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import type { ISODateString } from "@astryxdesign/core/utils";
-import { VStack } from "@astryxdesign/core/VStack";
 import { type ReactNode, useMemo } from "react";
 import { AgingPage } from "./reports/aging";
 import { BankReconciliationPage } from "./reports/bank-reconciliation";
@@ -265,32 +264,34 @@ function GenericReport({ command }: { command: CommandMeta }) {
   return (
     <Page
       title={title}
-      padded={false}
-      toolbar={
-        <VStack gap={3}>
-          {command.description ? <Text type="supporting">{command.description}</Text> : null}
-          {filters.length > 0 ? (
-            <HStack gap={3} wrap="wrap" vAlign="end">
-              {filters.map(filterInput)}
-            </HStack>
-          ) : null}
-          {shape.totals.length > 0 && data ? (
-            <Card padding={2} variant="muted">
-              <MetadataList orientation="horizontal">
-                {shape.totals.map((column) => (
-                  <MetadataListItem key={column.name} label={column.label}>
-                    <Cell value={data[column.name]} format={column.format} decimals={decimals} />
-                  </MetadataListItem>
-                ))}
-              </MetadataList>
-            </Card>
-          ) : null}
-        </VStack>
-      }
+      meta={command.description ? [command.description] : undefined}
     >
       <DataTable
         id={`report.${command.name}`}
         fill
+        toolbar={
+        filters.length > 0 || (shape.totals.length > 0 && data) ? (
+          // The report's inputs on the left, its figures on the right, one row.
+          <HStack gap={6} wrap="wrap" vAlign="end">
+            <StackItem size="fill">
+              <HStack gap={3} wrap="wrap" vAlign="end">
+                {filters.map(filterInput)}
+              </HStack>
+            </StackItem>
+            {shape.totals.length > 0 && data ? (
+              <MetadataList orientation="horizontal" label={{ position: "top" }}>
+                {shape.totals.map((column) => (
+                  <MetadataListItem key={column.name} label={column.label}>
+                    <Text weight="semibold">
+                      <Cell value={data[column.name]} format={column.format} decimals={decimals} />
+                    </Text>
+                  </MetadataListItem>
+                ))}
+              </MetadataList>
+            ) : null}
+          </HStack>
+        ) : undefined
+        }
         caption={title}
         columns={columns}
         rows={ready ? rows : []}

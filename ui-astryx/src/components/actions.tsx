@@ -1,3 +1,4 @@
+import { FieldGrid } from "./field-grid";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
@@ -201,7 +202,7 @@ export function ActionDialog({
       <DialogHeader title={t("preview.title", { action: action.label, subject })} subtitle={action.command.description} onOpenChange={() => onClose()} />
       <VStack gap={4} paddingBlockStart={3}>
         {inputs.length > 0 ? (
-          <div className="form-grid">
+          <FieldGrid>
             {inputs.map((each) => (
               <InputControl
                 key={each.name}
@@ -210,7 +211,7 @@ export function ActionDialog({
                 onChange={(v) => setValues((previous) => ({ ...previous, [each.name]: v }))}
               />
             ))}
-          </div>
+          </FieldGrid>
         ) : null}
         <VStack gap={2}>
           <Text weight="semibold">{t("preview.heading")}</Text>

@@ -15,10 +15,20 @@ const MIN_WIDTH: Record<ColumnType, number> = {
 };
 const MAX_WIDTH = 320;
 let measurer: CanvasRenderingContext2D | null = null;
+let font: { size: string; family: string } | null = null;
+/** Text width in the grid's own font: the theme's small size (as Astryx's compact Table) and family. */
 function measure(text: string, bold = false): number {
   measurer ??= document.createElement("canvas").getContext("2d");
   if (!measurer) return text.length * 7;
-  measurer.font = `${bold ? 600 : 400} 13px Figtree, sans-serif`;
+  if (!font) {
+    // The token is a calc() a canvas cannot read: resolve it on a probe element.
+    const probe = document.createElement("span");
+    probe.style.fontSize = "var(--font-size-sm)";
+    document.body.append(probe);
+    font = { size: getComputedStyle(probe).fontSize || "13px", family: getComputedStyle(probe).fontFamily || "sans-serif" };
+    probe.remove();
+  }
+  measurer.font = `${bold ? 600 : 400} ${font.size} ${font.family}`;
   return measurer.measureText(text).width;
 }
 
@@ -34,14 +44,15 @@ export function fitWidths<R>(columns: GridColumn<R>[], rows: readonly R[], avail
   for (const column of columns) {
     if (column.hidden) continue;
     const min = MIN_WIDTH[column.type];
-    const header = measure(column.header, true) + 44;
+    const header = measure(column.header, true) + 28;
     let content = 0;
     for (const row of rows.slice(0, 50)) {
       const value = column.value ? column.value(row) : (row as Record<string, unknown>)[column.id];
       const text = column.format ? column.format(value, row) : value == null ? "" : String(value);
       content = Math.max(content, measure(text) + 20);
     }
-    const want = flexible(column) ? Math.max(min, content) : Math.max(min, Math.min(header, 160), content);
+    // The header is read too (up to a point): a column called "Quantity" should not read "Quan…".
+    const want = Math.max(min, Math.min(header, 200), content);
     widths.set(column.id, Math.round(Math.min(MAX_WIDTH, want)));
   }
   const total = () => [...widths.values()].reduce((a, b) => a + b, 0);

@@ -1,8 +1,7 @@
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
-import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
-import { Card } from "@astryxdesign/core/Card";
+import { Divider } from "@astryxdesign/core/Divider";
 import { Center } from "@astryxdesign/core/Center";
 import { DateInput } from "@astryxdesign/core/DateInput";
 import { Heading } from "@astryxdesign/core/Heading";
@@ -15,7 +14,7 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import type { ISODateString } from "@astryxdesign/core/utils";
 import { VStack } from "@astryxdesign/core/VStack";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { ApiError, api } from "@/api/client";
 import type { CollectionMeta, DocTypeMeta, DocumentRecord, FieldMeta, Json, JsonObject } from "@/api/types";
@@ -30,10 +29,15 @@ import { History } from "@/components/history";
 import { Page } from "@/components/page";
 import { Postings } from "@/components/postings";
 import { type Line, LinesGrid } from "@/components/lines-grid";
-import { StatusBadge } from "@/components/status-badge";
+import { StateFlag, StatusBadge } from "@/components/status-badge";
+import { FieldGrid, FieldSpan } from "@/components/field-grid";
+import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu";
+import { Icon } from "@astryxdesign/core/Icon";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { Printer, Trash2 } from "lucide-react";
 import { UnsavedDialog, useUnsavedGuard } from "@/components/unsaved-guard";
 import { t } from "@/i18n/t";
-import { todayCalendarDate } from "@/lib/dates";
+import { formatTimestamp, todayCalendarDate } from "@/lib/dates";
 import { canDoc, canRun, findDocType, recordActions, type ResourceAction } from "@/lib/meta";
 import { paths } from "@/lib/paths";
 import { newKey } from "@/lib/text";
@@ -176,36 +180,45 @@ function gridFields(collection: CollectionMeta, lines: Line[]): FieldMeta[] {
 
 // ------------------------------------------------------------------ totals
 
-function TotalItem({ docType, field, summary }: { docType: DocTypeMeta; field: FieldMeta; summary: JsonObject }) {
+function TotalRow({ docType, field, summary, strong }: { docType: DocTypeMeta; field: FieldMeta; summary: JsonObject; strong: boolean }) {
   // Money in the company's currency names the currency in its label.
   const label = useDecimalHeader(field);
   return (
-    <MetadataListItem label={label}>
-      <span className="num-block" title={field.help ?? undefined}>
-        {isBlank(summary[field.name]) ? (
-          <Text color="secondary">{t("document.not_known_yet")}</Text>
-        ) : (
+    <HStack gap={4} hAlign="between" vAlign="center">
+      <Text color={strong ? undefined : "secondary"} weight={strong ? "semibold" : undefined}>
+        {label}
+      </Text>
+      {isBlank(summary[field.name]) ? (
+        <Text color="secondary">{t("document.not_known_yet")}</Text>
+      ) : (
+        <Text weight={strong ? "semibold" : undefined}>
           <FieldValue field={field} value={summary[field.name]} context={{ header: summary, fields: docType.summary }} />
-        )}
-      </span>
-    </MetadataListItem>
+        </Text>
+      )}
+    </HStack>
   );
 }
 
-/** The figures the document type keeps in its summary, worked out by the server. */
+/**
+ * The figures the document type keeps in its summary, worked out by the server: rows under the
+ * lines, right-aligned and divided as Astryx's detail-page template does its totals, the first
+ * (the document's total) strong.
+ */
 function Totals({ docType, summary }: { docType: DocTypeMeta; summary: JsonObject }) {
   const figures = docType.summary.filter((field) => field.type.kind === "decimal" && !field.name.endsWith("_accounting"));
   if (figures.length === 0 || !figures.some((field) => field.name in summary)) return null;
   return (
-    <div className="totals">
-      <Card padding={3}>
-        <MetadataList label={{ position: "start", width: "60%" }}>
-          {figures.map((field) => (
-            <TotalItem key={field.name} docType={docType} field={field} summary={summary} />
-          ))}
-        </MetadataList>
-      </Card>
-    </div>
+    <HStack hAlign="end">
+      <VStack gap={2} width={360}>
+        <Divider />
+        {figures.map((field, index) => (
+          <Fragment key={field.name}>
+            <TotalRow docType={docType} field={field} summary={summary} strong={index === 0} />
+            {index === 0 ? <Divider /> : null}
+          </Fragment>
+        ))}
+      </VStack>
+    </HStack>
   );
 }
 
@@ -397,24 +410,32 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
 
   return (
     <Page
-      back
-      kicker={docType.label}
-      title={title}
-      badge={
-        <HStack gap={2} vAlign="center">
-          {doc ? <StatusBadge status={doc.status} docType={docType} /> : null}
-          {dirty ? <Badge variant="warning" label={t("record.unsaved")} /> : null}
-          {previewing ? <Spinner size="sm" aria-label={t("value.loading")} /> : null}
-        </HStack>
-      }
+      back={{ label: docType.plural, href: paths.docList(code, docType.name) }}
+      title={doc ? docType.label : t("record.new", { label: docType.label })}
+      titleNote={doc ? (doc.number ?? t("document.unnumbered")) : undefined}
+      badge={previewing ? <Spinner size="sm" aria-label={t("value.loading")} /> : null}
+      meta={[
+        doc ? <StatusBadge key="status" status={doc.status} docType={docType} /> : null,
+        dirty ? <StateFlag key="dirty" tone="warning" label={t("record.unsaved")} /> : null,
+        doc ? t("spike.created_by", { name: doc.created_by_name ?? "", at: formatTimestamp(doc.created_at) }) : null,
+      ]}
       actions={
         <>
           <ActionButtons actions={actions} disabledReason={dirty ? t("record.save_first") : null} onChoose={setAction} />
-          {doc && canRun(meta, "document.render") ? (
-            <Button label={t("print.print")} variant="ghost" href={paths.print(code, docType.name, doc.id)} />
-          ) : null}
-          {doc && !locked && doc.postings.length === 0 && canDoc(meta, docType.name, "delete") ? (
-            <Button label={t("action.delete")} variant="ghost" onClick={() => setConfirmDelete(true)} />
+          {/* One primary action (Save); the workflow beside it; the rest in the overflow menu. */}
+          {doc && (canRun(meta, "document.render") || (!locked && doc.postings.length === 0 && canDoc(meta, docType.name, "delete"))) ? (
+            <DropdownMenu
+              alignment="end"
+              hasChevron={false}
+              renderTrigger={(trigger) => <IconButton {...trigger} label={t("spike.more")} icon={<Icon icon="moreHorizontal" />} variant="ghost" />}
+            >
+              {canRun(meta, "document.render") ? (
+                <DropdownMenuItem label={t("print.print")} icon={Printer} href={paths.print(code, docType.name, doc.id)} />
+              ) : null}
+              {!locked && doc.postings.length === 0 && canDoc(meta, docType.name, "delete") ? (
+                <DropdownMenuItem label={t("action.delete")} icon={Trash2} variant="destructive" onClick={() => setConfirmDelete(true)} />
+              ) : null}
+            </DropdownMenu>
           ) : null}
           {canWrite ? (
             <Button
@@ -428,9 +449,9 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
           ) : null}
         </>
       }
-      toolbar={
+      tabs={
         isNew ? null : (
-          <TabList value={tab} onChange={(next) => url.set({ tab: next === "document" ? null : next }, { replace: true })} size="sm">
+          <TabList value={tab} onChange={(next) => url.set({ tab: next === "document" ? null : next }, { replace: true })}>
             <Tab value="document" label={t("document.tab")} />
             <Tab value="history" label={t("history.title")} />
           </TabList>
@@ -440,7 +461,7 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
       {tab === "history" && doc ? (
         <History resource={docType.name} id={doc.id} version={doc.version} />
       ) : (
-        <VStack gap={5}>
+        <VStack gap={8}>
           {locked && doc ? <Banner status="info" title={t("document.locked", { status: docType.states.find((s) => s.name === doc.status)?.label ?? doc.status })} /> : null}
           {stale ? (
             <Banner
@@ -451,9 +472,8 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
           ) : null}
           {formError ? <Banner status="error" title={t("record.save_failed")} description={formError} /> : null}
 
-          <Card padding={4}>
-            <VStack gap={4}>
-              <div className="form-grid">
+          <VStack gap={4}>
+              <FieldGrid>
                 <DateInput
                   label={docHeader("doc_date", t("document.date"))}
                   value={form.docDate as ISODateString}
@@ -475,7 +495,7 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
                     onChange={(value) => set({ header: { ...form.header, [field.name]: value } })}
                   />
                 ))}
-                <div className="span-2">
+                <FieldSpan wide="two">
                   <TextInput
                     label={docHeader("memo", t("document.memo"))}
                     value={form.memo}
@@ -483,24 +503,18 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
                     isDisabled={!editable}
                     width="100%"
                   />
-                </div>
-              </div>
-              {readonlyFields.length > 0 || doc ? (
+                </FieldSpan>
+              </FieldGrid>
+              {readonlyFields.length > 0 ? (
                 <MetadataList columns="multi">
                   {readonlyFields.map((field) => (
                     <MetadataListItem key={field.name} label={field.label}>
                       <FieldValue field={field} value={form.header[field.name]} linkify context={{ header, fields: docType.fields }} />
                     </MetadataListItem>
                   ))}
-                  {doc ? (
-                    <MetadataListItem label={t("document.created_by_column")}>
-                      {doc.created_by_name ?? doc.created_by}
-                    </MetadataListItem>
-                  ) : null}
                 </MetadataList>
               ) : null}
-            </VStack>
-          </Card>
+          </VStack>
 
           {/* A draft bank statement is matched line by line rather than edited as a grid. */}
           {docType.collections

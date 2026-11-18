@@ -1,7 +1,6 @@
 // The approvals inbox (`approval.list`) and one request: what was asked, on which facts, who
 // decided, and approving or rejecting it. Nobody decides their own request.
 
-import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
@@ -25,6 +24,7 @@ import { useApp, useCompany } from "@/app/context";
 import { type Column, DataTable } from "@/components/data-table";
 import { Empty } from "@/components/field-value";
 import { Page } from "@/components/page";
+import { StateFlag } from "@/components/status-badge";
 import { type MessageKey, t } from "@/i18n/t";
 import { formatTimestamp } from "@/lib/dates";
 import { forgetDocuments } from "@/lib/doc-labels";
@@ -52,7 +52,7 @@ const SCOPES: Record<string, MessageKey> = {
 
 function StatusOf({ status }: { status: string }) {
   const known = STATUSES[status];
-  return <Badge variant={known?.tone ?? "neutral"} label={known ? t(known.label) : status} />;
+  return <StateFlag tone={known?.tone ?? "neutral"} label={known ? t(known.label) : status} />;
 }
 
 function isObject(value: Json | undefined): value is JsonObject {
@@ -130,9 +130,11 @@ export function ApprovalsPage() {
   return (
     <Page
       title={list.label}
-      padded={false}
-      toolbar={
-        <HStack gap={3} vAlign="center" hAlign="between" wrap="wrap">
+    >
+      <DataTable
+        id="approvals"
+        fill
+        toolbar={<HStack gap={3} vAlign="center" hAlign="between" wrap="wrap">
           <TabList value={scope} onChange={(next) => url.set({ scope: next })} size="sm">
             {scopes.map((option) => (
               <Tab key={option.value} value={option.value} label={SCOPES[option.value] ? t(SCOPES[option.value] as MessageKey) : option.label} />
@@ -148,12 +150,7 @@ export function ApprovalsPage() {
             onChange={(next: string | null) => url.set({ status: next ?? null })}
             options={Object.entries(STATUSES).map(([name, known]) => ({ value: name, label: t(known.label) }))}
           />
-        </HStack>
-      }
-    >
-      <DataTable
-        id="approvals"
-        fill
+        </HStack>}
         caption={list.label}
         columns={columns}
         rows={rows}
@@ -170,6 +167,7 @@ export function ApprovalsPage() {
 
 export function ApprovalPage() {
   const { meta, me } = useApp();
+  const { code } = useCompany();
   const params = useParams();
   const label = useCommandLabel();
   const request = useAsync(params.id && canRun(meta, "approval.get") ? `approval|${params.id}` : null, (signal) =>
@@ -204,10 +202,9 @@ export function ApprovalPage() {
 
   return (
     <Page
-      back
-      kicker={findCommand(meta, "approval.list")?.label}
+      back={{ label: findCommand(meta, "approval.list")?.label ?? t("nav.approvals"), href: paths.approvals(code) }}
       title={data ? label(data.command) : t("value.loading")}
-      badge={data ? <StatusOf status={data.status} /> : null}
+      meta={data ? [<StatusOf key="status" status={data.status} />, t("approval.asked_at", { name: data.requested_by_name ?? "", at: formatTimestamp(data.requested_at) })] : []}
       actions={
         data && pending && !mine ? (
           <>

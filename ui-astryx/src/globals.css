@@ -76,8 +76,9 @@
 /* ---------------------------------------------------------------- @erpcraft/grid, Astryx skin
    The grid gives layout in `style` and state in data attributes; this draws them with the
    theme's tokens. */
-.ag-root { display: flex; flex-direction: column; gap: var(--spacing-2); min-block-size: 0; }
-.ag-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing-2); }
+.ag-root { display: flex; flex-direction: column; gap: var(--spacing-3); min-block-size: 0; }
+.ag-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing-2); min-block-size: var(--spacing-8); }
+/* Dense rows take the small size, as Astryx's own compact Table does; nothing is greyed out. */
 .ag-scroller {
   border: 1px solid var(--color-border); border-radius: var(--radius-container);
   background: var(--color-background-surface); font-size: var(--font-size-sm);
@@ -98,7 +99,14 @@
   flex: 1 1 auto; cursor: pointer;
 }
 .ag-hcell[data-align="end"] .ag-sort { justify-content: flex-end; }
-.ag-hcell-tools { display: inline-flex; opacity: 0.55; }
+/* Column tools show on hover or focus, over the label's end, so a label keeps its full width the
+   rest of the time; the keyboard reaches them anyway (Alt+ArrowDown, Shift+F10). */
+.ag-hcell-tools {
+  display: inline-flex; opacity: 0; position: absolute; inset-inline-end: var(--spacing-1);
+  background: var(--color-background-surface);
+}
+.ag-hcell[data-align="end"] .ag-hcell-tools { inset-inline-end: auto; inset-inline-start: var(--spacing-1); }
+.ag-hcell:focus-within .ag-hcell-tools,
 .ag-hcell:hover .ag-hcell-tools, .ag-hcell[data-active] .ag-hcell-tools, .ag-hcell[data-filtered] .ag-hcell-tools { opacity: 1; }
 .ag-hcell[data-dragging] { opacity: 0.6; }
 .ag-hcell[data-drop="before"] { box-shadow: inset 2px 0 0 var(--color-accent); }
@@ -106,7 +114,6 @@
 .ag-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ag-cell[data-align="end"] { justify-content: flex-end; font-variant-numeric: tabular-nums; }
 .ag-cell[data-editable] { cursor: cell; }
-.ag-cell:not([data-editable]) .ag-text { color: var(--color-text-secondary); }
 /* The active cell and the selection show while the grid has the focus, as in a spreadsheet. */
 .ag-root:focus-within .ag-cell[data-selected] { background: var(--color-accent-muted); }
 .ag-root:focus-within .ag-cell[data-active] { box-shadow: inset 0 0 0 2px var(--color-accent); }
@@ -118,7 +125,7 @@
 .ag-resize:hover, .ag-resize[data-resizing] { background: var(--color-accent); }
 .ag-checklist { display: flex; flex-direction: column; gap: var(--spacing-1); max-block-size: 16rem; overflow: auto; }
 .ag-pager { display: flex; justify-content: flex-end; }
-.list-grid { block-size: 100%; min-block-size: 0; display: flex; flex-direction: column; padding: var(--spacing-2) var(--spacing-3); }
+.list-grid { block-size: 100%; min-block-size: 0; display: flex; flex-direction: column; }
 .list-grid > .ag-root { flex: 1 1 auto; }
 .ag-cell a, .ag-cell a * { font-size: inherit; }
 /* On the selection's wash, text keeps full contrast in both themes (axe, dark mode). */

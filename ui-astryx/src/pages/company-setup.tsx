@@ -1,3 +1,4 @@
+import { FieldGrid } from "@/components/field-grid";
 // A new company, ready to work, from a template (`setup.templates`): its chart of accounts,
 // fiscal years, warehouse, settings and tax codes, by one command (`company.setup`), all of it
 // or nothing. The server's preview says what will be created before it is.
@@ -113,7 +114,11 @@ function Setup() {
   const chosen = templates.data?.items.find((candidate) => candidate.code === template);
 
   return (
-    <Page back title={command?.label ?? SETUP_COMMAND} kicker={meta.entities.find((entity) => entity.name === COMPANY)?.plural}>
+    <Page
+      back={{ label: meta.entities.find((entity) => entity.name === COMPANY)?.plural ?? COMPANY, href: paths.entityList(code, COMPANY) }}
+      title={command?.label ?? SETUP_COMMAND}
+      contentWidth={1100}
+    >
       <div className="two-columns">
         <VStack gap={4}>
           {command?.description ? <Text type="supporting">{command.description}</Text> : null}
@@ -145,7 +150,7 @@ function Setup() {
           <Card padding={4}>
             <VStack gap={3}>
               <Heading level={2}>{t("setup.company")}</Heading>
-              <div className="form-grid">
+              <FieldGrid>
                 {inputs.map((property) => (
                   <TextInput
                     key={property.name}
@@ -163,7 +168,7 @@ function Setup() {
                     }}
                   />
                 ))}
-              </div>
+              </FieldGrid>
             </VStack>
           </Card>
           <HStack gap={2}>

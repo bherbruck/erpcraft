@@ -6,6 +6,7 @@
 import { type CellChange, type ColumnType, Grid, type GridColumn, type GridQueryState, localStorageLayout } from "@erpcraft/grid";
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
+import { VStack } from "@astryxdesign/core/VStack";
 import type { FieldMeta, Json, JsonObject } from "@/api/types";
 import { t } from "@/i18n/t";
 import { formatCalendarDate, formatTimestamp } from "@/lib/dates";
@@ -120,6 +121,7 @@ export function ListGrid<R extends JsonObject>({
   check,
   onEdit,
   decorate,
+  toolbar,
 }: {
   /** Names the saved column layout. */
   id: string;
@@ -140,6 +142,8 @@ export function ListGrid<R extends JsonObject>({
   /** A column of checkboxes to choose rows by (bulk actions). */
   check?: GridCheck<R>;
   decorate?: GridDecorate<R>;
+  /** The page's filter bar and views: they share the grid's toolbar row with its columns menu. */
+  toolbar?: ReactNode;
   /** Edits of editable columns (only the check column is). */
   onEdit?: (changes: CellChange<R>[]) => void;
 }) {
@@ -207,7 +211,10 @@ export function ListGrid<R extends JsonObject>({
     // biome-ignore lint/a11y/noStaticElementInteractions: Enter on a row's link cell opens it; the grid owns the other keys
     <div ref={boxRef} className="list-grid" onKeyDownCapture={onKeyDownCapture}>
       {rows !== undefined && rows.length === 0 && !loading && empty ? (
-        empty
+        <VStack gap={6}>
+          {toolbar}
+          {empty}
+        </VStack>
       ) : (
         <Grid<R>
           id={id}
@@ -224,6 +231,7 @@ export function ListGrid<R extends JsonObject>({
           slots={slots}
           layoutStorage={localStorageLayout("astryx-spike.grid.")}
           onEdit={onEdit}
+          toolbarExtra={toolbar}
           onQueryChange={(query) => onQuery({ sort: serverSort(query), page: query.page.index + 1, size: query.page.size })}
         />
       )}

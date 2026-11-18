@@ -1,9 +1,10 @@
+import { FieldGrid, FieldSpan } from "./field-grid";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { HStack } from "@astryxdesign/core/HStack";
 import { VStack } from "@astryxdesign/core/VStack";
-import { type FormEvent, useRef, useState } from "react";
+import { Fragment, type FormEvent, useRef, useState } from "react";
 import { ApiError, api } from "@/api/client";
 import type { EntityMeta, EntityRecord, Json, JsonObject } from "@/api/types";
 import { t } from "@/i18n/t";
@@ -76,9 +77,9 @@ export function QuickCreateDialog({
       <form noValidate onSubmit={(event) => void submit(event)}>
         <VStack gap={4} paddingBlockStart={3}>
           {formError ? <Banner status="error" title={t("record.save_failed")} description={formError} /> : null}
-          <div className="form-grid">
-            {fields.map((field) => (
-              <div key={field.name} className={field.type.kind === "json" ? "span-all" : undefined}>
+          <FieldGrid>
+            {fields.map((field) => {
+              const input = (
                 <FieldInput
                   field={field}
                   value={values[field.name]}
@@ -86,9 +87,10 @@ export function QuickCreateDialog({
                   companyId={companyId}
                   onChange={(value) => setValues((previous) => ({ ...previous, [field.name]: value }))}
                 />
-              </div>
-            ))}
-          </div>
+              );
+              return <Fragment key={field.name}>{field.type.kind === "json" ? <FieldSpan wide="full">{input}</FieldSpan> : input}</Fragment>;
+            })}
+          </FieldGrid>
           <HStack gap={2} hAlign="end">
             <Button label={t("action.cancel")} onClick={onClose} isDisabled={saving} />
             <Button label={t("quick_create.submit")} type="submit" variant="primary" isLoading={saving} />

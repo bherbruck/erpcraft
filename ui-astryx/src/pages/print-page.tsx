@@ -15,6 +15,7 @@ import { PrintFrame, printHtml } from "@/components/print-frame";
 import { t } from "@/i18n/t";
 import { quote } from "@/lib/link-labels";
 import { canDoc, canEntity, canRun, findDocType, PRINT_TEMPLATE } from "@/lib/meta";
+import { paths } from "@/lib/paths";
 import { useUrlState } from "@/lib/url-state";
 import { useAsync } from "@/lib/use-async";
 import { NotFoundPage } from "./not-found";
@@ -48,7 +49,7 @@ export default function PrintPage() {
 }
 
 function PrintView({ docType, id }: { docType: DocTypeMeta; id: string }) {
-  const { company } = useCompany();
+  const { code, company } = useCompany();
   const url = useUrlState();
   const templateId = url.get("template");
   const [blocked, setBlocked] = useState(false);
@@ -60,8 +61,7 @@ function PrintView({ docType, id }: { docType: DocTypeMeta; id: string }) {
   const title = page.data?.title ?? docType.label;
   return (
     <Page
-      back
-      kicker={docType.label}
+      back={{ label: docType.label, href: paths.doc(code, docType.name, id) }}
       title={title}
       actions={
         <>
