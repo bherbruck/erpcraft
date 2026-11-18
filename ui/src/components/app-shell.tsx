@@ -86,6 +86,9 @@ function AppSidebar() {
   );
 }
 
+/** Wide enough to keep the menu open beside a form. */
+const WIDE = "(min-width: 64rem)";
+
 /** The frame around every screen: shadcn/ui's sidebar block with the menu, a header with the current company and the user. */
 export function AppShell() {
   const { meta, me, companies, signOut } = useApp();
@@ -107,7 +110,8 @@ export function AppShell() {
 
   return (
     <PageActionsProvider>
-      <SidebarProvider>
+      {/* At tablet width the menu starts closed, so the form has the room; the button in the header opens it. */}
+      <SidebarProvider defaultOpen={window.matchMedia(WIDE).matches}>
         <AppSidebar />
         <SidebarInset className="min-w-0">
           <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-2 border-b bg-background px-4">
