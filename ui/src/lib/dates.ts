@@ -31,3 +31,19 @@ export function todayCalendarDate(): string {
   const pad = (n: number): string => String(n).padStart(2, "0");
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
+
+/**
+ * A calendar date as the local midnight a date picker shows it on, and back. The picker works
+ * in local days, so a day chosen in it is the same day written as text; no time zone is applied.
+ */
+export function calendarDateToLocal(value: string): Date | undefined {
+  const match = CALENDAR.exec(value);
+  if (!match) return undefined;
+  const [, year = "", month = "", day = ""] = match;
+  return new Date(parseInt(year, 10), parseInt(month, 10) - 1, parseInt(day, 10));
+}
+
+export function localToCalendarDate(date: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}

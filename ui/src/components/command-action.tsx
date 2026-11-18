@@ -1,12 +1,13 @@
 import { ArrowRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { ApiError, api } from "@/api/client";
 import type { FieldMeta, Json, JsonObject, Posting } from "@/api/types";
 import { useCompany } from "@/app/context";
 import { Alert } from "@/components/alert";
 import { Button } from "@/components/button";
 import { Dialog } from "@/components/dialog";
-import { Label } from "@/components/ui/label";
+import { FormField } from "@/components/form-field";
 import { Skeleton } from "@/components/ui/skeleton";
 import { t } from "@/i18n/t";
 import { type PendingApproval, pendingApproval } from "@/lib/approval";
@@ -294,6 +295,7 @@ export function ActionDialog({
         setRunning(false);
         return;
       }
+      toast.success(t("toast.done", { action: action.label }));
       onDone(result);
     } catch (cause) {
       setFailure(cause instanceof ApiError ? cause : new ApiError(0, "error", t("error.unexpected")));
@@ -331,16 +333,18 @@ export function ActionDialog({
     >
       <div className="space-y-4">
         {asked.length > 0 ? (
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2">
             {asked.map((property) => {
               const fieldId = `action-${property.name}`;
               const held = extra[property.name];
               const change = (next: Json): void => setExtra((previous) => ({ ...previous, [property.name]: next }));
               return (
-                <div key={property.name} className="space-y-1">
-                  <Label htmlFor={fieldId}>
-                    <InputLabelText property={property} />
-                  </Label>
+                <FormField
+                  key={property.name}
+                  id={fieldId}
+                  label={<InputLabelText property={property} />}
+                  hint={property.description}
+                >
                   <CommandInput
                     property={property}
                     id={fieldId}
@@ -349,10 +353,7 @@ export function ActionDialog({
                     disabled={running}
                     companyId={company?.id ?? null}
                   />
-                  {property.description ? (
-                    <p className="text-sm text-muted-foreground">{property.description}</p>
-                  ) : null}
-                </div>
+                </FormField>
               );
             })}
           </div>

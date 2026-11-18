@@ -1,6 +1,7 @@
 import { Plus, Printer, Trash2, X } from "lucide-react";
 import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
+import { toast } from "sonner";
 import { ApiError, api } from "@/api/client";
 import type { CollectionMeta, DocTypeMeta, DocumentRecord, FieldMeta, Json, JsonObject } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
@@ -15,13 +16,13 @@ import { DateInput } from "@/components/date-input";
 import { plainSource, useDecimalHeader } from "@/components/decimal-value";
 import { FieldInput, type FieldValues, initialValues, toEditable } from "@/components/field-input";
 import { FieldValue, isNumeric } from "@/components/field-value";
+import { FormField } from "@/components/form-field";
 import { History } from "@/components/history";
 import { PageHeader, Section, Tabs } from "@/components/page";
 import { Postings } from "@/components/postings";
 import type { FieldContext } from "@/components/references";
 import { StatusBadge } from "@/components/status-badge";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -597,17 +598,6 @@ interface Conflict {
   changes: string[];
 }
 
-function RequiredMark() {
-  return (
-    <>
-      <span aria-hidden="true" className="text-destructive">
-        {t("field.required_mark")}
-      </span>
-      <span className="sr-only">{t("field.required")}</span>
-    </>
-  );
-}
-
 function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null }) {
   const { meta, companies } = useApp();
   const { code, company } = useCompany();
@@ -735,6 +725,7 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
         const updated = await api.run("document.update", payload, { idempotencyKey: keyFor(JSON.stringify(payload)) });
         adopt(updated);
         setSaved(true);
+        toast.success(t("toast.saved", { label: docType.label }));
       }
     } catch (cause) {
       const error = cause instanceof ApiError ? cause : new ApiError(0, "error", t("error.unexpected"));
@@ -996,14 +987,16 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
           </Alert>
         ) : null}
 
-        <div className="grid gap-x-4 gap-y-3 rounded-md border bg-card p-4 sm:grid-cols-2 xl:grid-cols-4">
-          <div className="space-y-1">
-            <Label htmlFor="doc-date">
-              {label("doc_date", t("document.date"))}
-              {canWrite ? <RequiredMark /> : null}
-            </Label>
+        <div className="grid gap-x-4 gap-y-4 rounded-lg border bg-card p-4 sm:grid-cols-2 xl:grid-cols-4">
+          <FormField
+            id="doc-date"
+            labelFor={canWrite ? "doc-date" : null}
+            label={label("doc_date", t("document.date"))}
+            required={canWrite}
+            error={fieldError("doc_date")}
+          >
             {!ready ? (
-              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-9 w-full" />
             ) : canWrite ? (
               <DateInput
                 id="doc-date"
@@ -1013,14 +1006,9 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
                 onChange={(docDate) => update((previous) => ({ ...previous, docDate }), clearHeader("doc_date"))}
               />
             ) : (
-              <div className="flex min-h-8 items-center text-sm">{formatCalendarDate(form.docDate)}</div>
+              <div className="flex min-h-9 items-center text-sm">{formatCalendarDate(form.docDate)}</div>
             )}
-            {fieldError("doc_date") ? (
-              <p role="alert" className="text-sm text-destructive">
-                {fieldError("doc_date")}
-              </p>
-            ) : null}
-          </div>
+          </FormField>
           {docType.fields.map((field) => {
             // A new document started without its source (an invoice without an order) does not offer it.
             if (isNew && field.name === url.get("without")) return null;
@@ -1029,13 +1017,18 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
             const error = fieldError(field.name);
             const hintId = `${fieldId}-hint`;
             return (
-              <div key={field.name} className="space-y-1">
-                <Label htmlFor={editable ? fieldId : undefined}>
-                  {field.label}
-                  {field.required && editable ? <RequiredMark /> : null}
-                </Label>
+              <FormField
+                key={field.name}
+                id={fieldId}
+                labelFor={editable ? fieldId : null}
+                label={field.label}
+                required={field.required && editable}
+                error={error}
+                hint={editable && field.help ? field.help : null}
+                hintId={hintId}
+              >
                 {!ready ? (
-                  <Skeleton className="h-8 w-full" />
+                  <Skeleton className="h-9 w-full" />
                 ) : editable ? (
                   <FieldInput
                     id={fieldId}
@@ -1053,7 +1046,7 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
                     }
                   />
                 ) : (
-                  <div className="flex min-h-8 items-center text-sm">
+                  <div className="flex min-h-9 items-center text-sm">
                     <FieldValue
                       field={field}
                       value={form.header[field.name]}
@@ -1062,22 +1055,18 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
                     />
                   </div>
                 )}
-                {error ? (
-                  <p id={`${fieldId}-error`} role="alert" className="text-sm text-destructive">
-                    {error}
-                  </p>
-                ) : editable && field.help ? (
-                  <p id={hintId} className="text-sm text-muted-foreground">
-                    {field.help}
-                  </p>
-                ) : null}
-              </div>
+              </FormField>
             );
           })}
-          <div className="space-y-1 sm:col-span-2">
-            <Label htmlFor={canWrite ? "doc-memo" : undefined}>{label("memo", t("document.memo"))}</Label>
+          <FormField
+            id="doc-memo"
+            labelFor={canWrite ? "doc-memo" : null}
+            className="sm:col-span-2"
+            label={label("memo", t("document.memo"))}
+            error={fieldError("memo")}
+          >
             {!ready ? (
-              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-9 w-full" />
             ) : canWrite ? (
               <Input
                 id="doc-memo"
@@ -1088,16 +1077,11 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
                 }
               />
             ) : (
-              <div className="flex min-h-8 items-center text-sm">
+              <div className="flex min-h-9 items-center text-sm">
                 {form.memo || <span className="text-muted-foreground">{t("value.none")}</span>}
               </div>
             )}
-            {fieldError("memo") ? (
-              <p role="alert" className="text-sm text-destructive">
-                {fieldError("memo")}
-              </p>
-            ) : null}
-          </div>
+          </FormField>
           {doc ? (
             <p className="text-sm text-muted-foreground sm:col-span-2 xl:col-span-4">
               {doc.created_by_name

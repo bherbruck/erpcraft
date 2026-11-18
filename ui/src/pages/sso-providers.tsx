@@ -1,3 +1,4 @@
+import { FormField } from "@/components/form-field";
 // Single sign-on providers. They are read and written through their own
 // commands, not the generic entity layer: the client secret is write-only, the
 // list carries the redirect URI to register at the provider, and bindings of
@@ -158,20 +159,15 @@ function ProviderInput({
   const label = field?.label ?? input.label;
   const secret = input.secret;
   return (
-    <div
-      className={input.name === "allowed_domains" || input.name === "issuer" ? "space-y-1 sm:col-span-2" : "space-y-1"}
+    <FormField
+      id={id}
+      className={input.name === "allowed_domains" || input.name === "issuer" ? "sm:col-span-2" : undefined}
+      label={label}
+      required={input.required}
+      error={error}
+      hint={input.description ? <span className="whitespace-pre-line">{input.description}</span> : null}
+      hintId={describedBy}
     >
-      <Label htmlFor={id}>
-        {label}
-        {input.required ? (
-          <>
-            <span aria-hidden="true" className="text-destructive">
-              {t("field.required_mark")}
-            </span>
-            <span className="sr-only">{t("field.required")}</span>
-          </>
-        ) : null}
-      </Label>
       {secret || !field ? (
         <Input
           id={id}
@@ -192,17 +188,7 @@ function ProviderInput({
           onChange={onChange}
         />
       )}
-      {error ? (
-        <p role="alert" className="text-sm text-destructive">
-          {error}
-        </p>
-      ) : null}
-      {input.description ? (
-        <p id={describedBy} className="whitespace-pre-line text-sm text-muted-foreground">
-          {input.description}
-        </p>
-      ) : null}
-    </div>
+    </FormField>
   );
 }
 

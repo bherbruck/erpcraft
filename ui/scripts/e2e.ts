@@ -12,6 +12,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { type Browser, CTRL, launchBrowser } from "./browser";
+import { sweepLeftovers, undoOnSignal } from "./leftovers";
 import {
   asArray,
   asObject,
@@ -27,6 +28,7 @@ const APP = process.env.ERPCRAFT_UI_URL ?? "http://127.0.0.1:5173";
 const FAILURES = resolve(import.meta.dir, "../e2e-failures");
 
 const session: Session = await signIn();
+await sweepLeftovers(session);
 const browser: Browser = await launchBrowser(9334);
 const stamp = Date.now().toString(36).toUpperCase();
 let passed = 0;
@@ -185,10 +187,7 @@ async function listChecks(): Promise<void> {
 
   check("the Created column is hidden by default", !(await textOf("thead")).includes("Created"));
   await browser.click("Columns");
-  await browser.evaluate(
-    `[...document.querySelectorAll("label")].find((l) => l.textContent.trim() === "Created").querySelector("input").click()`,
-  );
-  await browser.settle();
+  await browser.choose("Created");
   check("the column chooser adds a column", (await textOf("thead")).includes("Created"));
   await open("/c/OHIO/e/item");
   check("the chosen columns are remembered", (await textOf("thead")).includes("Created"));
@@ -460,11 +459,11 @@ async function flowChecks(): Promise<void> {
   // Pay: from the open items, the invoice's item, from the bank account.
   await open(`/c/OHIO/r/open_item.list?kind=payable&party=${asString(vendor.id)}`);
   const number = asString(invoice.number);
-  const ticked = await browser.evaluate(
-    `(() => { const box = document.querySelector('input[aria-label="Choose ${number} to pay"]'); if (!box) return false; box.click(); return true; })()`,
+  const ticked = await browser.choose(`Choose ${number} to pay`).then(
+    () => true,
+    () => false,
   );
-  check("an open item can be chosen to pay", ticked === true, await textOf("tbody"));
-  await browser.settle();
+  check("an open item can be chosen to pay", ticked, await textOf("tbody"));
   await pickInLookup("#pay-bank", "1000");
   await browser.click("Pay");
   const paymentPath = await browser.location();
@@ -570,7 +569,7 @@ async function moreChecks(): Promise<void> {
   await draftJournal(companyId, `${tag} a`, "10");
   await draftJournal(companyId, `${tag} b`, "9");
   await open(`/c/OHIO/d/journal_entry?q=${encodeURIComponent(tag)}`);
-  await browser.evaluate("document.querySelectorAll('tbody input[type=checkbox]').forEach((box) => box.click())");
+  await browser.evaluate("document.querySelectorAll('tbody [role=checkbox]').forEach((box) => box.click())");
   await browser.settle();
   await browser.click("Post");
   check(
@@ -668,9 +667,7 @@ async function setupChecks(): Promise<void> {
   await browser.click("Set up a new company", "a");
   check("the companies list leads to setting one up", (await browser.location()) === "/c/OHIO/setup");
   check("the templates are listed with their descriptions", (await textOf("main")).includes("US small business"));
-  await browser.evaluate(
-    `[...document.querySelectorAll("label")].find((label) => label.textContent.includes("US small business"))?.querySelector("input")?.click()`,
-  );
+  await browser.choose("US small business");
   await browser.fill("#setup-code", `E2E${stamp}`);
   await browser.fill("#setup-name", "E2E preview only");
   await browser.click("Show what will be created");
@@ -807,7 +804,7 @@ async function bankingChecks(): Promise<void> {
     (await browser.location()) === "/c/OHIO/run/bank_statement.import",
   );
   await pickInLookup("#import-account", `B${stamp}`);
-  await browser.evaluate(`document.querySelector('input[name=import-format][value=camt053]').click()`);
+  await browser.choose("camt053");
   await browser.setFile("#import-file", camt);
   await browser.click("Import statement");
   const statementPath = await browser.location();
@@ -864,7 +861,7 @@ async function bankingChecks(): Promise<void> {
   // A CSV file is read with the account's columns, saved first.
   await open("/c/OHIO/run/bank_statement.import");
   await pickInLookup("#import-account", `B${stamp}`);
-  await browser.evaluate(`document.querySelector('input[name=import-format][value=csv]').click()`);
+  await browser.choose("csv");
   await browser.settle();
   await browser.click("Say which column holds what", "a");
   await browser.fill("#field-delimiter", ";");
@@ -882,7 +879,7 @@ async function bankingChecks(): Promise<void> {
   );
   await open("/c/OHIO/run/bank_statement.import");
   await pickInLookup("#import-account", `B${stamp}`);
-  await browser.evaluate(`document.querySelector('input[name=import-format][value=csv]').click()`);
+  await browser.choose("csv");
   await browser.setFile("#import-file", fixture("statement.csv", { RUN: stamp }));
   await browser.click("Import statement");
   check("a CSV statement is imported with the saved columns", (await textOf("main")).includes("Interest June"));
@@ -890,7 +887,7 @@ async function bankingChecks(): Promise<void> {
   // A malformed file is refused with the line it is about.
   await open("/c/OHIO/run/bank_statement.import");
   await pickInLookup("#import-account", `B${stamp}`);
-  await browser.evaluate(`document.querySelector('input[name=import-format][value=ofx]').click()`);
+  await browser.choose("ofx");
   await browser.setFile("#import-file", fixture("broken.ofx", {}));
   await browser.click("Import statement");
   const refused = await textOf("main");
@@ -919,7 +916,7 @@ async function agingChecks(): Promise<void> {
   );
   // The seed's invoice on 2 % in 10 days: chosen to pay, its discount is offered.
   const ticked = await browser.evaluate(
-    `(() => { const row = [...document.querySelectorAll("tbody tr")].find((r) => r.textContent.includes("until")); const box = row?.querySelector("input[type=checkbox]"); if (!box) return false; box.click(); return true; })()`,
+    `(() => { const row = [...document.querySelectorAll("tbody tr")].find((r) => r.textContent.includes("until")); const box = row?.querySelector("[role=checkbox]"); if (!box) return false; box.click(); return true; })()`,
   );
   await browser.settle();
   const bar = await textOf("main");
@@ -1182,7 +1179,7 @@ async function assetChecks(): Promise<void> {
     picker.slice(0, 600),
   );
   await browser.evaluate(
-    `[...document.querySelectorAll("[role=dialog] tbody tr")].find((row) => row.textContent.includes("Side shifter"))?.querySelector("input")?.click()`,
+    `[...document.querySelectorAll("[role=dialog] tbody tr")].find((row) => row.textContent.includes("Side shifter"))?.querySelector("[role=radio]")?.click()`,
   );
   await dialogClick("Continue");
   await browser.setDate("#action-in_service_date", "2026-11-03");
@@ -1490,6 +1487,12 @@ const groups: [string, () => Promise<void>][] = [
 ];
 const only = process.argv.slice(2);
 
+async function undoAll(): Promise<void> {
+  for (const undo of cleanup.splice(0).reverse()) await undo().catch(() => null);
+  await browser.close();
+}
+undoOnSignal(undoAll);
+
 try {
   await browser.viewport(1440, 900);
   for (const [name, run] of groups) {
@@ -1514,8 +1517,7 @@ try {
     browser.errors.join("\n"),
   );
 } finally {
-  for (const undo of cleanup.reverse()) await undo().catch(() => null);
-  await browser.close();
+  await undoAll();
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -1,4 +1,5 @@
 import type { FieldMeta, Json } from "@/api/types";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { NativeSelect } from "@/components/ui/native-select";
 import { t } from "@/i18n/t";
@@ -59,14 +60,12 @@ export function CommandInput({
   if (property.type === "boolean") {
     return (
       <span className="flex h-8 items-center">
-        <input
+        <Checkbox
           id={id}
-          type="checkbox"
-          className="size-4 accent-primary"
           checked={value === true}
           disabled={disabled}
           aria-describedby={describedBy}
-          onChange={(event) => onChange(event.target.checked)}
+          onCheckedChange={(checked) => onChange(checked === true)}
         />
       </span>
     );

@@ -1,3 +1,4 @@
+import { FormField } from "@/components/form-field";
 // A new company, ready to work, from a template (`setup.templates`): its chart
 // of accounts, fiscal years, warehouse, settings and tax codes, by one command
 // (`company.setup`), all of it or nothing. The template is chosen from the
@@ -14,7 +15,7 @@ import { Alert } from "@/components/alert";
 import { Button } from "@/components/button";
 import { PageHeader, Section } from "@/components/page";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Skeleton } from "@/components/ui/skeleton";
 import { t } from "@/i18n/t";
 import { COMPANY, canRun, commandInputs, findCommand } from "@/lib/meta";
@@ -117,28 +118,28 @@ function Setup() {
       <div className="flex flex-col gap-5 xl:flex-row xl:items-start">
         <form noValidate onSubmit={(event) => void runPreview(event)} className="w-full max-w-form shrink-0 space-y-5">
           <Section title={t("setup.template")}>
-            <div role="radiogroup" aria-label={t("setup.template")} className="space-y-2">
+            <RadioGroup
+              aria-label={t("setup.template")}
+              className="gap-2"
+              value={template ?? ""}
+              onValueChange={(next) => {
+                setTemplate(next);
+                setPreview(null);
+              }}
+            >
               {templates.data === undefined ? (
                 <Skeleton className="h-24 w-full" />
               ) : (
                 templates.data.items.map((candidate) => (
                   <label
                     key={candidate.code}
+                    htmlFor={`template-${candidate.code}`}
                     className={cn(
                       "flex cursor-pointer gap-3 rounded-md border bg-card p-3 text-sm",
                       template === candidate.code && "border-primary ring-1 ring-primary",
                     )}
                   >
-                    <input
-                      type="radio"
-                      name="template"
-                      className="mt-1 size-4 accent-primary"
-                      checked={template === candidate.code}
-                      onChange={() => {
-                        setTemplate(candidate.code);
-                        setPreview(null);
-                      }}
-                    />
+                    <RadioGroupItem id={`template-${candidate.code}`} value={candidate.code} className="mt-0.5" />
                     <span className="space-y-1">
                       <span className="block font-medium">
                         {candidate.name}
@@ -151,7 +152,7 @@ function Setup() {
                   </label>
                 ))
               )}
-            </div>
+            </RadioGroup>
           </Section>
           <Section title={t("setup.company")}>
             <div className="grid gap-x-4 gap-y-3 rounded-md border bg-card p-4 sm:grid-cols-2">
@@ -164,18 +165,14 @@ function Setup() {
                       ? ""
                       : undefined;
                 return (
-                  <div key={property.name} className="space-y-1">
-                    <Label htmlFor={id}>
-                      {property.label}
-                      {property.required ? (
-                        <>
-                          <span aria-hidden="true" className="text-destructive">
-                            {t("field.required_mark")}
-                          </span>
-                          <span className="sr-only">{t("field.required")}</span>
-                        </>
-                      ) : null}
-                    </Label>
+                  <FormField
+                    key={property.name}
+                    id={id}
+                    label={property.label}
+                    required={property.required}
+                    error={error?.field === property.name ? error.message : null}
+                    hint={property.description}
+                  >
                     <Input
                       id={id}
                       inputMode={property.type === "integer" ? "numeric" : undefined}
@@ -187,14 +184,7 @@ function Setup() {
                         setPreview(null);
                       }}
                     />
-                    {error?.field === property.name ? (
-                      <p role="alert" className="text-sm text-destructive">
-                        {error.message}
-                      </p>
-                    ) : property.description ? (
-                      <p className="text-sm text-muted-foreground">{property.description}</p>
-                    ) : null}
-                  </div>
+                  </FormField>
                 );
               })}
             </div>

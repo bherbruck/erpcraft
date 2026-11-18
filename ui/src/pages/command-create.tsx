@@ -11,9 +11,10 @@ import { useCompany } from "@/app/context";
 import { Alert } from "@/components/alert";
 import { Button } from "@/components/button";
 import { FieldInput, type FieldValues } from "@/components/field-input";
+import { FormField } from "@/components/form-field";
 import { PageHeader } from "@/components/page";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { UnsavedDialog, useUnsavedGuard } from "@/components/unsaved-guard";
 import { t } from "@/i18n/t";
 import { commandInputs } from "@/lib/meta";
@@ -91,7 +92,7 @@ export function CommandCreatePage({ entity, command }: { entity: EntityMeta; com
         {error && !inputs.some((input) => input.name === error.field) ? (
           <Alert title={t("record.save_failed")}>{error.message}</Alert>
         ) : null}
-        <div className="grid gap-x-4 gap-y-3 rounded-md border bg-card p-4 sm:grid-cols-2">
+        <div className="grid gap-x-4 gap-y-4 rounded-lg border bg-card p-4 sm:grid-cols-2">
           {inputs.map((property) => {
             const id = `field-${property.name}`;
             const field = entity.fields.find((candidate) => candidate.name === property.name);
@@ -101,27 +102,22 @@ export function CommandCreatePage({ entity, command }: { entity: EntityMeta; com
             const change = (next: Json | undefined): void =>
               setValues((previous) => ({ ...previous, [property.name]: next }));
             return (
-              <div key={property.name} className="space-y-1">
-                <Label htmlFor={id}>
-                  {field?.label ?? property.label}
-                  {property.required ? (
-                    <>
-                      <span aria-hidden="true" className="text-destructive">
-                        {t("field.required_mark")}
-                      </span>
-                      <span className="sr-only">{t("field.required")}</span>
-                    </>
-                  ) : null}
-                </Label>
+              <FormField
+                key={property.name}
+                id={id}
+                label={field?.label ?? property.label}
+                required={property.required}
+                error={fieldError}
+                hint={property.description}
+                hintId={`${id}-help`}
+              >
                 {property.secret || !field ? (
                   property.type === "boolean" ? (
                     <span className="flex h-8 items-center">
-                      <input
+                      <Checkbox
                         id={id}
-                        type="checkbox"
-                        className="size-4 accent-primary"
                         checked={value === true}
-                        onChange={(event) => change(event.target.checked)}
+                        onCheckedChange={(checked) => change(checked === true)}
                       />
                     </span>
                   ) : (
@@ -145,16 +141,7 @@ export function CommandCreatePage({ entity, command }: { entity: EntityMeta; com
                     onChange={change}
                   />
                 )}
-                {fieldError ? (
-                  <p id={`${id}-error`} role="alert" className="text-sm text-destructive">
-                    {fieldError}
-                  </p>
-                ) : property.description ? (
-                  <p id={`${id}-help`} className="text-sm text-muted-foreground">
-                    {property.description}
-                  </p>
-                ) : null}
-              </div>
+              </FormField>
             );
           })}
         </div>

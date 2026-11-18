@@ -5,15 +5,18 @@
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
+import { toast } from "sonner";
 import { ApiError, api } from "@/api/client";
 import type { CommandInputs, CommandOutputs } from "@/api/generated";
 import { useApp, useCompany } from "@/app/context";
 import { Alert } from "@/components/alert";
 import { Badge } from "@/components/badge";
 import { Button } from "@/components/button";
+import { FormField } from "@/components/form-field";
 import { Lookup } from "@/components/lookup";
 import { PageHeader, Section } from "@/components/page";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
@@ -268,15 +271,7 @@ function TextField({
   error?: string | null;
 }) {
   return (
-    <div className="space-y-2">
-      <Label htmlFor={id}>
-        {label}
-        {required ? (
-          <span className="text-destructive" aria-hidden="true">
-            {t("field.required_mark")}
-          </span>
-        ) : null}
-      </Label>
+    <FormField id={id} label={label} required={required} error={error}>
       <Input
         id={id}
         value={value ?? ""}
@@ -285,19 +280,14 @@ function TextField({
         aria-describedby={error ? `${id}-error` : undefined}
         onChange={(event) => onChange(text(event.target.value))}
       />
-      {error ? (
-        <p id={`${id}-error`} role="alert" className="text-sm text-destructive">
-          {error}
-        </p>
-      ) : null}
-    </div>
+    </FormField>
   );
 }
 
 function DefaultBox({ id, checked, onChange }: { id: string; checked: boolean; onChange: (next: boolean) => void }) {
   return (
     <Label htmlFor={id} className="font-normal">
-      <input id={id} type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <Checkbox id={id} checked={checked} onCheckedChange={(next) => onChange(next === true)} />
       {t("party.default")}
     </Label>
   );
@@ -402,6 +392,7 @@ export function PartyEditPage() {
         { idempotencyKey: key },
       );
       allowNext();
+      toast.success(t("toast.saved", { label: t("party.title") }));
       navigate(back);
     } catch (cause) {
       // What was typed stays; the server's words are shown where they belong.
@@ -502,8 +493,7 @@ export function PartyEditPage() {
                   />
                 ) : null}
                 {partyType === "company" ? (
-                  <div className="space-y-2">
-                    <Label htmlFor="party-payment_account_id">{t("party.payment_account")}</Label>
+                  <FormField id="party-payment_account_id" label={t("party.payment_account")}>
                     <Lookup
                       id="party-payment_account_id"
                       entity="account"
@@ -514,7 +504,7 @@ export function PartyEditPage() {
                       value={draft.profile.payment_account_id ?? null}
                       onChange={(payment_account_id) => setProfile({ payment_account_id })}
                     />
-                  </div>
+                  </FormField>
                 ) : null}
               </CardContent>
             </Card>
@@ -530,8 +520,7 @@ export function PartyEditPage() {
               const at = (field: string) => `party-address-${index}-${field}`;
               return (
                 <>
-                  <div className="space-y-2">
-                    <Label htmlFor={at("kind")}>{t("party.kind")}</Label>
+                  <FormField id={at("kind")} label={t("party.kind")}>
                     <NativeSelect
                       id={at("kind")}
                       className="w-full"
@@ -544,7 +533,7 @@ export function PartyEditPage() {
                         </option>
                       ))}
                     </NativeSelect>
-                  </div>
+                  </FormField>
                   <TextField
                     id={at("attention")}
                     label={t("party.attention")}
@@ -609,8 +598,7 @@ export function PartyEditPage() {
             blank={{ scheme: "eu_vat", value: "", country_code: null }}
             render={(taxId, update, index) => (
               <>
-                <div className="space-y-2">
-                  <Label htmlFor={`party-tax-${index}-scheme`}>{t("party.scheme")}</Label>
+                <FormField id={`party-tax-${index}-scheme`} label={t("party.scheme")}>
                   <NativeSelect
                     id={`party-tax-${index}-scheme`}
                     className="w-full"
@@ -623,7 +611,7 @@ export function PartyEditPage() {
                       </option>
                     ))}
                   </NativeSelect>
-                </div>
+                </FormField>
                 <TextField
                   id={`party-tax-${index}-value`}
                   label={t("party.value")}

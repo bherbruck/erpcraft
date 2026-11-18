@@ -14,6 +14,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { type Browser, launchBrowser } from "./browser";
+import { sweepLeftovers, undoOnSignal } from "./leftovers";
 import { asArray, asObject, asString, type JsonObject, RESTRICTED, signIn, signInRestricted } from "./lib";
 
 const APP = process.env.ERPCRAFT_UI_URL ?? "http://127.0.0.1:5173";
@@ -21,6 +22,7 @@ const OUT = resolve(import.meta.dir, "../docs/screenshots");
 const only = process.argv.slice(2);
 
 const session = await signIn();
+await sweepLeftovers(session);
 
 async function first(command: string, input: JsonObject): Promise<JsonObject> {
   const page = asObject(await session.run(command, input));
@@ -274,7 +276,7 @@ const shots: Shot[] = [
     name: "16-open-items-pay",
     path: `${base}/r/open_item.list?kind=receivable`,
     act: async (browser) => {
-      await browser.evaluate(`document.querySelector('tbody input[type=checkbox]:not(:disabled)')?.click()`);
+      await browser.evaluate(`document.querySelector('tbody [role=checkbox]:not([disabled])')?.click()`);
       await pick(browser, "#pay-bank", "1000");
     },
   },
@@ -318,7 +320,7 @@ const shots: Shot[] = [
     act: async (browser) => {
       // The credit note and the first invoice: same vendor, same currency.
       await browser.evaluate(
-        `[...document.querySelectorAll("tbody tr")].filter((row) => /VC-2026-00001|VI-2026-00001/.test(row.textContent)).forEach((row) => row.querySelector("input[type=checkbox]")?.click())`,
+        `[...document.querySelectorAll("tbody tr")].filter((row) => /VC-2026-00001|VI-2026-00001/.test(row.textContent)).forEach((row) => row.querySelector("[role=checkbox]")?.click())`,
       );
       await browser.settle();
       await browser.click("Apply credit");
@@ -358,7 +360,7 @@ const shots: Shot[] = [
       return `${base}/d/journal_entry?q=${encodeURIComponent(run)}`;
     },
     act: async (browser) => {
-      await browser.evaluate("document.querySelectorAll('tbody input[type=checkbox]').forEach((box) => box.click())");
+      await browser.evaluate("document.querySelectorAll('tbody [role=checkbox]').forEach((box) => box.click())");
       await browser.settle();
       await browser.click("Post");
     },
@@ -372,7 +374,7 @@ const shots: Shot[] = [
       return `${base}/d/journal_entry?status=draft&q=${encodeURIComponent(run)}`;
     },
     act: async (browser) => {
-      await browser.evaluate("document.querySelectorAll('tbody input[type=checkbox]').forEach((box) => box.click())");
+      await browser.evaluate("document.querySelectorAll('tbody [role=checkbox]').forEach((box) => box.click())");
       await browser.settle();
       await browser.click("Post");
       await browser.click("Post 2", "[role=dialog] button");
@@ -404,7 +406,7 @@ const shots: Shot[] = [
     height: 1100,
     act: async (browser) => {
       await browser.evaluate(
-        `[...document.querySelectorAll("label")].find((label) => label.textContent.includes("US small business"))?.querySelector("input")?.click()`,
+        `[...document.querySelectorAll("label")].find((label) => label.textContent.includes("US small business"))?.querySelector("[role=radio]")?.click()`,
       );
       await browser.fill("#setup-code", "BUCKEYE");
       await browser.fill("#setup-name", "Buckeye Supply");
@@ -426,7 +428,7 @@ const shots: Shot[] = [
     path: `${base}/run/bank_statement.import`,
     act: async (browser) => {
       await pick(browser, "#import-account", "1010");
-      await browser.evaluate(`document.querySelector('input[name=import-format][value=ofx]').click()`);
+      await browser.evaluate(`document.querySelector('[role=radio][value=ofx]').click()`);
       await browser.setFile("#import-file", resolve(import.meta.dir, "fixtures/broken.ofx"));
       await browser.click("Import statement");
     },
@@ -463,7 +465,7 @@ const shots: Shot[] = [
     path: `${base}/r/open_item.list?kind=payable`,
     act: async (browser) => {
       await browser.evaluate(
-        `[...document.querySelectorAll("tbody tr")].find((row) => row.textContent.includes("until"))?.querySelector("input[type=checkbox]")?.click()`,
+        `[...document.querySelectorAll("tbody tr")].find((row) => row.textContent.includes("until"))?.querySelector("[role=checkbox]")?.click()`,
       );
       await browser.settle();
     },
@@ -532,7 +534,7 @@ const shots: Shot[] = [
     },
     act: async (browser) => {
       await browser.evaluate(
-        `[...document.querySelectorAll("[role=dialog] tbody tr")].find((row) => row.textContent.includes("Side shifter"))?.querySelector("input")?.click()`,
+        `[...document.querySelectorAll("[role=dialog] tbody tr")].find((row) => row.textContent.includes("Side shifter"))?.querySelector("[role=radio]")?.click()`,
       );
       await browser.settle();
     },
@@ -546,7 +548,7 @@ const shots: Shot[] = [
     },
     act: async (browser) => {
       await browser.evaluate(
-        `[...document.querySelectorAll("[role=dialog] tbody tr")].find((row) => row.textContent.includes("Side shifter"))?.querySelector("input")?.click()`,
+        `[...document.querySelectorAll("[role=dialog] tbody tr")].find((row) => row.textContent.includes("Side shifter"))?.querySelector("[role=radio]")?.click()`,
       );
       await browser.click("Continue", "[role=dialog] button");
       await browser.setDate("#action-in_service_date", "2026-11-03");
@@ -673,6 +675,12 @@ if (bigId) {
 mkdirSync(OUT, { recursive: true });
 
 const browser = await launchBrowser(9333);
+async function undoAll(): Promise<void> {
+  await browser.close();
+  await removeDrafts();
+  for (const step of atEnd.splice(0).reverse()) await step().catch(() => null);
+}
+undoOnSignal(undoAll);
 try {
   for (const shot of shots) {
     if (only.length > 0 && !only.some((name) => shot.name.includes(name))) continue;
@@ -694,7 +702,5 @@ try {
     console.log(`ok   ${file}`);
   }
 } finally {
-  await browser.close();
-  await removeDrafts();
-  for (const step of atEnd.splice(0).reverse()) await step().catch(() => null);
+  await undoAll();
 }

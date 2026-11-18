@@ -12,6 +12,7 @@ import { type Column, DataTable } from "@/components/data-table";
 import { DateInput } from "@/components/date-input";
 import { Amount, Empty } from "@/components/field-value";
 import { PageHeader } from "@/components/page";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
@@ -228,13 +229,7 @@ function GenericReport({ command }: { command: CommandMeta }) {
           </NativeSelect>
         ) : property.type === "boolean" ? (
           <span className="flex h-8 items-center">
-            <input
-              id={id}
-              type="checkbox"
-              className="size-4 accent-primary"
-              checked={value === "1"}
-              onChange={(event) => set(event.target.checked ? "1" : "")}
-            />
+            <Checkbox id={id} checked={value === "1"} onCheckedChange={(checked) => set(checked === true ? "1" : "")} />
           </span>
         ) : (
           <Input id={id} className="w-56" value={value} onChange={(event) => set(event.target.value)} />

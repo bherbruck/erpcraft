@@ -17,6 +17,7 @@ import { Lookup } from "@/components/lookup";
 import { MoneyInput } from "@/components/money-input";
 import { PageHeader } from "@/components/page";
 import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { t } from "@/i18n/t";
 import { forgetDocuments } from "@/lib/doc-labels";
 import { useLinkInfo } from "@/lib/link-labels";
@@ -129,17 +130,19 @@ function BankImport() {
             <span className="text-sm font-medium" id="import-format-label">
               {input("format")?.label}
             </span>
-            <div role="radiogroup" aria-labelledby="import-format-label" className="space-y-1">
+            <RadioGroup
+              aria-labelledby="import-format-label"
+              className="gap-2"
+              value={format}
+              onValueChange={setFormat}
+            >
               {formats.map((option) => (
-                <label key={option.value} className="flex cursor-pointer items-start gap-2 text-sm">
-                  <input
-                    type="radio"
-                    name="import-format"
-                    value={option.value}
-                    className="mt-0.5 size-4 accent-primary"
-                    checked={format === option.value}
-                    onChange={() => setFormat(option.value)}
-                  />
+                <label
+                  key={option.value}
+                  htmlFor={`import-format-${option.value}`}
+                  className="flex cursor-pointer items-start gap-2 text-sm"
+                >
+                  <RadioGroupItem id={`import-format-${option.value}`} value={option.value} className="mt-0.5" />
                   <span>
                     <span className="font-medium">{option.value}</span>
                     {option.description ? (
@@ -148,7 +151,7 @@ function BankImport() {
                   </span>
                 </label>
               ))}
-            </div>
+            </RadioGroup>
           </div>
           <div className="space-y-1 sm:col-span-2">
             <Label htmlFor="import-file">{t("bank.file")}</Label>

@@ -4,7 +4,7 @@
 /** Any JSON value. Used where a command's schema leaves a value open. */
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
-export type EntityName = "account" | "account_rule" | "asset" | "asset_class" | "asset_settings" | "bank_account_number" | "bank_csv_mapping" | "bom" | "bom_activity" | "bom_line" | "charge" | "company" | "cost_activity" | "cost_activity_rate" | "currency" | "customer" | "einvoice_import" | "exchange_rate" | "fiscal_period" | "gl_entry" | "item" | "payment_terms" | "payment_terms_instalment" | "payment_terms_step" | "policy_rule" | "print_template" | "purchasing_settings" | "reorder_rule" | "role" | "sales_settings" | "sso_provider" | "stock_entry" | "tax_code" | "tax_code_component" | "tax_rule" | "tax_settings" | "user" | "vendor" | "warehouse" | "webhook";
+export type EntityName = "account" | "account_rule" | "asset" | "asset_class" | "asset_settings" | "bank_account_number" | "bank_csv_mapping" | "bom" | "bom_activity" | "bom_line" | "bom_operation" | "charge" | "company" | "cost_activity" | "cost_activity_rate" | "currency" | "customer" | "einvoice_import" | "exchange_rate" | "fiscal_period" | "gl_entry" | "item" | "payment_terms" | "payment_terms_instalment" | "payment_terms_step" | "policy_rule" | "print_template" | "purchasing_settings" | "reorder_rule" | "role" | "sales_settings" | "sso_provider" | "stock_entry" | "tax_code" | "tax_code_component" | "tax_rule" | "tax_settings" | "user" | "vendor" | "warehouse" | "webhook" | "work_center";
 
 export type DocTypeName = "asset_disposal" | "bank_statement" | "depreciation_run" | "fx_revaluation" | "journal_entry" | "payment" | "production_order" | "purchase_order" | "purchase_receipt" | "purchase_return" | "sales_credit" | "sales_credit_note" | "sales_delivery" | "sales_invoice" | "sales_order" | "sales_return" | "stock_adjustment" | "stock_transfer" | "vendor_credit" | "vendor_credit_note" | "vendor_invoice" | "year_end_close";
 
@@ -18,6 +18,33 @@ export type ApprovalApproveInput = {
   id: string;
   /** Why: needed to reject, optional to approve. */
   reason?: string | null;
+};
+
+/**
+ * Let someone else decide, from one day to another, the approval requests the caller could decide: while away, for example. They decide in the caller's place and their decision says so; it counts as the caller's, so one person is never counted twice. They never decide a request of their own, and what they could decide in their own right they decide as themselves. Anyone may delegate their own approvals.
+ */
+export type ApprovalDelegateInput = {
+  /** Who decides in the caller's place. */
+  delegate_id: string;
+  /** The last day. */
+  ends_on: string;
+  /** Why, for the record: a holiday, a leave. */
+  reason?: string | null;
+  /** The first day. Today when omitted. */
+  starts_on?: string | null;
+};
+
+/**
+ * The caller's delegations of approvals that have not ended: those they gave and those given to them.
+ */
+export type ApprovalDelegationsInput = Record<string, never>;
+
+/**
+ * End a delegation of the caller's approvals today; one that has not started is ended before it starts. Decisions already made in their place stand.
+ */
+export type ApprovalEndDelegationInput = {
+  /** The delegation. */
+  id: string;
 };
 
 /**
@@ -91,6 +118,9 @@ export type AssetCapitaliseInput = {
 export type AssetCostLinesInput = {
   /** The asset to capitalise. */
   id: string;
+  /** As a field's lookup: at most this many lines (and never more than
+   * 200). */
+  limit?: number | null;
   /** Only these lines, whether or not they can still be chosen: to show
    * the line an asset was capitalised from. */
   line_ids?: Array<string> | null;
@@ -817,10 +847,15 @@ export type PartyGetInput = {
   /** Only the addresses of this kind, `billing` or `shipping`: what a
    * document offers to choose from. */
   address_kind?: string | null;
+  /** As a field's lookup: at most this many addresses. */
+  limit?: number | null;
   /** The company, customer or vendor. */
   party_id: string;
   /** `company`, `customer` or `vendor`. */
   party_type: "company" | "customer" | "vendor";
+  /** As a field's lookup: only addresses whose lines, city, post code or
+   * country contain this text, ignoring case. */
+  q?: string | null;
 };
 
 /**
@@ -954,7 +989,7 @@ export type PaymentReverseInput = {
 };
 
 /**
- * Draft a production order for everything planning.suggestions says to make, by the item's active bill of materials (the first by code when it has several), in the warehouse that needs it. The orders are drafts: check and release them as any other. Their components are not planned until they are released.
+ * Draft a production order for everything planning.suggestions says to make, by the item's active bill of materials (the first by code when it has several), in the warehouse that needs it. The orders are drafts: check and release them as any other; until then what they make counts as planned, so running it again drafts nothing more. Their components are not planned until they are released. Items to be made without an active bill are returned, not drafted. Takes the right to read reorder rules and bills of materials.
  */
 export type PlanningDraftProductionOrdersInput = {
   /** The company to make for. */
@@ -964,7 +999,7 @@ export type PlanningDraftProductionOrdersInput = {
 };
 
 /**
- * Draft a purchase order per vendor for what planning.suggestions says to buy, from the vendor each item's reorder rule names, at the rule's price or else the last price paid. The orders are drafts in the accounting currency: check and approve them as any other. Suggestions without a vendor are returned, not ordered.
+ * Draft a purchase order per vendor for what planning.suggestions says to buy, from the vendor each item's reorder rule names, at the rule's price or else the last price paid. The orders are drafts in the accounting currency: check and approve them as any other; until then they count as planned, so running it again drafts nothing more. Suggestions without a vendor or a price are returned, not ordered. Takes the right to read reorder rules.
  */
 export type PlanningDraftPurchaseOrdersInput = {
   /** The company to order for. */
@@ -976,7 +1011,7 @@ export type PlanningDraftPurchaseOrdersInput = {
 };
 
 /**
- * What to order or make, per item and warehouse, so that what is left once every open order is done (see stock.availability) is at least the reorder rule's minimum, or not below zero for an item without a rule: the quantity fills up to the rule's fill-up quantity, rounded up to its multiple. Each suggestion says whether the item is made (it has an active bill of materials) or bought, and for one bought the rule's vendor and the price a purchase order would ask. Orders nothing; planning.draft_purchase_orders drafts the purchase orders.
+ * What to order or make, per item and warehouse, so that what is left once every open order is done (see stock.availability) is at least the reorder rule's minimum, or not below zero for an item without a rule: the quantity fills up to the rule's fill-up quantity, less what draft orders already plan, rounded up to its multiple. Each suggestion says whether the item is bought or made (the rule's choice; else bought from the rule's vendor, made when it has an active bill of materials, bought otherwise), and for one bought the rule's vendor and the price a purchase order would ask (shown with the right to read reorder rules). Orders nothing; planning.draft_purchase_orders and planning.draft_production_orders draft the orders.
  */
 export type PlanningSuggestionsInput = {
   /** The company to plan for. */
@@ -1025,6 +1060,22 @@ export type ProductionOrderCompleteInput = {
   /** Accounting date of the production. Defaults to the date of the
    * order. */
   posting_date?: string | null;
+};
+
+/**
+ * Record the hours actually spent on an operation of a released production order. When the order is completed, the difference between the standard hours and those recorded, at the operation's rate, goes to the account for production_variance. An operation with no time recorded counts as done in its standard time. A mistake is corrected with hours below zero.
+ */
+export type ProductionOrderRecordTimeInput = {
+  /** Hours spent; below zero to correct an entry made before. */
+  hours: string | number;
+  /** Production order id. */
+  id: string;
+  /** The operation: its line number on the order. */
+  line_no: number;
+  /** What was done, for the record. */
+  note?: string | null;
+  /** The day the work was done. Today when omitted. */
+  worked_on?: string | null;
 };
 
 /**
@@ -1310,6 +1361,14 @@ export type SalesOrderInvoiceInput = {
 };
 
 /**
+ * Reserve again, for an open sales order, what each stock line still has to deliver, as far as stock on hand that no other order reserved covers it: after goods came in, or after another order's delivery took some of what it held. An order reserves when it is approved and lets go when it is delivered, cancelled or closed.
+ */
+export type SalesOrderReserveInput = {
+  /** Document id. */
+  id: string;
+};
+
+/**
  * Draft a return of goods from the customer of a sales order, open or closed, with a line for everything delivered on it and not yet returned. Nothing is posted: keep the lines and quantities that came back, then post the return with sales_return.post.
  */
 export type SalesOrderReturnInput = {
@@ -1555,7 +1614,7 @@ export type StockTransferReverseInput = {
 };
 
 /**
- * For each item and warehouse of a company: what is on hand, what open sales orders still have to deliver (committed), what released production orders still have to consume, what can still be promised (available), what open purchase orders and released production orders will bring in, and what is left once every open order is done (projected; below zero the item falls short). Quantities are in each item's unit. Takes the right to read stock entries, sales orders, purchase orders and production orders of the company.
+ * For each item and warehouse of a company: what is on hand, what open sales orders still have to deliver (committed), what released production orders still have to consume, what can still be promised (available), what open purchase orders and released production orders will bring in, and what is left once every open order is done (projected; below zero the item falls short); and apart from that, what draft purchase and production orders would bring in (planned). Quantities are in each item's unit. Takes the right to read stock entries, sales orders, purchase orders and production orders of the company.
  */
 export type StockAvailabilityInput = {
   /** The company whose stock and orders are counted. */
@@ -1575,6 +1634,20 @@ export type StockAvailabilityInput = {
 export type StockOnHandInput = {
   /** The company to report on. */
   company_id: string;
+  /** Only this item. */
+  item_id?: string | null;
+  /** Only this warehouse. */
+  warehouse_id?: string | null;
+};
+
+/**
+ * Stock on hand set aside for lines of open sales orders and released production orders, per order line: what each holds now. An order reserves what free stock covers when it is approved or released, holds less as its goods leave, and lets go when it is done, cancelled or closed.
+ */
+export type StockReservationsInput = {
+  /** The company whose reservations are listed. */
+  company_id: string;
+  /** Only those of this order. */
+  document_id?: string | null;
   /** Only this item. */
   item_id?: string | null;
   /** Only this warehouse. */
@@ -1851,6 +1924,20 @@ export type WebhookUpdateInput = {
 };
 
 /**
+ * How full each active work center of a company is, day by day: its capacity in hours beside the standard hours still to work on released production orders dated that day (an order is planned on its date), and the load as a percentage. Days with nothing planned are listed with no load. At most 366 days.
+ */
+export type WorkCenterLoadInput = {
+  /** The company whose work centers are looked at. */
+  company_id: string;
+  /** The first day. */
+  from: string;
+  /** The last day. */
+  to: string;
+  /** Only this work center. */
+  work_center_id?: string | null;
+};
+
+/**
  * Post a draft year-end close. In one posting dated the last day of the fiscal period, every income and expense account of the company is brought to zero for the period, and the result goes to the retained earnings account: a credit for a profit, a debit for a loss. The amounts are worked out from the ledger at that moment. The command then closes the fiscal period, as fiscal_period.close does, so nothing more can be posted into the closed year; it needs no permission beyond year_end_close:post for that. Refused if the period is closed, already has a year-end close that is not reversed, or has nothing to close. Posting a close that is already posted returns it unchanged. With first_period_id the year is every period from that one to the fiscal period: their income and expenses are closed together, and all of them are closed.
  */
 export type YearEndClosePostInput = {
@@ -1874,8 +1961,24 @@ export type DecisionView = {
   decision: string;
   /** Their name. */
   name: string;
+  /** Whose decision it was, when it was made in their place by the
+   * person they delegated their approvals to. */
+  on_behalf_of: string | null;
   reason: string | null;
   user_id: string;
+};
+
+export type DelegationView = {
+  /** Who decides in their place. */
+  delegate_id: string;
+  delegate_name: string;
+  ends_on: string;
+  id: string;
+  reason: string | null;
+  starts_on: string;
+  /** Whose approvals are delegated. */
+  user_id: string;
+  user_name: string;
 };
 
 export type ApprovalRequest = {
@@ -3134,17 +3237,28 @@ export type Suggestion = {
   item_id: string;
   /** The reorder rule's minimum; zero without a rule. */
   min_qty: string;
+  /** Why the suggestion cannot be drafted as it stands, such as an item
+   * to be made that has no active bill of materials. */
+  note: string | null;
+  /** What draft orders would bring in, netted off before suggesting. */
+  planned: string;
   /** What is left once every open order is done. */
   projected: string;
   /** What to order or make: up to the rule's fill-up quantity (or its
-   * minimum, or zero without a rule), rounded up to its multiple. */
+   * minimum, or zero without a rule), less what is planned, rounded up
+   * to its multiple. */
   qty: string;
-  /** `make` when the item has an active bill of materials, else `buy`. */
+  /** `buy` or `make`: what the rule says; else `buy` when the rule names a
+   * vendor, `make` when the item has an active bill of materials, else
+   * `buy`. */
   source: string;
   /** The price a purchase order would ask: the rule's, else the last
-   * price paid on a purchase order of the company. */
+   * price paid on an open or closed purchase order of the company.
+   * Absent when there is none, and for a caller who may not read reorder
+   * rules. */
   unit_price: string | null;
-  /** The vendor the rule names, for an item bought. */
+  /** The vendor the rule names, for an item bought. Absent for a caller
+   * who may not read reorder rules. */
   vendor_id: string | null;
   /** Absent for a caller who may not read warehouses. */
   warehouse_code: string | null;
@@ -3288,6 +3402,10 @@ export type AvailabilityRow = {
   on_hand: string;
   /** Still to come in on open purchase orders. */
   on_order: string;
+  /** What draft purchase orders and draft production orders would bring
+   * in: not on order yet, and not in `projected`, but planned, so that
+   * planning does not suggest it again. */
+  planned: string;
   /** Available plus what is on order and in production: what is left
    * once every open order is done. Below zero, the item falls short. */
   projected: string;
@@ -3310,6 +3428,19 @@ export type OnHandRow = {
   value: string | null;
   /** Absent for a caller who may not read warehouses. */
   warehouse_code: string | null;
+  warehouse_id: string;
+};
+
+export type ReservationRow = {
+  doc_type: string;
+  /** The order it is set aside for, its type and number. */
+  document_id: string;
+  item_id: string;
+  /** The order's line. */
+  line_id: string;
+  number: string | null;
+  qty: string;
+  updated_at: string;
   warehouse_id: string;
 };
 
@@ -3366,6 +3497,19 @@ export type Delivery = {
   topic: string;
 };
 
+export type LoadRow = {
+  /** What it can work that day. */
+  capacity_hours: string;
+  code: string;
+  day: string;
+  /** The standard hours of released orders dated that day, less what is
+   * already recorded on them. */
+  load_hours: string;
+  /** Load as a percentage of capacity. */
+  load_percent: string;
+  work_center_id: string;
+};
+
 export type ApprovalApproveOutput = {
   /** How many distinct people must approve. */
   approvals_needed: number;
@@ -3403,6 +3547,38 @@ export type ApprovalApproveOutput = {
   /** `pending`, `executed`, `failed`, `stale`, `rejected`, or `expired`
    * (pending past `expires_at`). */
   status: string;
+};
+
+export type ApprovalDelegateOutput = {
+  /** Who decides in their place. */
+  delegate_id: string;
+  delegate_name: string;
+  ends_on: string;
+  id: string;
+  reason: string | null;
+  starts_on: string;
+  /** Whose approvals are delegated. */
+  user_id: string;
+  user_name: string;
+};
+
+export type ApprovalDelegationsOutput = {
+  /** What the caller delegated, and what was delegated to them, that has
+   * not ended. */
+  items: Array<DelegationView>;
+};
+
+export type ApprovalEndDelegationOutput = {
+  /** Who decides in their place. */
+  delegate_id: string;
+  delegate_name: string;
+  ends_on: string;
+  id: string;
+  reason: string | null;
+  starts_on: string;
+  /** Whose approvals are delegated. */
+  user_id: string;
+  user_name: string;
 };
 
 export type ApprovalGetOutput = {
@@ -4387,11 +4563,17 @@ export type PaymentReverseOutput = {
 export type PlanningDraftProductionOrdersOutput = {
   /** The production orders drafted, one per item and warehouse. */
   production_order_ids: Array<string>;
+  /** Suggestions to make for items without an active bill of materials:
+   * no order was drafted for them. */
+  without_bill: Array<Suggestion>;
 };
 
 export type PlanningDraftPurchaseOrdersOutput = {
   /** The purchase orders drafted, one per vendor. */
   purchase_order_ids: Array<string>;
+  /** Suggestions to buy with no price: neither the rule's nor one paid
+   * before. No line is drafted at a price nobody agreed to. */
+  without_price: Array<Suggestion>;
   /** Suggestions to buy that name no vendor: no order was drafted for
    * them. */
   without_vendor: Array<Suggestion>;
@@ -4449,6 +4631,34 @@ export type ProductionOrderCancelOutput = {
 };
 
 export type ProductionOrderCompleteOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
+};
+
+export type ProductionOrderRecordTimeOutput = {
   /** The content the document's type defines. See the fields and
    * collections of the type in `meta.describe`. */
   body: Json;
@@ -5214,6 +5424,34 @@ export type SalesOrderInvoiceOutput = {
   version: number;
 };
 
+export type SalesOrderReserveOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
+};
+
 export type SalesOrderReturnOutput = {
   /** The content the document's type defines. See the fields and
    * collections of the type in `meta.describe`. */
@@ -5510,6 +5748,11 @@ export type StockOnHandOutput = {
   currency: string;
   rows: Array<OnHandRow>;
   total_value: string | null;
+};
+
+export type StockReservationsOutput = {
+  company_id: string;
+  rows: Array<ReservationRow>;
 };
 
 export type TaxReportOutput = {
@@ -5845,6 +6088,11 @@ export type WebhookUpdateOutput = {
   url: string;
 };
 
+export type WorkCenterLoadOutput = {
+  company_id: string;
+  rows: Array<LoadRow>;
+};
+
 export type YearEndClosePostOutput = {
   /** The content the document's type defines. See the fields and
    * collections of the type in `meta.describe`. */
@@ -5904,6 +6152,9 @@ export type YearEndCloseReverseOutput = {
 /** The output of every command, by command name, as far as the server describes it. */
 export interface CommandOutputs {
   "approval.approve": ApprovalApproveOutput;
+  "approval.delegate": ApprovalDelegateOutput;
+  "approval.delegations": ApprovalDelegationsOutput;
+  "approval.end_delegation": ApprovalEndDelegationOutput;
   "approval.get": ApprovalGetOutput;
   "approval.list": ApprovalListOutput;
   "approval.reject": ApprovalRejectOutput;
@@ -5971,6 +6222,7 @@ export interface CommandOutputs {
   "print_template.preview": PrintTemplatePreviewOutput;
   "production_order.cancel": ProductionOrderCancelOutput;
   "production_order.complete": ProductionOrderCompleteOutput;
+  "production_order.record_time": ProductionOrderRecordTimeOutput;
   "production_order.release": ProductionOrderReleaseOutput;
   "production_order.reverse": ProductionOrderReverseOutput;
   "purchase_order.approve": PurchaseOrderApproveOutput;
@@ -5999,6 +6251,7 @@ export interface CommandOutputs {
   "sales_order.close": SalesOrderCloseOutput;
   "sales_order.deliver": SalesOrderDeliverOutput;
   "sales_order.invoice": SalesOrderInvoiceOutput;
+  "sales_order.reserve": SalesOrderReserveOutput;
   "sales_order.return": SalesOrderReturnOutput;
   "sales_return.post": SalesReturnPostOutput;
   "sales_return.reverse": SalesReturnReverseOutput;
@@ -6018,6 +6271,7 @@ export interface CommandOutputs {
   "stock_transfer.reverse": StockTransferReverseOutput;
   "stock.availability": StockAvailabilityOutput;
   "stock.on_hand": StockOnHandOutput;
+  "stock.reservations": StockReservationsOutput;
   "tax.report": TaxReportOutput;
   "user.activate": UserActivateOutput;
   "user.assign_role": UserAssignRoleOutput;
@@ -6040,6 +6294,7 @@ export interface CommandOutputs {
   "webhook.deliveries": WebhookDeliveriesOutput;
   "webhook.set_secret": WebhookSetSecretOutput;
   "webhook.update": WebhookUpdateOutput;
+  "work_center.load": WorkCenterLoadOutput;
   "year_end_close.post": YearEndClosePostOutput;
   "year_end_close.reverse": YearEndCloseReverseOutput;
 }
@@ -6047,6 +6302,9 @@ export interface CommandOutputs {
 /** The input of every command, by command name. */
 export interface CommandInputs {
   "approval.approve": ApprovalApproveInput;
+  "approval.delegate": ApprovalDelegateInput;
+  "approval.delegations": ApprovalDelegationsInput;
+  "approval.end_delegation": ApprovalEndDelegationInput;
   "approval.get": ApprovalGetInput;
   "approval.list": ApprovalListInput;
   "approval.reject": ApprovalRejectInput;
@@ -6114,6 +6372,7 @@ export interface CommandInputs {
   "print_template.preview": PrintTemplatePreviewInput;
   "production_order.cancel": ProductionOrderCancelInput;
   "production_order.complete": ProductionOrderCompleteInput;
+  "production_order.record_time": ProductionOrderRecordTimeInput;
   "production_order.release": ProductionOrderReleaseInput;
   "production_order.reverse": ProductionOrderReverseInput;
   "purchase_order.approve": PurchaseOrderApproveInput;
@@ -6142,6 +6401,7 @@ export interface CommandInputs {
   "sales_order.close": SalesOrderCloseInput;
   "sales_order.deliver": SalesOrderDeliverInput;
   "sales_order.invoice": SalesOrderInvoiceInput;
+  "sales_order.reserve": SalesOrderReserveInput;
   "sales_order.return": SalesOrderReturnInput;
   "sales_return.post": SalesReturnPostInput;
   "sales_return.reverse": SalesReturnReverseInput;
@@ -6161,6 +6421,7 @@ export interface CommandInputs {
   "stock_transfer.reverse": StockTransferReverseInput;
   "stock.availability": StockAvailabilityInput;
   "stock.on_hand": StockOnHandInput;
+  "stock.reservations": StockReservationsInput;
   "tax.report": TaxReportInput;
   "user.activate": UserActivateInput;
   "user.assign_role": UserAssignRoleInput;
@@ -6183,6 +6444,7 @@ export interface CommandInputs {
   "webhook.deliveries": WebhookDeliveriesInput;
   "webhook.set_secret": WebhookSetSecretInput;
   "webhook.update": WebhookUpdateInput;
+  "work_center.load": WorkCenterLoadInput;
   "year_end_close.post": YearEndClosePostInput;
   "year_end_close.reverse": YearEndCloseReverseInput;
 }
@@ -6190,4 +6452,4 @@ export interface CommandInputs {
 export type CommandName = keyof CommandInputs;
 
 /** Commands that only read. */
-export type ReadOnlyCommandName = "approval.get" | "approval.list" | "asset.cost_lines" | "asset.register" | "asset.schedule" | "audit.history" | "audit.list" | "auth.events" | "bank_statement.proposals" | "bank.reconciliation" | "document.get" | "document.list" | "document.parties" | "document.render" | "einvoice.export" | "einvoice.read" | "entity.get" | "entity.list" | "gl.account_ledger" | "gl.balance_sheet" | "gl.income_statement" | "gl.trial_balance" | "meta.describe" | "open_item.aging" | "open_item.list" | "outbox.list" | "party.get" | "planning.suggestions" | "print_template.builtin" | "print_template.preview" | "purchase_order.awaiting_credit" | "sales_order.awaiting_credit" | "search.records" | "setup.templates" | "sso_identity.list" | "sso_provider.list" | "stock.availability" | "stock.on_hand" | "tax.report" | "user.get" | "user.list" | "webhook.deliveries";
+export type ReadOnlyCommandName = "approval.delegations" | "approval.get" | "approval.list" | "asset.cost_lines" | "asset.register" | "asset.schedule" | "audit.history" | "audit.list" | "auth.events" | "bank_statement.proposals" | "bank.reconciliation" | "document.get" | "document.list" | "document.parties" | "document.render" | "einvoice.export" | "einvoice.read" | "entity.get" | "entity.list" | "gl.account_ledger" | "gl.balance_sheet" | "gl.income_statement" | "gl.trial_balance" | "meta.describe" | "open_item.aging" | "open_item.list" | "outbox.list" | "party.get" | "planning.suggestions" | "print_template.builtin" | "print_template.preview" | "purchase_order.awaiting_credit" | "sales_order.awaiting_credit" | "search.records" | "setup.templates" | "sso_identity.list" | "sso_provider.list" | "stock.availability" | "stock.on_hand" | "stock.reservations" | "tax.report" | "user.get" | "user.list" | "webhook.deliveries" | "work_center.load";

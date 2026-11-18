@@ -12,6 +12,7 @@ import { type Column, DataTable } from "@/components/data-table";
 import { Amount, Empty, LinkLabel } from "@/components/field-value";
 import { Lookup } from "@/components/lookup";
 import { PageHeader } from "@/components/page";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { TableCell, TableRow } from "@/components/ui/table";
@@ -239,12 +240,11 @@ export function OpenItemsPage() {
             />
           </div>
         ) : null}
-        <label className="flex h-8 items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            className="size-4 accent-primary"
+        <label htmlFor="include-settled" className="flex h-8 items-center gap-2 text-sm">
+          <Checkbox
+            id="include-settled"
             checked={settled}
-            onChange={(event) => url.set({ settled: event.target.checked ? "1" : null, page: null })}
+            onCheckedChange={(checked) => url.set({ settled: checked === true ? "1" : null, page: null })}
           />
           {t("open_items.include_settled")}
         </label>

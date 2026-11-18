@@ -47,6 +47,11 @@ export interface Browser {
   key(name: string, modifiers?: number): Promise<void>;
   /** Clicks the first enabled element matching the selector whose text is exactly `text`. */
   click(text: string, selector?: string): Promise<void>;
+  /**
+   * Clicks the checkbox or radio button whose accessible name (its aria-label, else the text of
+   * its label) is `name` or starts with it, as a person reading the labels would.
+   */
+  choose(name: string): Promise<void>;
   text(): Promise<string>;
   /** Path and query of the current address. */
   location(): Promise<string>;
@@ -284,6 +289,21 @@ export async function launchBrowser(port: number): Promise<Browser> {
         `(() => { const e = [...document.querySelectorAll(${quoted(selector)})].find((b) => b.textContent.trim() === ${quoted(text)} && !b.disabled); if (!e) return false; e.click(); return true; })()`,
       );
       if (found !== true) throw new Error(`nothing to click: ${selector} with the text "${text}"`);
+      await settle();
+    },
+    async choose(name) {
+      const found = await evaluate(
+        `(() => {
+          const name = ${quoted(name)};
+          const nameOf = (e) => (e.getAttribute("aria-label") ?? e.labels?.[0]?.textContent ?? e.closest("label")?.textContent ?? "").trim();
+          const box = [...document.querySelectorAll("[role=checkbox], [role=radio]")]
+            .find((e) => !e.disabled && (nameOf(e) === name || nameOf(e).startsWith(name)));
+          if (!box) return false;
+          box.click();
+          return true;
+        })()`,
+      );
+      if (found !== true) throw new Error(`no checkbox or radio button named "${name}"`);
       await settle();
     },
     async text() {

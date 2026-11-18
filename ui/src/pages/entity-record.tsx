@@ -1,6 +1,7 @@
 import { Plus, Trash2 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
+import { toast } from "sonner";
 import { ApiError, api } from "@/api/client";
 import type { EntityName } from "@/api/generated";
 import type { DocTypeMeta, EntityMeta, EntityRecord, FieldMeta, Json, JsonObject } from "@/api/types";
@@ -11,10 +12,10 @@ import { ActionButtons, ActionDialog } from "@/components/command-action";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { FieldInput, type FieldValues, initialValues, toEditable } from "@/components/field-input";
 import { FieldValue, Withheld } from "@/components/field-value";
+import { FormField } from "@/components/form-field";
 import { History } from "@/components/history";
 import { LINE_PICKERS } from "@/components/line-pickers";
 import { PageHeader, Tabs } from "@/components/page";
-import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { UnsavedDialog, useUnsavedGuard } from "@/components/unsaved-guard";
 import { t } from "@/i18n/t";
@@ -241,6 +242,7 @@ function EntityForm({ entity, id, custom }: { entity: EntityMeta; id: string | n
     setOriginal(record);
     setValues(editableValues(entity, record));
     setSavedAt(Date.now());
+    toast.success(t("toast.saved", { label: entity.label }));
   }
 
   async function save(): Promise<void> {
@@ -598,20 +600,20 @@ function EntityForm({ entity, id, custom }: { entity: EntityMeta; id: string | n
                       })
                     : undefined;
                   return (
-                    <div key={field.name} className={wide ? "space-y-1 sm:col-span-2" : "space-y-1"}>
-                      <Label htmlFor={editable ? fieldId : undefined}>
-                        {field.label}
-                        {field.required && editable ? (
-                          <>
-                            <span aria-hidden="true" className="text-destructive">
-                              {t("field.required_mark")}
-                            </span>
-                            <span className="sr-only">{t("field.required")}</span>
-                          </>
-                        ) : null}
-                      </Label>
+                    <FormField
+                      key={field.name}
+                      id={fieldId}
+                      labelFor={editable ? fieldId : null}
+                      className={wide ? "sm:col-span-2" : undefined}
+                      label={field.label}
+                      required={field.required && editable}
+                      error={error}
+                      hint={field.help && editable ? field.help : null}
+                      hintId={hintId}
+                      note={!isNew && field.immutable && !field.readonly && canWrite ? t("field.immutable") : null}
+                    >
                       {!ready ? (
-                        <Skeleton className="h-8 w-full" />
+                        <Skeleton className="h-9 w-full" />
                       ) : special !== undefined ? (
                         special
                       ) : editable ? (
@@ -626,7 +628,7 @@ function EntityForm({ entity, id, custom }: { entity: EntityMeta; id: string | n
                           aria-describedby={describedBy}
                         />
                       ) : (
-                        <div className="flex min-h-8 items-center text-sm">
+                        <div className="flex min-h-9 items-center text-sm">
                           {original &&
                           !(field.name in original) &&
                           fieldReach(meta, entity.name, field.name, "read") === "some" ? (
@@ -641,19 +643,7 @@ function EntityForm({ entity, id, custom }: { entity: EntityMeta; id: string | n
                           )}
                         </div>
                       )}
-                      {error ? (
-                        <p id={`${fieldId}-error`} role="alert" className="text-sm text-destructive">
-                          {error}
-                        </p>
-                      ) : field.help && editable ? (
-                        <p id={hintId} className="text-sm text-muted-foreground">
-                          {field.help}
-                        </p>
-                      ) : null}
-                      {!isNew && field.immutable && !field.readonly && canWrite ? (
-                        <p className="text-sm text-muted-foreground">{t("field.immutable")}</p>
-                      ) : null}
-                    </div>
+                    </FormField>
                   );
                 })}
             </div>

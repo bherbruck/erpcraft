@@ -22,6 +22,7 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { Toaster } from "@/components/ui/sonner";
 import { t } from "@/i18n/t";
 import { COMPANY, canEntity, canRun, findCommand, navigation, reportTitle } from "@/lib/meta";
 import { NO_COMPANY, pathInCompany, paths } from "@/lib/paths";
@@ -195,6 +196,8 @@ export function AppShell() {
           </div>
         </SidebarInset>
         <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
+        {/* Confirms what went well. An error is never only a toast: it stays next to what it is about. */}
+        <Toaster position="bottom-right" />
       </SidebarProvider>
     </PageActionsProvider>
   );

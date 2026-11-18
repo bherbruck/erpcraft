@@ -1,5 +1,6 @@
 import { type ComponentProps, type KeyboardEvent, useEffect, useState } from "react";
 import type { FieldMeta, Json } from "@/api/types";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
@@ -177,16 +178,11 @@ export function FieldInput(props: FieldInputProps) {
     case "bool":
       return (
         <span className="flex h-8 items-center">
-          <input
+          <Checkbox
             {...common}
-            type="checkbox"
-            className="size-4 accent-primary"
-            checked={value === true}
-            ref={(element) => {
-              // Not yet answered: the server will apply its own default.
-              if (element) element.indeterminate = value === undefined || value === null;
-            }}
-            onChange={(event) => onChange(event.target.checked)}
+            // Not yet answered: the server will apply its own default.
+            checked={value === true ? true : value === undefined || value === null ? "indeterminate" : false}
+            onCheckedChange={(checked) => onChange(checked === true)}
           />
         </span>
       );

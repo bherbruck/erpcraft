@@ -4,7 +4,7 @@ import type { EntityMeta, EntityRecord, Json, JsonObject } from "@/api/types";
 import { Alert } from "@/components/alert";
 import { Button } from "@/components/button";
 import { Dialog } from "@/components/dialog";
-import { Label } from "@/components/ui/label";
+import { FormField } from "@/components/form-field";
 import { t } from "@/i18n/t";
 import { forgetLinkLabels } from "@/lib/link-labels";
 import { isCompanyScoped } from "@/lib/meta";
@@ -94,7 +94,7 @@ export function QuickCreateDialog({
         id={formId}
         noValidate
         onSubmit={(event) => void submit(event)}
-        className="grid gap-x-4 gap-y-3 sm:grid-cols-2"
+        className="grid gap-x-4 gap-y-4 sm:grid-cols-2"
       >
         {formError ? (
           <Alert className="sm:col-span-2" title={t("record.save_failed")}>
@@ -105,18 +105,14 @@ export function QuickCreateDialog({
           const fieldId = `${formId}-${field.name}`;
           const error = fieldErrors[field.name];
           return (
-            <div key={field.name} className={field.type.kind === "json" ? "space-y-1 sm:col-span-2" : "space-y-1"}>
-              <Label htmlFor={fieldId}>
-                {field.label}
-                {field.required ? (
-                  <>
-                    <span aria-hidden="true" className="text-destructive">
-                      {t("field.required_mark")}
-                    </span>
-                    <span className="sr-only">{t("field.required")}</span>
-                  </>
-                ) : null}
-              </Label>
+            <FormField
+              key={field.name}
+              id={fieldId}
+              className={field.type.kind === "json" ? "sm:col-span-2" : undefined}
+              label={field.label}
+              required={field.required}
+              error={error}
+            >
               <FieldInput
                 id={fieldId}
                 field={field}
@@ -126,12 +122,7 @@ export function QuickCreateDialog({
                 aria-describedby={error ? `${fieldId}-error` : undefined}
                 onChange={(value) => setValues((previous) => ({ ...previous, [field.name]: value }))}
               />
-              {error ? (
-                <p id={`${fieldId}-error`} role="alert" className="text-sm text-destructive">
-                  {error}
-                </p>
-              ) : null}
-            </div>
+            </FormField>
           );
         })}
       </form>

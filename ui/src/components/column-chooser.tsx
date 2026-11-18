@@ -2,6 +2,7 @@ import { Columns3 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { useApp } from "@/app/context";
 import { Button } from "@/components/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { t } from "@/i18n/t";
 import { isStringArray, readStored, writeStored } from "@/lib/storage";
@@ -63,15 +64,17 @@ export function useColumnChoice<Row>(
             const checked = visible.some((shown) => shown.id === column.id);
             return (
               <li key={column.id}>
-                <label className="flex cursor-pointer items-center gap-2 rounded-sm px-1 py-1 text-sm hover:bg-accent">
-                  <input
-                    type="checkbox"
-                    className="size-4 accent-primary"
+                <label
+                  htmlFor={`column-${column.id}`}
+                  className="flex cursor-pointer items-center gap-2 rounded-sm px-1 py-1 text-sm hover:bg-accent"
+                >
+                  <Checkbox
+                    id={`column-${column.id}`}
                     checked={checked}
                     disabled={checked && visible.length === 1}
-                    onChange={(event) => {
+                    onCheckedChange={(next) => {
                       const now = visible.map((shown) => shown.id);
-                      const wanted = event.target.checked ? [...now, column.id] : now.filter((id) => id !== column.id);
+                      const wanted = next === true ? [...now, column.id] : now.filter((id) => id !== column.id);
                       // Kept in the table's own order, whatever the order of clicking.
                       choose(columns.map((each) => each.id).filter((id) => wanted.includes(id)));
                     }}

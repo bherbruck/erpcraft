@@ -11,6 +11,7 @@ import { useApp } from "@/app/context";
 import { Alert } from "@/components/alert";
 import { Button } from "@/components/button";
 import { Dialog } from "@/components/dialog";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { t } from "@/i18n/t";
 import { formatCalendarDate } from "@/lib/dates";
@@ -102,7 +103,12 @@ function CapitalisePicker({ record, title, onPick, onClose }: LinePickerProps) {
     body = <p className="text-sm text-muted-foreground">{t("picker.capitalise_none")}</p>;
   else
     body = (
-      <div className="rounded-md border">
+      <RadioGroup
+        value={chosen ?? ""}
+        onValueChange={setChosen}
+        aria-label={t("picker.capitalise_lines")}
+        className="block rounded-md border"
+      >
         <Table aria-label={t("picker.capitalise_lines")}>
           <TableHeader>
             <TableRow>
@@ -117,12 +123,8 @@ function CapitalisePicker({ record, title, onPick, onClose }: LinePickerProps) {
             {data.rows.map((row) => (
               <TableRow key={row.entryId} className="cursor-pointer" onClick={() => setChosen(row.entryId)}>
                 <TableCell>
-                  <input
-                    type="radio"
-                    name="capitalise-line"
-                    className="size-4 accent-primary"
-                    checked={chosen === row.entryId}
-                    onChange={() => setChosen(row.entryId)}
+                  <RadioGroupItem
+                    value={row.entryId}
                     aria-label={t("picker.choose", { number: row.number ?? row.entryId })}
                   />
                 </TableCell>
@@ -138,7 +140,7 @@ function CapitalisePicker({ record, title, onPick, onClose }: LinePickerProps) {
             ))}
           </TableBody>
         </Table>
-      </div>
+      </RadioGroup>
     );
 
   return (

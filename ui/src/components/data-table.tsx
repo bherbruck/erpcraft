@@ -4,6 +4,7 @@ import { Link } from "react-router";
 import type { ApiError } from "@/api/client";
 import { Alert } from "@/components/alert";
 import { Button } from "@/components/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { t } from "@/i18n/t";
@@ -175,13 +176,12 @@ export function DataTable<Row>({
               <TableRow key={rowKey(row)} data-state={selection?.selected.has(rowKey(row)) ? "selected" : undefined}>
                 {selection ? (
                   <TableCell className="w-10 px-3 py-2.5">
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       aria-label={selection.label(row)}
                       title={selection.blocked?.(row) ?? undefined}
                       checked={selection.selected.has(rowKey(row))}
                       disabled={!selection.selected.has(rowKey(row)) && Boolean(selection.blocked?.(row))}
-                      onChange={(event) => selection.onToggle(row, event.target.checked)}
+                      onCheckedChange={(checked) => selection.onToggle(row, checked === true)}
                     />
                   </TableCell>
                 ) : null}
