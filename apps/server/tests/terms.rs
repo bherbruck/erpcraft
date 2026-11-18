@@ -1585,3 +1585,109 @@ async fn availability_counts_what_open_orders_will_move() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     t.stop().await;
 }
+
+/// A credit to a customer not tied to an invoice: a rebate takes back
+/// revenue and the tax on it, and leaves a credit that is applied to the
+/// customer's invoices. The company can have such credits checked.
+#[tokio::test]
+async fn a_rebate_credits_the_customer_without_an_invoice() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let order = f.order(&t, "sales", "10", "10.00", json!({})).await;
+    let invoice = f.sold(&t, &order, "2026-03-01").await;
+    let before = f.books(&t).await;
+
+    // A year-end rebate of 50.00 at 19 %.
+    let credit = f
+        .posted(
+            &t,
+            "sales_credit",
+            "2026-03-10",
+            json!({ "customer_id": f.customer, "lines": [
+                { "account_id": f.c.revenue, "description": "Rebate 2025", "qty": "1",
+                  "unit_price": "50.00", "tax_code_id": f.vat } ] }),
+        )
+        .await;
+    assert_eq!(credit["status"], "posted");
+    assert_eq!(dec(&credit["summary"]["total_gross"]), 59.5, "{credit}");
+    assert_eq!(dec(&credit["body"]["lines"][0]["tax_amount"]), 9.5);
+    let books = f.books(&t).await;
+    assert!(close(books["1200"], before["1200"] - 59.5));
+    assert!(
+        close(books["2300"], before["2300"] + 9.5),
+        "the tax is taken back"
+    );
+    let item = f.item_of(&t, "receivable", &credit).await;
+    assert_eq!(dec(&item["txn_amount"]), -59.5);
+
+    // Applied to the invoice: the customer owes 119.00 less 59.50.
+    let debt = f.item_of(&t, "receivable", &invoice).await;
+    let (status, applied) = t
+        .command(
+            &t.admin,
+            "payment.apply_credit",
+            json!({ "company_id": f.c.id, "credit_item_id": item["id"],
+                    "debt_item_id": debt["id"], "doc_date": "2026-03-11" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+    let debt = f.item_of(&t, "receivable", &invoice).await;
+    assert_eq!(dec(&debt["txn_open"]), 59.5);
+    // Applied, it cannot be reversed.
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "sales_credit.reverse",
+            json!({ "id": credit["id"] }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+
+    // A company that has large credits checked refuses them above 100.
+    let (status, rule) = t
+        .post(
+            &t.admin,
+            "/api/entities/policy_rule",
+            json!({ "company_id": f.c.id, "point": "sales_credit.without_invoice",
+                    "effect": "refuse", "condition": "facts.total > 100", "priority": 10 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{rule}");
+    let big = f
+        .draft(
+            &t,
+            "sales_credit",
+            "2026-03-12",
+            json!({ "customer_id": f.customer, "lines": [
+                { "account_id": f.c.revenue, "qty": "1", "unit_price": "200.00",
+                  "tax_code_id": f.vat } ] }),
+        )
+        .await;
+    let (status, body) = f.post(&t, "sales_credit", &big).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    // A small one goes through, and is reversed whole.
+    let small = f
+        .posted(
+            &t,
+            "sales_credit",
+            "2026-03-12",
+            json!({ "customer_id": f.customer, "lines": [
+                { "account_id": f.c.revenue, "qty": "2", "unit_price": "10.00",
+                  "tax_code_id": f.vat } ] }),
+        )
+        .await;
+    let middle = f.books(&t).await;
+    assert!(close(middle["2300"], books["2300"] + 3.8));
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "sales_credit.reverse",
+            json!({ "id": small["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let after = f.books(&t).await;
+    assert!(close(after["2300"], books["2300"]));
+    assert!(close(after["1200"], books["1200"]));
+    t.stop().await;
+}

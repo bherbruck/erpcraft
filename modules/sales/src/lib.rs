@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+mod credit;
 mod policy;
 mod returns;
 
@@ -102,6 +103,11 @@ impl Module for SalesModule {
                 name: "addresses",
                 sql: include_str!("../migrations/0010_addresses.sql"),
             },
+            Migration {
+                version: 11,
+                name: "credit",
+                sql: include_str!("../migrations/0011_credit.sql"),
+            },
         ]
     }
 
@@ -147,6 +153,7 @@ impl Module for SalesModule {
             Arc::new(SalesInvoice),
             Arc::new(returns::SalesReturn),
             Arc::new(returns::SalesCreditNote),
+            Arc::new(credit::SalesCredit),
         ]
     }
 
@@ -207,6 +214,8 @@ impl Module for SalesModule {
             command(returns::DraftCreditNote),
             command(returns::PostCreditNote),
             command(returns::ReverseCreditNote),
+            command(credit::PostCredit),
+            command(credit::ReverseCredit),
         ]
     }
 }

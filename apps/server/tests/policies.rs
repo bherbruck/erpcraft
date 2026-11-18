@@ -896,6 +896,7 @@ async fn policy_points_are_described_for_interfaces_and_agents() {
             PURCHASE_ORDER_CLOSED,
             "purchase_order.reopen_on_return",
             OVER_RECEIPT,
+            "sales_credit.without_invoice",
             "sales_credit_note.without_return",
             OVER_DELIVERY,
             SALES_PRICE_DIFFERS,
@@ -1075,6 +1076,7 @@ async fn policy_points_are_described_for_interfaces_and_agents() {
         sales,
         [
             CUSTOMER_INACTIVE,
+            "sales_credit.without_invoice",
             "sales_credit_note.without_return",
             OVER_DELIVERY,
             SALES_PRICE_DIFFERS,

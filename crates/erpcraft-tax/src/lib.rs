@@ -84,6 +84,11 @@ impl Module for TaxModule {
                 name: "tax_rule",
                 sql: include_str!("../migrations/0008_tax_rule.sql"),
             },
+            Migration {
+                version: 9,
+                name: "adjustment",
+                sql: include_str!("../migrations/0009_adjustment.sql"),
+            },
         ]
     }
 
@@ -321,6 +326,9 @@ pub struct Tax {
     /// code gives two: `paid` (debit its account) and `collected` (credit
     /// its account), of the same amount. On a sale it is for nothing.
     pub self_assessed: bool,
+    /// Taken back by a credit not tied to an invoice: below zero, with no
+    /// entry of an invoice it credits. See [`as_credit`].
+    pub adjustment: bool,
 }
 
 /// The accounting-currency value of a tax worked out in another currency.
@@ -388,6 +396,26 @@ pub fn line_net(
         .unwrap_or_default();
     let net = gross - percent - discount_amount.unwrap_or_default();
     (net >= Decimal::ZERO).then_some(net)
+}
+
+/// The taxes [`quote`] worked out on a net amount, taken back instead: for
+/// a credit that is not tied to an invoice, which has no invoice entry to
+/// credit. Base and amount (and their accounting value) below zero, each
+/// recorded as an entry of its own.
+pub fn as_credit(taxes: Vec<Tax>) -> Vec<Tax> {
+    taxes
+        .into_iter()
+        .map(|mut tax| {
+            tax.base = -tax.base;
+            tax.amount = -tax.amount;
+            if let Some(foreign) = &mut tax.foreign {
+                foreign.base = -foreign.base;
+                foreign.amount = -foreign.amount;
+            }
+            tax.adjustment = true;
+            tax
+        })
+        .collect()
 }
 
 /// The tax code an invoice line of `company_id` starts with when it names
@@ -647,6 +675,7 @@ async fn work_out(
                 amount: round_money(amount * c.rate, base_decimals),
             }),
             self_assessed: part.self_assessed,
+            adjustment: false,
         });
         // On a purchase the company owes what it reclaims: the same tax
         // again, collected.
@@ -811,6 +840,7 @@ pub async fn credit(
                 amount: -f.amount,
             }),
             self_assessed: entry.self_assessed,
+            adjustment: false,
         });
     }
     Ok(taxes)
@@ -934,6 +964,7 @@ pub async fn discount(
             compound: entry.compound,
             foreign,
             self_assessed: false,
+            adjustment: false,
         });
     }
     Ok(taxes)
@@ -967,9 +998,9 @@ pub async fn record(conn: &mut PgConnection, posting: &Posting, taxes: &[Tax]) -
             "INSERT INTO tax_entry (id, company_id, posting_id, line_no, source_line_id,
                 tax_code_id, direction, posting_date, rate, base, amount, credits_id,
                 group_code_id, compound, currency, txn_base, txn_amount, account_id,
-                self_assessed)
+                self_assessed, adjustment)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18, $19)",
+                     $18, $19, $20)",
         )
         .bind(new_id())
         .bind(posting.company_id)
@@ -992,6 +1023,7 @@ pub async fn record(conn: &mut PgConnection, posting: &Posting, taxes: &[Tax]) -
         .bind(tax.foreign.as_ref().map(|_| tax.amount))
         .bind(tax.account_id)
         .bind(tax.self_assessed)
+        .bind(tax.adjustment)
         .execute(&mut *conn)
         .await?;
     }

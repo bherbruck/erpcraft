@@ -9,9 +9,25 @@ pub(crate) const INACTIVE_CUSTOMER: &str = "customer.inactive";
 pub(crate) const CLOSED_ORDER: &str = "sales_order.closed";
 pub(crate) const CREDIT_WITHOUT_RETURN: &str = "sales_credit_note.without_return";
 pub(crate) const REOPEN_ON_RETURN: &str = "sales_order.reopen_on_return";
+pub(crate) const WITHOUT_INVOICE: &str = "sales_credit.without_invoice";
 
 pub(crate) fn points() -> Vec<PolicyPoint> {
     vec![
+        PolicyPoint::new(
+            WITHOUT_INVOICE,
+            "Asked when a customer credit not tied to an invoice (a rebate, goodwill) is \
+             posted: may it be posted? No invoice stands behind it, so this is where a company \
+             that wants such credits checked says so, for example requiring approval above an \
+             amount with `facts.total > 500`. Unless configured otherwise it is allowed.",
+        )
+        .number(
+            "total",
+            "What the customer is credited, tax included, in the credit's currency",
+        )
+        .as_money(Some("currency"))
+        .text("currency", "The credit's currency")
+        .text("customer_code", "The customer's code")
+        .refusal("a credit without an invoice needs approval"),
         PolicyPoint::new(
             OVER_DELIVERY,
             "Asked for every line of a sales delivery when it is posted: may this quantity be \
@@ -220,6 +236,11 @@ pub(crate) fn price_differs(order_price: Decimal, invoice_price: Decimal) -> Val
 }
 
 /// The facts of [`INACTIVE_CUSTOMER`].
+/// The facts of [`WITHOUT_INVOICE`] for a customer credit.
+pub(crate) fn without_invoice(total: Decimal, currency: &str, customer_code: &str) -> Value {
+    json!({ "total": shown(total), "currency": currency, "customer_code": customer_code })
+}
+
 pub(crate) fn inactive_customer(doc_type: &str, customer_code: &str, active: bool) -> Value {
     json!({ "doc_type": doc_type, "customer_code": customer_code, "active": active })
 }
