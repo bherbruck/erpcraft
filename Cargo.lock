@@ -1102,6 +1102,7 @@ dependencies = [
  "erpcraft-manufacturing",
  "erpcraft-purchasing",
  "erpcraft-sales",
+ "erpcraft-stock",
  "serde",
  "serde_json",
  "sqlx",

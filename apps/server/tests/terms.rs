@@ -2093,6 +2093,29 @@ async fn orders_reserve_stock_and_deliveries_respect_it_as_far_as_the_company_sa
     let second = f.order(&t, "sales", "6", "5.00", json!({})).await;
     assert_eq!(held(first.clone()).await, 6.0);
     assert_eq!(held(second.clone()).await, 4.0);
+    // Availability shows it: all ten reserved, none free, twelve committed.
+    let (status, out) = t
+        .command(
+            &t.admin,
+            "stock.availability",
+            json!({ "company_id": f.c.id, "item_id": f.item }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    let row = &out["rows"][0];
+    assert_eq!(
+        (
+            dec(&row["on_hand"]),
+            dec(&row["reserved"]),
+            dec(&row["free"])
+        ),
+        (10.0, 10.0, 0.0),
+        "{row}"
+    );
+    assert_eq!(
+        (dec(&row["committed"]), dec(&row["available"])),
+        (12.0, -2.0)
+    );
 
     // The second ships all six, two of them out of the first's: allowed by
     // default. It holds nothing after; the first is cut back when asked.

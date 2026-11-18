@@ -157,6 +157,13 @@ pub struct AvailabilityRow {
     pub warehouse_code: Option<String>,
     /// In the warehouse now.
     pub on_hand: Decimal,
+    /// Of what is on hand, what is set aside for particular open sales
+    /// order lines and released production orders (stock reservations).
+    /// It is part of what is committed and needed, not on top of it.
+    pub reserved: Decimal,
+    /// On hand less what is reserved: what can be taken now without
+    /// touching another order's reservation.
+    pub free: Decimal,
     /// Still to be delivered on open sales orders.
     pub committed: Decimal,
     /// Still to be consumed by released production orders.
@@ -195,7 +202,8 @@ impl Command for Availability {
     fn spec(&self) -> CommandSpec {
         CommandSpec::query(
             "stock.availability",
-            "For each item and warehouse of a company: what is on hand, what open sales orders \
+            "For each item and warehouse of a company: what is on hand, how much of it is \
+             reserved for particular orders and what is free of reservations, what open sales orders \
              still have to deliver (committed), what released production orders still have to \
              consume, what can still be promised (available), what open purchase orders and \
              released production orders will bring in, what transfers shipped to it have on \
@@ -258,6 +266,7 @@ pub async fn availability(
             .into_iter()
             .map(|t| (t.item_id, t.warehouse_id, t.qty))
             .collect();
+    let reserved = erpcraft_stock::reserved(&mut *ctx.conn, company).await?;
 
     let mut rows: BTreeMap<(Uuid, Uuid), AvailabilityRow> = BTreeMap::new();
     let mut add = |list: Vec<(Uuid, Uuid, Decimal)>,
@@ -285,6 +294,7 @@ pub async fn availability(
     add(making, |r| &mut r.in_production);
     add(planned, |r| &mut r.planned);
     add(travelling, |r| &mut r.in_transit);
+    add(reserved, |r| &mut r.reserved);
 
     let items = ctx.actor.can_any("item:read");
     let warehouses = ctx.actor.can("warehouse:read", company);
@@ -308,6 +318,7 @@ pub async fn availability(
     let mut out: Vec<AvailabilityRow> = rows
         .into_values()
         .map(|mut row| {
+            row.free = row.on_hand - row.reserved;
             row.available = row.on_hand - row.committed - row.needed_for_production;
             row.projected = row.available + row.on_order + row.in_production + row.in_transit;
             if let Some((_, code, name)) = item_names.iter().find(|(id, ..)| *id == row.item_id) {
@@ -320,6 +331,8 @@ pub async fn availability(
                 .map(|(_, code)| code.clone());
             for qty in [
                 &mut row.on_hand,
+                &mut row.reserved,
+                &mut row.free,
                 &mut row.committed,
                 &mut row.needed_for_production,
                 &mut row.available,
