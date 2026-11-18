@@ -1004,11 +1004,13 @@ dependencies = [
 name = "erpcraft-planning"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "erpcraft-kernel",
  "erpcraft-manufacturing",
  "erpcraft-purchasing",
  "erpcraft-sales",
  "serde",
+ "serde_json",
  "sqlx",
  "uuid",
 ]

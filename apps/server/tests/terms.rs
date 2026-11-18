@@ -1691,3 +1691,111 @@ async fn a_rebate_credits_the_customer_without_an_invoice() {
     assert!(close(after["1200"], books["1200"]));
     t.stop().await;
 }
+
+/// Reorder rules: planning suggests what to buy or make to stay above each
+/// rule's minimum, rounded to its multiple, and drafts the purchase orders.
+#[tokio::test]
+async fn planning_suggests_and_drafts_what_to_buy() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    // 20 on hand, 15 sold and not delivered: 5 left once done.
+    let bought = f.order(&t, "purchase", "20", "1.50", json!({})).await;
+    f.posted(
+        &t,
+        "purchase_receipt",
+        "2026-01-02",
+        json!({ "purchase_order_id": bought["id"],
+                "lines": [{ "order_line_id": bought["body"]["lines"][0]["id"], "qty": "20" }] }),
+    )
+    .await;
+    f.order(&t, "sales", "15", "5.00", json!({})).await;
+    // Keep at least 10, fill up to 40, in boxes of 12, from the vendor.
+    t.create(
+        "reorder_rule",
+        json!({ "company_id": f.c.id, "item_id": f.item, "warehouse_id": f.warehouse,
+                "min_qty": "10", "max_qty": "40", "multiple": "12", "vendor_id": f.vendor }),
+    )
+    .await;
+    // A made item without stock or a rule, sold: make what is missing.
+    let gadget = t
+        .create("item", json!({ "code": "GADGET", "name": "Gadget" }))
+        .await;
+    t.create(
+        "bom",
+        json!({ "item_id": gadget, "code": "G-1", "name": "Gadget" }),
+    )
+    .await;
+    let draft = f
+        .draft(
+            &t,
+            "sales_order",
+            "2026-01-05",
+            json!({ "customer_id": f.customer, "lines": [
+                { "item_id": gadget, "warehouse_id": f.warehouse, "qty": "3",
+                  "unit_price": "9.00" } ] }),
+        )
+        .await;
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "sales_order.approve",
+            json!({ "id": draft["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, out) = t
+        .command(
+            &t.admin,
+            "planning.suggestions",
+            json!({ "company_id": f.c.id }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    let list = out["suggestions"].as_array().unwrap();
+    assert_eq!(list.len(), 2, "{out}");
+    let widget = list.iter().find(|s| s["item_code"] == "WIDGET").unwrap();
+    // 40 - 5 = 35, in boxes of 12: 36, at the last price paid.
+    assert_eq!(dec(&widget["projected"]), 5.0);
+    assert_eq!(dec(&widget["qty"]), 36.0);
+    assert_eq!(widget["source"], "buy");
+    assert_eq!(dec(&widget["unit_price"]), 1.5);
+    let made = list.iter().find(|s| s["item_code"] == "GADGET").unwrap();
+    assert_eq!(dec(&made["qty"]), 3.0);
+    assert_eq!(made["source"], "make");
+
+    let (status, drafted) = t
+        .command(
+            &t.admin,
+            "planning.draft_purchase_orders",
+            json!({ "company_id": f.c.id, "doc_date": "2026-01-06" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{drafted}");
+    let ids = drafted["purchase_order_ids"].as_array().unwrap();
+    assert_eq!(ids.len(), 1, "{drafted}");
+    let (status, order) = t
+        .get(
+            &t.admin,
+            &format!("/api/documents/purchase_order/{}", ids[0].as_str().unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{order}");
+    assert_eq!(order["status"], "draft");
+    assert_eq!(order["body"]["vendor_id"], f.vendor.as_str());
+    assert_eq!(dec(&order["body"]["lines"][0]["qty"]), 36.0);
+    // On order now: nothing more to buy.
+    let (_, out) = t
+        .command(
+            &t.admin,
+            "planning.suggestions",
+            json!({ "company_id": f.c.id, "item_id": f.item }),
+        )
+        .await;
+    assert_eq!(
+        out["suggestions"].as_array().unwrap().len(),
+        1,
+        "a draft is not on order yet: {out}"
+    );
+    t.stop().await;
+}
