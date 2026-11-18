@@ -629,6 +629,43 @@ async fn follows(conn: &mut PgConnection, body: &Value) -> Result<Value> {
     }))
 }
 
+/// A document line for [`gl_scopes`]: its id, item, warehouse and charge.
+pub(crate) type LineAbout = (Uuid, Option<Uuid>, Option<Uuid>, Option<Uuid>);
+
+/// What each document line is about, for the general ledger's dimension
+/// defaults: its warehouse and the places above it, its item, its charge.
+/// `lines` gives each line's id, item, warehouse and charge.
+pub(crate) async fn gl_scopes(
+    conn: &mut PgConnection,
+    lines: &[LineAbout],
+) -> Result<std::collections::HashMap<Uuid, Vec<(&'static str, Uuid)>>> {
+    let places =
+        erpcraft_stock::locations(conn, lines.iter().filter_map(|(_, _, w, _)| *w)).await?;
+    Ok(lines
+        .iter()
+        .map(|&(id, item, warehouse, charge)| {
+            let mut scopes = match warehouse {
+                Some(warehouse) => places.scopes(warehouse, item),
+                None => item.map(|item| vec![("item", item)]).unwrap_or_default(),
+            };
+            if let Some(charge) = charge {
+                scopes.push(("charge", charge));
+            }
+            (id, scopes)
+        })
+        .collect())
+}
+
+/// The vendor of a purchase order.
+pub(crate) async fn order_vendor(conn: &mut PgConnection, order_id: Uuid) -> Result<Uuid> {
+    Ok(
+        sqlx::query_scalar("SELECT vendor_id FROM purchase_order WHERE document_id = $1")
+            .bind(order_id)
+            .fetch_one(&mut *conn)
+            .await?,
+    )
+}
+
 fn gl_line(account_id: Uuid, debit: Decimal, credit: Decimal, source: Uuid) -> GlLine {
     GlLine {
         account_id,
@@ -638,6 +675,7 @@ fn gl_line(account_id: Uuid, debit: Decimal, credit: Decimal, source: Uuid) -> G
         fx_rate: None,
         memo: None,
         source_line_id: Some(source),
+        ..GlLine::default()
     }
 }
 
@@ -1895,7 +1933,10 @@ impl Command for PostReceipt {
         )
         .await?;
         if !gl.is_empty() {
-            erpcraft_gl::post(&mut *ctx.conn, &posting, &gl).await?;
+            let scopes = erpcraft_stock::line_scopes(&mut *ctx.conn, &entries).await?;
+            let vendor = order_vendor(&mut *ctx.conn, order_id).await?;
+            erpcraft_gl::add_scopes(&mut gl, &scopes, &[("vendor", vendor)]);
+            erpcraft_gl::post(ctx, &posting, &gl).await?;
         }
 
         settle_order(ctx, &mut order, &order_lines, false).await?;
@@ -2693,7 +2734,11 @@ async fn landed_cost(
     .await?;
     let mut gl = vec![];
     let mut adjustments = vec![];
+    let places =
+        erpcraft_stock::locations(&mut *ctx.conn, levels.iter().map(|((_, w), _, _)| *w)).await?;
     for ((item, warehouse), got, qty) in levels {
+        // The goods it raises are what each of these lines is about.
+        let scopes = places.scopes(warehouse, Some(item));
         let (on_hand, _) = erpcraft_stock::on_hand(&mut *ctx.conn, item, warehouse).await?;
         let still = on_hand.max(Decimal::ZERO).min(qty);
         let to_stock = if still == qty {
@@ -2710,7 +2755,7 @@ async fn landed_cost(
                 &[("item", item), ("warehouse", warehouse)],
             )
             .await?;
-            gl.push(gl_line(inventory, to_stock, Decimal::ZERO, line.id));
+            gl.push(gl_line(inventory, to_stock, Decimal::ZERO, line.id).about(&scopes));
             adjustments.push(erpcraft_stock::Adjustment {
                 item_id: item,
                 warehouse_id: warehouse,
@@ -2727,7 +2772,7 @@ async fn landed_cost(
             )
             .await
             .unwrap_or(price_variance);
-            gl.push(gl_line(account, gone, Decimal::ZERO, line.id));
+            gl.push(gl_line(account, gone, Decimal::ZERO, line.id).about(&scopes));
         }
     }
     Ok((gl, adjustments))
@@ -3089,7 +3134,19 @@ impl Command for PostInvoice {
         .await?;
         let posting = document::create_posting(ctx, &doc, doc.doc_date, doc.memo.clone()).await?;
         if !gl.is_empty() {
-            erpcraft_gl::post(&mut *ctx.conn, &posting, &gl).await?;
+            let about: Vec<_> = lines
+                .iter()
+                .map(
+                    |line| match line.order_line_id.and_then(|id| order_lines.get(&id)) {
+                        Some(o) => (line.id, o.item_id, o.warehouse_id, o.charge_id),
+                        None => (line.id, None, None, line.charge_id),
+                    },
+                )
+                .collect();
+            let scopes = gl_scopes(&mut *ctx.conn, &about).await?;
+            let vendor = invoice_vendor(&mut *ctx.conn, doc.id).await?;
+            erpcraft_gl::add_scopes(&mut gl, &scopes, &[("vendor", vendor)]);
+            erpcraft_gl::post(ctx, &posting, &gl).await?;
         }
         erpcraft_stock::adjust(&mut *ctx.conn, &posting, &adjustments).await?;
         erpcraft_tax::record(&mut *ctx.conn, &posting, &taxes).await?;

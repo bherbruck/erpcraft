@@ -517,7 +517,13 @@ impl Command for PostCredit {
             gl.push(rounding);
         }
         if !gl.is_empty() {
-            erpcraft_gl::post(&mut *ctx.conn, &posting, &gl).await?;
+            let about: Vec<_> = lines
+                .iter()
+                .map(|line| (line.id, None, None, line.charge_id))
+                .collect();
+            let scopes = crate::gl_scopes(&mut *ctx.conn, &about).await?;
+            erpcraft_gl::add_scopes(&mut gl, &scopes, &[("customer", customer)]);
+            erpcraft_gl::post(ctx, &posting, &gl).await?;
         }
         erpcraft_tax::record(&mut *ctx.conn, &posting, &taxes).await?;
         if !owed_back.is_zero() {

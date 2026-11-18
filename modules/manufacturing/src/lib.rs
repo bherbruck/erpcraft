@@ -952,6 +952,7 @@ impl Command for Complete {
             fx_rate: None,
             memo: None,
             source_line_id,
+            ..GlLine::default()
         };
         let mut gl: Vec<GlLine> = consumed
             .iter()
@@ -1008,7 +1009,20 @@ impl Command for Complete {
             gl.push(line(absorbed_account, less, more, Some(source)));
         }
         if !gl.is_empty() {
-            erpcraft_gl::post(&mut *ctx.conn, &posting, &gl).await?;
+            // A component's line is about its warehouse and item; the
+            // product's, the variance and the absorbed activities are about
+            // the product where it is made.
+            let scopes = erpcraft_stock::line_scopes(&mut *ctx.conn, &consumed).await?;
+            let product = erpcraft_stock::locations(&mut *ctx.conn, [order.warehouse_id])
+                .await?
+                .scopes(order.warehouse_id, Some(order.item_id));
+            for line in &mut gl {
+                match line.source_line_id.and_then(|id| scopes.get(&id)) {
+                    Some(about) => line.scopes.extend_from_slice(about),
+                    None => line.scopes.extend_from_slice(&product),
+                }
+            }
+            erpcraft_gl::post(ctx, &posting, &gl).await?;
         }
 
         // Consumed: nothing is held for it any more.

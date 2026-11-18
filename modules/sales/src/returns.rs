@@ -432,7 +432,10 @@ impl Command for PostReturn {
         )
         .await?;
         if !gl.is_empty() {
-            erpcraft_gl::post(&mut *ctx.conn, &posting, &gl).await?;
+            let scopes = erpcraft_stock::line_scopes(&mut *ctx.conn, &entries).await?;
+            let customer = crate::order_customer(&mut *ctx.conn, order.id).await?;
+            erpcraft_gl::add_scopes(&mut gl, &scopes, &[("customer", customer)]);
+            erpcraft_gl::post(ctx, &posting, &gl).await?;
         }
 
         if order.status == "closed" {
@@ -1442,7 +1445,19 @@ impl Command for PostCreditNote {
             gl.push(rounding);
         }
         if !gl.is_empty() {
-            erpcraft_gl::post(&mut *ctx.conn, &posting, &gl).await?;
+            let about: Vec<_> = lines
+                .iter()
+                .map(
+                    |line| match line.order_line_id.and_then(|id| order_lines.get(&id)) {
+                        Some(o) => (line.id, o.item_id, o.warehouse_id, o.charge_id),
+                        None => (line.id, None, None, line.charge_id),
+                    },
+                )
+                .collect();
+            let scopes = crate::gl_scopes(&mut *ctx.conn, &about).await?;
+            let customer = crate::invoice_customer(&mut *ctx.conn, invoice_id).await?;
+            erpcraft_gl::add_scopes(&mut gl, &scopes, &[("customer", customer)]);
+            erpcraft_gl::post(ctx, &posting, &gl).await?;
         }
         erpcraft_tax::record(&mut *ctx.conn, &posting, &taxes).await?;
         if conversion.is_some() {

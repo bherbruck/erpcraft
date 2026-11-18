@@ -34,7 +34,7 @@ impl Module for PlanningModule {
     }
 
     fn depends_on(&self) -> Vec<&'static str> {
-        vec!["stock", "sales", "purchasing", "manufacturing"]
+        vec!["stock", "inventory", "sales", "purchasing", "manufacturing"]
     }
 
     fn migrations(&self) -> Vec<Migration> {
@@ -168,7 +168,9 @@ pub struct AvailabilityRow {
     pub on_order: Decimal,
     /// Still to be made by released production orders.
     pub in_production: Decimal,
-    /// Available plus what is on order and in production: what is left
+    /// Shipped to this warehouse on transfers and not yet received.
+    pub in_transit: Decimal,
+    /// Available plus what is on order, in production and in transit: what is left
     /// once every open order is done. Below zero, the item falls short.
     pub projected: Decimal,
     /// What draft purchase orders and draft production orders would bring
@@ -196,8 +198,10 @@ impl Command for Availability {
             "For each item and warehouse of a company: what is on hand, what open sales orders \
              still have to deliver (committed), what released production orders still have to \
              consume, what can still be promised (available), what open purchase orders and \
-             released production orders will bring in, and what is left once every open order \
-             is done (projected; below zero the item falls short); and apart from that, what \
+             released production orders will bring in, what transfers shipped to it have on \
+             their way (in_transit; goods in a transit warehouse count there, not where they \
+             wait), and what is left once every open order is done (projected; below zero the \
+             item falls short); and apart from that, what \
              draft purchase and production orders would bring in (planned). Quantities are in \
              each item's unit. Takes the right to read stock entries, sales orders, purchase orders \
              and production orders of the company.",
@@ -237,8 +241,9 @@ pub async fn availability(
         ctx.require(right, company)?;
     }
     let on_hand: Vec<(Uuid, Uuid, Decimal)> = sqlx::query_as(
-        "SELECT item_id, warehouse_id, qty FROM stock_level
-         WHERE company_id = $1 AND qty <> 0",
+        "SELECT l.item_id, l.warehouse_id, l.qty FROM stock_level l
+         JOIN warehouse w ON w.id = l.warehouse_id
+         WHERE l.company_id = $1 AND l.qty <> 0 AND NOT w.transit",
     )
     .bind(company)
     .fetch_all(&mut *ctx.conn)
@@ -247,6 +252,12 @@ pub async fn availability(
     let on_order = erpcraft_purchasing::open_supply(&mut *ctx.conn, company).await?;
     let (needed, making) = erpcraft_manufacturing::released(&mut *ctx.conn, company).await?;
     let planned = drafted(&mut *ctx.conn, company).await?;
+    let travelling: Vec<(Uuid, Uuid, Decimal)> =
+        erpcraft_inventory::in_transit(&mut *ctx.conn, company)
+            .await?
+            .into_iter()
+            .map(|t| (t.item_id, t.warehouse_id, t.qty))
+            .collect();
 
     let mut rows: BTreeMap<(Uuid, Uuid), AvailabilityRow> = BTreeMap::new();
     let mut add = |list: Vec<(Uuid, Uuid, Decimal)>,
@@ -273,6 +284,7 @@ pub async fn availability(
     add(on_order, |r| &mut r.on_order);
     add(making, |r| &mut r.in_production);
     add(planned, |r| &mut r.planned);
+    add(travelling, |r| &mut r.in_transit);
 
     let items = ctx.actor.can_any("item:read");
     let warehouses = ctx.actor.can("warehouse:read", company);
@@ -297,7 +309,7 @@ pub async fn availability(
         .into_values()
         .map(|mut row| {
             row.available = row.on_hand - row.committed - row.needed_for_production;
-            row.projected = row.available + row.on_order + row.in_production;
+            row.projected = row.available + row.on_order + row.in_production + row.in_transit;
             if let Some((_, code, name)) = item_names.iter().find(|(id, ..)| *id == row.item_id) {
                 row.item_code = Some(code.clone());
                 row.item_name = Some(name.clone());
@@ -313,6 +325,7 @@ pub async fn availability(
                 &mut row.available,
                 &mut row.on_order,
                 &mut row.in_production,
+                &mut row.in_transit,
                 &mut row.projected,
                 &mut row.planned,
             ] {

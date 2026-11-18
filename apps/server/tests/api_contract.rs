@@ -439,7 +439,7 @@ async fn commands_describe_themselves() {
     );
     assert_eq!(
         command(&meta, "stock_transfer.reverse")["from_states"],
-        json!(["posted"])
+        json!(["posted", "in_transit"])
     );
 
     // An action on one record of an entity.

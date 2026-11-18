@@ -1449,9 +1449,10 @@ impl Command for Post {
                     fx_rate: None,
                     memo: memo.clone(),
                     source_line_id: Some(line.id),
+                    ..GlLine::default()
                 };
                 erpcraft_gl::post(
-                    &mut *ctx.conn,
+                    ctx,
                     &made,
                     &[
                         entry(header.bank_account_id, inflow),

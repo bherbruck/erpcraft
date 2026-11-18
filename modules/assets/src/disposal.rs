@@ -303,6 +303,8 @@ impl Command for Post {
             fx_rate: None,
             memo: memo.clone(),
             source_line_id: None,
+            scopes: vec![("asset", asset.id), ("asset_class", class)],
+            ..GlLine::default()
         };
         let mut gl = Vec::new();
         if depreciation > Decimal::ZERO {
@@ -328,7 +330,7 @@ impl Command for Post {
             gl.push(line(to, -gain, Decimal::ZERO));
         }
         let posting = document::create_posting(ctx, &doc, date, memo.clone()).await?;
-        erpcraft_gl::post(&mut *ctx.conn, &posting, &gl).await?;
+        erpcraft_gl::post(ctx, &posting, &gl).await?;
         crate::run::record(&mut *ctx.conn, &asset, doc.id, date, &months).await?;
         sqlx::query(
             "UPDATE asset_disposal SET depreciation = $2, cost = $3, accumulated = $4,

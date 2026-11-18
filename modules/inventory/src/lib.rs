@@ -13,7 +13,7 @@ use erpcraft_gl::GlLine;
 use erpcraft_kernel::document::{self, Document, DocumentHandler, DocumentView};
 use erpcraft_kernel::{
     CollectionMeta, Command, CommandSpec, Ctx, Decimal, DocTypeMeta, DynCommand, Error, FieldMeta,
-    FieldType, JsonSchema, Migration, Module, PgConnection, Result, StateMeta, async_trait,
+    FieldType, JsonSchema, Migration, Module, PgConnection, Result, StateMeta, Tone, async_trait,
     command, company, schemars,
 };
 use erpcraft_stock::{Cost, StockLine};
@@ -23,6 +23,10 @@ use uuid::Uuid;
 
 const STOCK_ADJUSTMENT: &str = "stock_adjustment";
 const STOCK_TRANSFER: &str = "stock_transfer";
+
+mod transit;
+
+pub use transit::{InTransit, in_transit};
 
 pub struct InventoryModule;
 
@@ -52,11 +56,24 @@ impl Module for InventoryModule {
                 name: "inventory_account_rule",
                 sql: include_str!("../migrations/0003_inventory_account_rule.sql"),
             },
+            Migration {
+                version: 4,
+                name: "transit",
+                sql: include_str!("../migrations/0004_transit.sql"),
+            },
         ]
     }
 
     fn doc_types(&self) -> Vec<Arc<dyn DocumentHandler>> {
-        vec![Arc::new(StockAdjustment), Arc::new(StockTransfer)]
+        vec![
+            Arc::new(StockAdjustment),
+            Arc::new(StockTransfer),
+            Arc::new(transit::TransferReceipt),
+        ]
+    }
+
+    fn policies(&self) -> Vec<erpcraft_kernel::PolicyPoint> {
+        vec![transit::between_sites()]
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
@@ -72,14 +89,11 @@ impl Module for InventoryModule {
                               been used.",
             }),
             command(PostTransfer),
-            command(Reverse {
-                doc_type: STOCK_TRANSFER,
-                label: "stock transfer",
-                name: "stock_transfer.reverse",
-                permission: "stock_transfer:reverse",
-                description: "Cancel a posted stock transfer by a second posting that moves the stock back at \
-                              the value it came for. Refused if the stock has since left the destination.",
-            }),
+            command(transit::ReverseTransfer),
+            command(transit::Receive),
+            command(transit::PostReceipt),
+            command(transit::ReverseReceipt),
+            command(transit::InTransitReport),
         ]
     }
 }
@@ -320,22 +334,111 @@ fn signed(account_id: Uuid, amount: Decimal, source_line_id: Option<Uuid>) -> Op
         fx_rate: None,
         memo: None,
         source_line_id,
+        ..GlLine::default()
     })
 }
 
+/// The account that carries the item's value in the warehouse: the
+/// account rule for `inventory`, or for `inventory_in_transit` in a
+/// warehouse that holds goods in transit.
 async fn inventory_account(
     ctx: &mut Ctx<'_>,
     doc: &Document,
     item_id: Uuid,
     warehouse_id: Uuid,
 ) -> Result<Uuid> {
+    let transit: bool =
+        sqlx::query_scalar("SELECT COALESCE(bool_or(transit), false) FROM warehouse WHERE id = $1")
+            .bind(warehouse_id)
+            .fetch_one(&mut *ctx.conn)
+            .await?;
     erpcraft_gl::account_for(
         &mut *ctx.conn,
         doc.company_id,
-        "inventory",
+        if transit {
+            transit::IN_TRANSIT_ACCOUNT
+        } else {
+            "inventory"
+        },
         &[("item", item_id), ("warehouse", warehouse_id)],
     )
     .await
+}
+
+/// Move `qty` of an item from one warehouse to another under `posting`:
+/// it leaves at its average cost and arrives with exactly that value. The
+/// general ledger moves the value only where the two sides keep it on
+/// different accounts or with other dimension values (another site);
+/// a variance where the destination stood below zero goes to
+/// `stock_variance`. Returns the value that moved.
+#[allow(clippy::too_many_arguments)]
+async fn move_stock(
+    ctx: &mut Ctx<'_>,
+    doc: &Document,
+    posting: &erpcraft_kernel::Posting,
+    places: &erpcraft_stock::Locations,
+    source_line_id: Uuid,
+    item_id: Uuid,
+    qty: Decimal,
+    (from, to): (Uuid, Uuid),
+    gl: &mut Vec<GlLine>,
+) -> Result<Decimal> {
+    let leaves = inventory_account(ctx, doc, item_id, from).await?;
+    let arrives = inventory_account(ctx, doc, item_id, to).await?;
+    let from_scopes = places.scopes(from, Some(item_id));
+    let to_scopes = places.scopes(to, Some(item_id));
+    // The dimension values each side's inventory takes, such as its site:
+    // stock that changes them moves in the general ledger too, even on one
+    // account.
+    let with_account = |scopes: &[(&'static str, Uuid)], account: Uuid| {
+        let mut scopes = scopes.to_vec();
+        scopes.push(("account", account));
+        scopes
+    };
+    let leaves_dims = erpcraft_gl::dimension_for(
+        &mut *ctx.conn,
+        doc.company_id,
+        &with_account(&from_scopes, leaves),
+    )
+    .await?;
+    let arrives_dims = erpcraft_gl::dimension_for(
+        &mut *ctx.conn,
+        doc.company_id,
+        &with_account(&to_scopes, arrives),
+    )
+    .await?;
+    let movement = |warehouse_id, qty, cost| StockLine {
+        item_id,
+        warehouse_id,
+        qty,
+        cost,
+        source_line_id: Some(source_line_id),
+    };
+    let out = erpcraft_stock::post(ctx, posting, &[movement(from, -qty, None)], "transfer").await?;
+    // What left is what arrives, to the cent.
+    let value = -out[0].value;
+    let arrived = erpcraft_stock::post(
+        ctx,
+        posting,
+        &[movement(to, qty, Some(Cost::Total(value)))],
+        "transfer",
+    )
+    .await?;
+    // Not zero only where the destination stood below zero: the part of
+    // what arrived that is not stock value there.
+    let variance = arrived[0].variance;
+    let source = Some(source_line_id);
+    if leaves != arrives || leaves_dims != arrives_dims {
+        gl.extend(signed(arrives, arrived[0].value, source).map(|l| l.about(&to_scopes)));
+        gl.extend(signed(leaves, -value, source).map(|l| l.about(&from_scopes)));
+    } else {
+        gl.extend(signed(arrives, -variance, source).map(|l| l.about(&to_scopes)));
+    }
+    if !variance.is_zero() {
+        let account = variance_account(ctx, doc, item_id, to).await?;
+        gl.extend(signed(account, variance, source).map(|l| l.about(&to_scopes)));
+    }
+    Ok(value)
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -425,7 +528,9 @@ impl Command for PostAdjustment {
             gl.extend(signed(offset, -entry.cost(), entry.source_line_id));
         }
         if !gl.is_empty() {
-            erpcraft_gl::post(&mut *ctx.conn, &posting, &gl).await?;
+            let scopes = erpcraft_stock::line_scopes(&mut *ctx.conn, &entries).await?;
+            erpcraft_gl::add_scopes(&mut gl, &scopes, &[]);
+            erpcraft_gl::post(ctx, &posting, &gl).await?;
         }
 
         document::transition(ctx, &mut doc, "posted").await?;
@@ -497,6 +602,8 @@ struct TransferBody {
     from_warehouse_id: Uuid,
     to_warehouse_id: Uuid,
     #[serde(default)]
+    transit_warehouse_id: Option<Uuid>,
+    #[serde(default)]
     lines: Vec<TransferLineInput>,
 }
 
@@ -517,9 +624,14 @@ struct TransferLine {
     qty: Decimal,
 }
 
-async fn load_transfer(conn: &mut PgConnection, document_id: Uuid) -> Result<(Uuid, Uuid)> {
+/// The source, the destination and the transit warehouse of a transfer.
+async fn load_transfer(
+    conn: &mut PgConnection,
+    document_id: Uuid,
+) -> Result<(Uuid, Uuid, Option<Uuid>)> {
     let warehouses = sqlx::query_as(
-        "SELECT from_warehouse_id, to_warehouse_id FROM stock_transfer WHERE document_id = $1",
+        "SELECT from_warehouse_id, to_warehouse_id, transit_warehouse_id
+         FROM stock_transfer WHERE document_id = $1",
     )
     .bind(document_id)
     .fetch_one(&mut *conn)
@@ -564,6 +676,16 @@ impl DocumentHandler for StockTransfer {
                     FieldType::link("warehouse"),
                 )
                 .required(),
+                FieldMeta::new(
+                    "transit_warehouse_id",
+                    "Through",
+                    FieldType::link("warehouse").filter("transit", "true"),
+                )
+                .help(
+                    "A warehouse for goods in transit: the transfer is shipped into it when \
+                     posted, and transfer receipts take the goods on to the destination, in \
+                     parts if they arrive in parts. Empty: the goods arrive at once.",
+                ),
             ],
             collections: vec![CollectionMeta {
                 name: "lines".into(),
@@ -576,17 +698,28 @@ impl DocumentHandler for StockTransfer {
                         .quantity()
                         .unit_of("item_id", "uom")
                         .required(),
+                    FieldMeta::new("qty_received", "Received", FieldType::Decimal)
+                        .quantity()
+                        .unit_of("item_id", "uom")
+                        .readonly()
+                        .help("Of a shipped transfer: what has arrived at the destination."),
                 ],
             }],
             states: vec![
                 StateMeta::editable("draft", "Draft"),
                 StateMeta::locked("posted", "Posted"),
+                StateMeta::locked("in_transit", "In transit").tone(Tone::Info),
+                StateMeta::locked("received", "Received"),
                 StateMeta::locked("reversed", "Reversed"),
             ],
             initial_state: "draft".into(),
             transitions: vec![
                 ("draft".into(), "posted".into()),
                 ("posted".into(), "reversed".into()),
+                ("draft".into(), "in_transit".into()),
+                ("in_transit".into(), "received".into()),
+                ("received".into(), "in_transit".into()),
+                ("in_transit".into(), "reversed".into()),
             ],
             summary: vec![
                 FieldMeta::new(
@@ -628,23 +761,34 @@ impl DocumentHandler for StockTransfer {
                 ));
             }
         }
-        let warehouses = [body.from_warehouse_id, body.to_warehouse_id];
+        let mut warehouses = vec![body.from_warehouse_id, body.to_warehouse_id];
+        warehouses.extend(body.transit_warehouse_id);
         if !company::owns_all(&mut *ctx.conn, "warehouse", &warehouses, doc.company_id).await? {
             return Err(Error::validation(
-                "both warehouses must belong to the document's company",
+                "the warehouses must belong to the document's company",
             ));
         }
+        transit::check_warehouses(
+            &mut *ctx.conn,
+            &body.from_warehouse_id,
+            &body.to_warehouse_id,
+            body.transit_warehouse_id,
+        )
+        .await?;
 
         sqlx::query(
-            "INSERT INTO stock_transfer (document_id, from_warehouse_id, to_warehouse_id)
-             VALUES ($1, $2, $3)
+            "INSERT INTO stock_transfer (document_id, from_warehouse_id, to_warehouse_id,
+                 transit_warehouse_id)
+             VALUES ($1, $2, $3, $4)
              ON CONFLICT (document_id) DO UPDATE SET
                 from_warehouse_id = EXCLUDED.from_warehouse_id,
-                to_warehouse_id = EXCLUDED.to_warehouse_id",
+                to_warehouse_id = EXCLUDED.to_warehouse_id,
+                transit_warehouse_id = EXCLUDED.transit_warehouse_id",
         )
         .bind(doc.id)
         .bind(body.from_warehouse_id)
         .bind(body.to_warehouse_id)
+        .bind(body.transit_warehouse_id)
         .execute(&mut *ctx.conn)
         .await?;
         let ids = document::line_ids(
@@ -699,11 +843,12 @@ impl DocumentHandler for StockTransfer {
     }
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
-        let (from, to) = load_transfer(conn, doc.id).await?;
+        let (from, to, through) = load_transfer(conn, doc.id).await?;
         Ok(json!({
             "from_warehouse_id": from,
             "to_warehouse_id": to,
-            "lines": load_transfer_lines(conn, doc.id).await?,
+            "transit_warehouse_id": through,
+            "lines": transit::lines_with_progress(conn, doc.id).await?,
         }))
     }
 }
@@ -721,8 +866,14 @@ impl Command for PostTransfer {
             "Post a draft stock transfer: each item leaves the source warehouse at its average \
              cost there and arrives at the destination with exactly that value. The general \
              ledger hears of it only where the account rules give the item a different \
-             inventory account in the two warehouses: then the value moves between them. \
-             Posting a transfer that is already posted returns it unchanged.",
+             inventory account in the two warehouses, or other dimension values (another \
+             site): then the value moves between them. A transfer that names a transit \
+             warehouse is shipped instead: the goods go into the transit warehouse, carried on \
+             the account for `inventory_in_transit`, and the transfer is in transit until \
+             transfer receipts (stock_transfer.receive) take them on to the destination. A \
+             transfer between two sites in one step asks the policy \
+             stock_transfer.between_sites. Posting a transfer that is already posted returns \
+             it unchanged.",
         )
         .from_states(&["draft"])
         .permission("stock_transfer:post")
@@ -730,7 +881,8 @@ impl Command for PostTransfer {
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: PostInput) -> Result<DocumentView> {
         let mut doc = document::lock(ctx, STOCK_TRANSFER, input.id, "post").await?;
-        if doc.status == "posted" {
+        // Posted already, shipped already: the same answer.
+        if ["posted", "in_transit", "received"].contains(&doc.status.as_str()) {
             ctx.no_change();
             return document::view(ctx, doc).await;
         }
@@ -740,15 +892,24 @@ impl Command for PostTransfer {
                 doc.status
             )));
         }
-        let (from, to) = load_transfer(&mut *ctx.conn, doc.id).await?;
+        let (from, to, through) = load_transfer(&mut *ctx.conn, doc.id).await?;
         let lines = load_transfer_lines(&mut *ctx.conn, doc.id).await?;
         if lines.is_empty() {
             return Err(Error::validation(
                 "a stock transfer needs at least one line",
             ));
         }
+        transit::check_warehouses(&mut *ctx.conn, &from, &to, through).await?;
+        if through.is_none() {
+            transit::ask_between_sites(ctx, doc.company_id, from, to).await?;
+        }
 
         let posting = document::create_posting(ctx, &doc, doc.doc_date, doc.memo.clone()).await?;
+        // Shipped: the goods go as far as the transit warehouse.
+        let (to, next) = match through {
+            Some(through) => (through, "in_transit"),
+            None => (to, "posted"),
+        };
 
         // Every level this transfer touches, locked up front in one order,
         // so that a transfer going the other way cannot deadlock with it.
@@ -757,56 +918,31 @@ impl Command for PostTransfer {
             .flat_map(|line| [(line.item_id, from), (line.item_id, to)])
             .collect();
         erpcraft_stock::lock_levels(&mut *ctx.conn, doc.company_id, pairs).await?;
+        let places = erpcraft_stock::locations(&mut *ctx.conn, [from, to]).await?;
 
         let mut gl = vec![];
         for line in &lines {
-            let leaves = inventory_account(ctx, &doc, line.item_id, from).await?;
-            let arrives = inventory_account(ctx, &doc, line.item_id, to).await?;
-            let movement = |warehouse_id, qty, cost| StockLine {
-                item_id: line.item_id,
-                warehouse_id,
-                qty,
-                cost,
-                source_line_id: Some(line.id),
-            };
-            let out = erpcraft_stock::post(
+            move_stock(
                 ctx,
+                &doc,
                 &posting,
-                &[movement(from, -line.qty, None)],
-                "transfer",
+                &places,
+                line.id,
+                line.item_id,
+                line.qty,
+                (from, to),
+                &mut gl,
             )
             .await?;
-            // What left is what arrives, to the cent.
-            let value = -out[0].value;
-            let arrived = erpcraft_stock::post(
-                ctx,
-                &posting,
-                &[movement(to, line.qty, Some(Cost::Total(value)))],
-                "transfer",
-            )
-            .await?;
-            // Not zero only where the destination stood below zero: the
-            // part of what arrived that is not stock value there.
-            let variance = arrived[0].variance;
-            // The company's stock is worth what it was. Only where the two
-            // warehouses keep the item on different accounts does the value
-            // move in the general ledger.
-            if leaves != arrives {
-                gl.extend(signed(arrives, arrived[0].value, Some(line.id)));
-                gl.extend(signed(leaves, -value, Some(line.id)));
-            } else {
-                gl.extend(signed(arrives, -variance, Some(line.id)));
-            }
-            if !variance.is_zero() {
-                let account = variance_account(ctx, &doc, line.item_id, to).await?;
-                gl.extend(signed(account, variance, Some(line.id)));
-            }
         }
         if !gl.is_empty() {
-            erpcraft_gl::post(&mut *ctx.conn, &posting, &gl).await?;
+            erpcraft_gl::post(ctx, &posting, &gl).await?;
+        }
+        if next == "in_transit" {
+            transit::start(&mut *ctx.conn, doc.id, &lines).await?;
         }
 
-        document::transition(ctx, &mut doc, "posted").await?;
+        document::transition(ctx, &mut doc, next).await?;
         document::view(ctx, doc).await
     }
 }

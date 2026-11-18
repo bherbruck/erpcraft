@@ -35,6 +35,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+mod locations;
+
+pub use locations::{Locations, line_scopes, locations};
+
 pub struct StockModule;
 
 impl Module for StockModule {
@@ -78,6 +82,11 @@ impl Module for StockModule {
                 version: 7,
                 name: "list_indexes",
                 sql: include_str!("../migrations/0007_list_indexes.sql"),
+            },
+            Migration {
+                version: 8,
+                name: "sites",
+                sql: include_str!("../migrations/0008_sites.sql"),
             },
         ]
     }
@@ -146,10 +155,35 @@ impl Module for StockModule {
                 .field(created())
                 .order_by(&["code"])
                 .search(&["code", "name"]),
+            EntityMeta::new("site", "Site")
+                .field(company())
+                .field(FieldMeta::new("code", "Code", FieldType::Text).required())
+                .field(FieldMeta::new("name", "Name", FieldType::Text).required())
+                .field(FieldMeta::new("active", "Active", FieldType::Bool))
+                .field(created())
+                .order_by(&["code"])
+                .search(&["code", "name"])
+                .company_field("company_id"),
             EntityMeta::new("warehouse", "Warehouse")
                 .field(company())
                 .field(FieldMeta::new("code", "Code", FieldType::Text).required())
                 .field(FieldMeta::new("name", "Name", FieldType::Text).required())
+                .field(
+                    FieldMeta::new("site_id", "Site", FieldType::link("site")).help(
+                        "The plant or place the warehouse is at. A location inside another \
+                         warehouse is at that warehouse's site.",
+                    ),
+                )
+                .field(
+                    FieldMeta::new("parent_id", "Part of", FieldType::link("warehouse"))
+                        .help("For a location or bin: the warehouse it is part of."),
+                )
+                .field(
+                    FieldMeta::new("transit", "In transit", FieldType::Bool).help(
+                        "Holds goods on their way from one site to another, between the two \
+                         steps of a transfer.",
+                    ),
+                )
                 .field(FieldMeta::new("active", "Active", FieldType::Bool))
                 .field(created())
                 .order_by(&["code"])
@@ -170,6 +204,10 @@ impl Module for StockModule {
                     "Warehouse",
                     FieldType::link("warehouse"),
                 ))
+                .field(
+                    FieldMeta::new("site_id", "Site", FieldType::link("site"))
+                        .help("The warehouse's site when the entry was recorded."),
+                )
                 .field(FieldMeta::new(
                     "posting_date",
                     "Posting date",
@@ -599,6 +637,25 @@ pub async fn post(
         });
     }
 
+    // Goods in transit move only with transfers (shipped in, received
+    // out) and adjustments, which carry them on the account for goods in
+    // transit; anything else would value them on another account.
+    if context != "transfer" && context != "adjustment" {
+        let warehouses: Vec<Uuid> = lines.iter().map(|l| l.warehouse_id).collect();
+        let transit: Option<String> = sqlx::query_scalar(
+            "SELECT code FROM warehouse WHERE id = ANY ($1) AND transit ORDER BY code LIMIT 1",
+        )
+        .bind(&warehouses)
+        .fetch_optional(&mut *ctx.conn)
+        .await?;
+        if let Some(code) = transit {
+            return Err(Error::validation(format!(
+                "warehouse {code} holds goods in transit, which come and go only with stock \
+                 transfers"
+            )));
+        }
+    }
+
     // What is on hand, followed line by line as the ledger will see it:
     // the trigger takes the entries in the order given.
     let mut on_hand = lock_and_read_levels(
@@ -943,8 +1000,13 @@ struct OnHandInput {
     company_id: Uuid,
     /// Only this item.
     item_id: Option<Uuid>,
-    /// Only this warehouse.
+    /// Only this warehouse and the locations inside it.
     warehouse_id: Option<Uuid>,
+    /// Only the warehouses of this site.
+    site_id: Option<Uuid>,
+    /// Only warehouses that hold goods in transit (true), or none of them
+    /// (false).
+    transit: Option<bool>,
 }
 
 #[derive(Serialize, JsonSchema, sqlx::FromRow)]
@@ -957,6 +1019,9 @@ struct OnHandRow {
     warehouse_id: Uuid,
     /// Absent for a caller who may not read warehouses.
     warehouse_code: Option<String>,
+    site_id: Option<Uuid>,
+    /// Whether the warehouse holds goods in transit.
+    transit: bool,
     qty: Decimal,
     /// Absent for a caller from whom the value of stock entries is withheld.
     value: Option<Decimal>,
@@ -988,7 +1053,9 @@ impl Command for OnHand {
              the company's policy let go below zero is listed with a negative quantity and a \
              negative value: the estimate its missing goods left stock at, so that the total \
              still equals the inventory accounts. Values are left out for a caller from whom \
-             the value of stock entries is withheld.",
+             the value of stock entries is withheld. warehouse_id takes the locations inside \
+             the warehouse with it; site_id gives one site's warehouses; transit true gives \
+             the goods on their way between sites.",
         )
         .report("Stock on hand")
         .permission("stock_entry:read")
@@ -1010,7 +1077,8 @@ impl Command for OnHand {
             "SELECT l.item_id,
                     CASE WHEN $5 THEN i.code END AS item_code,
                     CASE WHEN $5 THEN i.name END AS item_name, i.uom,
-                    l.warehouse_id, CASE WHEN $6 THEN w.code END AS warehouse_code, l.qty,
+                    l.warehouse_id, CASE WHEN $6 THEN w.code END AS warehouse_code,
+                    w.site_id, w.transit, l.qty,
                     CASE WHEN $4 THEN l.value END AS value,
                     CASE WHEN $4 THEN round(l.value / l.qty, 6) END AS average_cost
              FROM stock_level l
@@ -1018,7 +1086,15 @@ impl Command for OnHand {
              JOIN warehouse w ON w.id = l.warehouse_id
              WHERE l.company_id = $1 AND l.qty <> 0
                AND ($2::uuid IS NULL OR l.item_id = $2)
-               AND ($3::uuid IS NULL OR l.warehouse_id = $3)
+               AND ($3::uuid IS NULL OR l.warehouse_id IN (
+                   WITH RECURSIVE down AS (
+                       SELECT id FROM warehouse WHERE id = $3
+                       UNION
+                       SELECT c.id FROM warehouse c JOIN down ON c.parent_id = down.id
+                   )
+                   SELECT id FROM down))
+               AND ($7::uuid IS NULL OR w.site_id = $7)
+               AND ($8::bool IS NULL OR w.transit = $8)
              ORDER BY i.code, w.code",
         )
         .bind(input.company_id)
@@ -1027,6 +1103,8 @@ impl Command for OnHand {
         .bind(values)
         .bind(items)
         .bind(warehouses)
+        .bind(input.site_id)
+        .bind(input.transit)
         .fetch_all(&mut *ctx.conn)
         .await?;
         Ok(OnHandOutput {

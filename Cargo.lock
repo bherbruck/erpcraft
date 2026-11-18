@@ -1097,6 +1097,7 @@ name = "erpcraft-planning"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "erpcraft-inventory",
  "erpcraft-kernel",
  "erpcraft-manufacturing",
  "erpcraft-purchasing",

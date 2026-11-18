@@ -357,6 +357,8 @@ impl Command for Post {
                     fx_rate: None,
                     memo: memo.clone(),
                     source_line_id: Some(line_id),
+                    scopes: vec![("asset", asset.id), ("asset_class", asset.class_id)],
+                    ..GlLine::default()
                 });
                 gl.push(GlLine {
                     account_id: accumulated,
@@ -366,9 +368,11 @@ impl Command for Post {
                     fx_rate: None,
                     memo,
                     source_line_id: Some(line_id),
+                    scopes: vec![("asset", asset.id), ("asset_class", asset.class_id)],
+                    ..GlLine::default()
                 });
             }
-            erpcraft_gl::post(&mut *ctx.conn, &posting, &gl).await?;
+            erpcraft_gl::post(ctx, &posting, &gl).await?;
             refresh_status(ctx, dues.iter().map(|d| d.asset.id)).await?;
         }
         document::transition(ctx, &mut doc, "posted").await?;

@@ -353,6 +353,16 @@ fn settling_line(
         fx_rate: None,
         memo: None,
         source_line_id: source,
+        ..GlLine::default()
+    }
+}
+
+/// What a payment line is about, for its default dimension values.
+pub(crate) fn party_scope(party_type: &str, id: Uuid) -> Option<(&'static str, Uuid)> {
+    match party_type {
+        "vendor" => Some(("vendor", id)),
+        "customer" => Some(("customer", id)),
+        _ => None,
     }
 }
 
@@ -1571,7 +1581,20 @@ impl Command for PostPayment {
             gl.push(difference);
         }
         if !gl.is_empty() {
-            erpcraft_gl::post(&mut *ctx.conn, &posting, &gl).await?;
+            // A payment is about one party: its lines take the party's
+            // default dimension values.
+            let party = items
+                .first()
+                .map(|item| (item.party_type.as_str(), item.party_id))
+                .or_else(|| {
+                    on_account
+                        .as_ref()
+                        .map(|((party_type, party_id), _)| (party_type.as_str(), *party_id))
+                });
+            if let Some(scope) = party.and_then(|(party_type, id)| party_scope(party_type, id)) {
+                erpcraft_gl::add_scopes(&mut gl, &HashMap::new(), &[scope]);
+            }
+            erpcraft_gl::post(ctx, &posting, &gl).await?;
         }
         erpcraft_tax::record(&mut *ctx.conn, &posting, &taxes).await?;
         if let Some(((party_type, party_id), account_id)) = on_account {

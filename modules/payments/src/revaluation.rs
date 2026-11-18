@@ -206,6 +206,7 @@ fn line(account_id: Uuid, debit: Decimal, credit: Decimal, memo: &str) -> GlLine
         fx_rate: None,
         memo: Some(memo.into()),
         source_line_id: None,
+        ..GlLine::default()
     }
 }
 
@@ -336,7 +337,7 @@ impl Command for PostRevaluation {
             gl.push(line(account, loss, Decimal::ZERO, memo));
         }
         let posting = document::create_posting(ctx, &doc, day, doc.memo.clone()).await?;
-        erpcraft_gl::post(&mut *ctx.conn, &posting, &gl).await?;
+        erpcraft_gl::post(ctx, &posting, &gl).await?;
         erpcraft_openitems::revalue(&mut *ctx.conn, &posting, &revaluations).await?;
         document::transition(ctx, &mut doc, "posted").await?;
 

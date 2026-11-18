@@ -55,6 +55,9 @@ pub enum FactType {
     Number,
     Text,
     Bool,
+    /// A list of texts, which a condition tests with `in`:
+    /// `'SITE:OHIO' in facts.values`.
+    List,
 }
 
 /// One fact a policy point supplies to its rules, read as `facts.<name>`.
@@ -252,6 +255,11 @@ impl PolicyPoint {
     /// A fact that is true or false.
     pub fn boolean(self, name: &str, description: &str) -> Self {
         self.fact(name, FactType::Bool, description)
+    }
+
+    /// A list of texts.
+    pub fn list(self, name: &str, description: &str) -> Self {
+        self.fact(name, FactType::List, description)
     }
 
     /// With no rule configured, refuse when this condition over `facts`
@@ -555,6 +563,14 @@ impl Policy<'_> {
                 .ok_or_else(|| wrong(format!("the fact '{}' was not supplied", fact.name)))?;
             let text = match &value {
                 Value::String(text) => text.clone(),
+                Value::Array(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 other => other.to_string(),
             };
             let value = match (fact.ty, value) {
@@ -567,6 +583,9 @@ impl Policy<'_> {
                     .ok_or_else(|| wrong(format!("the fact '{}' is not a number", fact.name)))?,
                 (FactType::Text, Value::String(text)) => Value::String(text),
                 (FactType::Bool, Value::Bool(b)) => Value::Bool(b),
+                (FactType::List, Value::Array(items)) if items.iter().all(Value::is_string) => {
+                    Value::Array(items)
+                }
                 _ => {
                     return Err(wrong(format!(
                         "the fact '{}' is not of its declared type",

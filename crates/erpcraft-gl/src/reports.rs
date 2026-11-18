@@ -24,11 +24,24 @@ struct AccountBalance {
     account_type: String,
     /// Debit minus credit.
     balance: Decimal,
+    dimension_value_id: Option<Uuid>,
+    dimension_value_code: Option<String>,
+    dimension_value_name: Option<String>,
+}
+
+/// Which entries a report counts by dimension, and by which dimension it
+/// groups them.
+#[derive(Clone, Copy)]
+pub(crate) struct ByDimension<'a> {
+    pub values: &'a [Uuid],
+    pub group_by: Option<Uuid>,
 }
 
 /// Debit minus credit of every account of the company that has a balance
 /// other than zero over the entries dated within `from..=to`, by code.
-/// Either bound may be absent.
+/// Either bound may be absent. With `by.group_by`, an account has a row
+/// per value of that dimension its entries carry (and one for entries
+/// without one); only entries within `by.values` count.
 ///
 /// `with_closing` says whether closing entries count. A closing posting
 /// moves the balances of the income and expense accounts to equity at the
@@ -44,25 +57,35 @@ async fn balances(
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
     with_closing: bool,
+    by: ByDimension<'_>,
 ) -> Result<Vec<AccountBalance>> {
-    Ok(sqlx::query_as(
+    Ok(sqlx::query_as(&format!(
         "SELECT a.id AS account_id, a.code, a.name, a.account_type,
-                sum(g.debit) - sum(g.credit) AS balance
+                sum(g.debit) - sum(g.credit) AS balance,
+                gv.value_id AS dimension_value_id,
+                v.code AS dimension_value_code, v.name AS dimension_value_name
          FROM account a
          JOIN gl_entry g ON g.account_id = a.id
          JOIN posting p ON p.id = g.posting_id
+         LEFT JOIN dimension_set_value gv
+             ON gv.set_id = g.dimension_set_id AND gv.dimension_id = $6
+         LEFT JOIN dimension_value v ON v.id = gv.value_id
          WHERE a.company_id = $1
            AND ($2::date IS NULL OR g.posting_date >= $2)
            AND ($3::date IS NULL OR g.posting_date <= $3)
            AND ($4 OR NOT starts_with(p.command, 'year_end_close.'))
-         GROUP BY a.id
+           AND {}
+         GROUP BY a.id, gv.value_id, v.code, v.name
          HAVING sum(g.debit) <> sum(g.credit)
-         ORDER BY a.code",
-    )
+         ORDER BY a.code, v.code NULLS FIRST",
+        filter_sql(5)
+    ))
     .bind(company_id)
     .bind(from)
     .bind(to)
     .bind(with_closing)
+    .bind(by.values)
+    .bind(by.group_by)
     .fetch_all(&mut *conn)
     .await?)
 }
@@ -74,6 +97,11 @@ struct ReportRow {
     name: String,
     /// Positive in the natural direction of the section.
     balance: Decimal,
+    /// With `group_by_dimension_id`: the value of that dimension this row
+    /// is for; null for entries without one.
+    dimension_value_id: Option<Uuid>,
+    dimension_value_code: Option<String>,
+    dimension_value_name: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -93,12 +121,85 @@ fn section(balances: &[AccountBalance], account_type: &str, debit_side: bool) ->
             code: b.code.clone(),
             name: b.name.clone(),
             balance: if debit_side { b.balance } else { -b.balance },
+            dimension_value_id: b.dimension_value_id,
+            dimension_value_code: b.dimension_value_code.clone(),
+            dimension_value_name: b.dimension_value_name.clone(),
         })
         .collect();
     Section {
         total: rows.iter().map(|r| r.balance).sum(),
         rows,
     }
+}
+
+/// A value of the dimension a report groups by: null for entries without
+/// one.
+#[derive(Serialize, JsonSchema, Clone, PartialEq)]
+struct GroupValue {
+    dimension_value_id: Option<Uuid>,
+    dimension_value_code: Option<String>,
+    dimension_value_name: Option<String>,
+}
+
+/// The values the balances of accounts of these types fall in, in the
+/// order of their codes.
+fn groups(balances: &[AccountBalance], types: &[&str]) -> Vec<GroupValue> {
+    let mut groups: Vec<GroupValue> = vec![];
+    for b in balances
+        .iter()
+        .filter(|b| types.contains(&b.account_type.as_str()))
+    {
+        let group = GroupValue {
+            dimension_value_id: b.dimension_value_id,
+            dimension_value_code: b.dimension_value_code.clone(),
+            dimension_value_name: b.dimension_value_name.clone(),
+        };
+        if !groups.contains(&group) {
+            groups.push(group);
+        }
+    }
+    groups.sort_by(|a, b| a.dimension_value_code.cmp(&b.dimension_value_code));
+    groups
+}
+
+/// The balances of one value of the grouping dimension.
+fn of_group(balances: &[AccountBalance], group: &GroupValue) -> Vec<AccountBalance> {
+    balances
+        .iter()
+        .filter(|b| b.dimension_value_id == group.dimension_value_id)
+        .map(|b| AccountBalance {
+            account_id: b.account_id,
+            code: b.code.clone(),
+            name: b.name.clone(),
+            account_type: b.account_type.clone(),
+            balance: b.balance,
+            dimension_value_id: b.dimension_value_id,
+            dimension_value_code: b.dimension_value_code.clone(),
+            dimension_value_name: b.dimension_value_name.clone(),
+        })
+        .collect()
+}
+
+/// The totals of a balance sheet for one value of the grouping dimension.
+#[derive(Serialize, JsonSchema)]
+struct BalanceSheetGroup {
+    #[serde(flatten)]
+    value: GroupValue,
+    total_assets: Decimal,
+    total_liabilities: Decimal,
+    total_equity: Decimal,
+    net_income: Decimal,
+}
+
+/// The totals of an income statement for one value of the grouping
+/// dimension.
+#[derive(Serialize, JsonSchema)]
+struct IncomeStatementGroup {
+    #[serde(flatten)]
+    value: GroupValue,
+    total_income: Decimal,
+    total_expenses: Decimal,
+    net_income: Decimal,
 }
 
 // ------------------------------------------------------------ balance sheet
@@ -110,6 +211,13 @@ pub(crate) struct BalanceSheetInput {
     company_id: Uuid,
     /// Include entries up to and including this date. Defaults to all.
     as_of: Option<NaiveDate>,
+    /// Count only entries with these dimension values: for each dimension
+    /// among them, one of its values given. Empty or absent: all entries.
+    #[serde(default)]
+    dimension_value_ids: Vec<Uuid>,
+    /// Show each account per value of this dimension, with totals per value.
+    #[schemars(extend("x-field-type" = { "kind": "link", "entity": "dimension", "key": "id" }))]
+    group_by_dimension_id: Option<Uuid>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -128,8 +236,12 @@ pub(crate) struct BalanceSheetOutput {
     /// account. A closed year adds nothing to it.
     net_income: Decimal,
     total_assets: Decimal,
-    /// Liabilities plus equity plus `net_income`. Equal to `total_assets`.
+    /// Liabilities plus equity plus `net_income`. Equal to `total_assets`
+    /// for the whole company; for some dimension values it need not be,
+    /// since the ledger does not balance per dimension.
     total_liabilities_and_equity: Decimal,
+    /// With `group_by_dimension_id`: the totals of each value.
+    groups: Vec<BalanceSheetGroup>,
 }
 
 pub(crate) struct BalanceSheet;
@@ -148,7 +260,11 @@ impl Command for BalanceSheet {
              net_income is income minus expenses up to that date, not yet closed to equity: \
              the result of a year closed with a year-end close is inside the equity section; \
              total_assets equals total_liabilities_and_equity, which includes net_income. \
-             Accounts with a zero balance are left out.",
+             Accounts with a zero balance are left out. dimension_value_ids counts only \
+             entries with those values (for each dimension among them, one of its values); \
+             the ledger balances per posting, not per dimension, so a part of the company \
+             need not balance. group_by_dimension_id shows each account per value of that \
+             dimension, with the totals of each value in `groups`.",
         )
         .report("Balance sheet")
         .permission(READ)
@@ -157,7 +273,47 @@ impl Command for BalanceSheet {
     async fn run(&self, ctx: &mut Ctx<'_>, input: BalanceSheetInput) -> Result<BalanceSheetOutput> {
         ctx.require(READ, input.company_id)?;
         let currency = company::base_currency(&mut *ctx.conn, input.company_id).await?;
-        let balances = balances(&mut *ctx.conn, input.company_id, None, input.as_of, true).await?;
+        check_dimensions(
+            &mut *ctx.conn,
+            input.company_id,
+            &input.dimension_value_ids,
+            input.group_by_dimension_id,
+        )
+        .await?;
+        let by = ByDimension {
+            values: &input.dimension_value_ids,
+            group_by: input.group_by_dimension_id,
+        };
+        let balances = balances(
+            &mut *ctx.conn,
+            input.company_id,
+            None,
+            input.as_of,
+            true,
+            by,
+        )
+        .await?;
+        let groups = if input.group_by_dimension_id.is_some() {
+            groups(
+                &balances,
+                &["asset", "liability", "equity", "income", "expense"],
+            )
+            .into_iter()
+            .map(|value| {
+                let of = of_group(&balances, &value);
+                BalanceSheetGroup {
+                    total_assets: section(&of, "asset", true).total,
+                    total_liabilities: section(&of, "liability", false).total,
+                    total_equity: section(&of, "equity", false).total,
+                    net_income: section(&of, "income", false).total
+                        - section(&of, "expense", true).total,
+                    value,
+                }
+            })
+            .collect()
+        } else {
+            vec![]
+        };
         let assets = section(&balances, "asset", true);
         let liabilities = section(&balances, "liability", false);
         let equity = section(&balances, "equity", false);
@@ -170,6 +326,7 @@ impl Command for BalanceSheet {
             net_income,
             total_assets: assets.total,
             total_liabilities_and_equity: liabilities.total + equity.total + net_income,
+            groups,
             assets,
             liabilities,
             equity,
@@ -188,6 +345,13 @@ pub(crate) struct IncomeStatementInput {
     from: NaiveDate,
     /// Last day of the range, included.
     to: NaiveDate,
+    /// Count only entries with these dimension values: for each dimension
+    /// among them, one of its values given. Empty or absent: all entries.
+    #[serde(default)]
+    dimension_value_ids: Vec<Uuid>,
+    /// Show each account per value of this dimension, with totals per value.
+    #[schemars(extend("x-field-type" = { "kind": "link", "entity": "dimension", "key": "id" }))]
+    group_by_dimension_id: Option<Uuid>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -202,6 +366,8 @@ pub(crate) struct IncomeStatementOutput {
     expenses: Section,
     /// Total income minus total expenses.
     net_income: Decimal,
+    /// With `group_by_dimension_id`: the totals of each value.
+    groups: Vec<IncomeStatementGroup>,
 }
 
 pub(crate) struct IncomeStatement;
@@ -219,7 +385,11 @@ impl Command for IncomeStatement {
              expense accounts with their amounts for the range as positive numbers, the total \
              of each, and net_income, which is total income minus total expenses. Accounts \
              with a zero amount are left out. The entries of a year-end close are not \
-             counted, so a closed year still shows its income and expenses.",
+             counted, so a closed year still shows its income and expenses. \
+             dimension_value_ids counts only entries with those values (for each dimension \
+             among them, one of its values), such as one site's; group_by_dimension_id shows \
+             each account per value of that dimension, with the totals of each value in \
+             `groups`.",
         )
         .report("Income statement")
         .permission(READ)
@@ -235,14 +405,43 @@ impl Command for IncomeStatement {
             return Err(Error::validation("`from` cannot be after `to`"));
         }
         let currency = company::base_currency(&mut *ctx.conn, input.company_id).await?;
+        check_dimensions(
+            &mut *ctx.conn,
+            input.company_id,
+            &input.dimension_value_ids,
+            input.group_by_dimension_id,
+        )
+        .await?;
         let balances = balances(
             &mut *ctx.conn,
             input.company_id,
             Some(input.from),
             Some(input.to),
             false,
+            ByDimension {
+                values: &input.dimension_value_ids,
+                group_by: input.group_by_dimension_id,
+            },
         )
         .await?;
+        let groups = if input.group_by_dimension_id.is_some() {
+            groups(&balances, &["income", "expense"])
+                .into_iter()
+                .map(|value| {
+                    let of = of_group(&balances, &value);
+                    let total_income = section(&of, "income", false).total;
+                    let total_expenses = section(&of, "expense", true).total;
+                    IncomeStatementGroup {
+                        total_income,
+                        total_expenses,
+                        net_income: total_income - total_expenses,
+                        value,
+                    }
+                })
+                .collect()
+        } else {
+            vec![]
+        };
         let income = section(&balances, "income", false);
         let expenses = section(&balances, "expense", true);
         Ok(IncomeStatementOutput {
@@ -251,6 +450,7 @@ impl Command for IncomeStatement {
             to: input.to,
             currency,
             net_income: income.total - expenses.total,
+            groups,
             income,
             expenses,
         })
@@ -275,6 +475,14 @@ pub(crate) struct AccountLedgerInput {
     limit: Option<i64>,
     /// Entries to skip, for paging.
     offset: Option<i64>,
+    /// List only entries with these dimension values: for each dimension
+    /// among them, one of its values given. The opening balance counts the
+    /// same entries. Empty or absent: all entries.
+    #[serde(default)]
+    dimension_value_ids: Vec<Uuid>,
+    /// Total the range per value of this dimension, in `groups`.
+    #[schemars(extend("x-field-type" = { "kind": "link", "entity": "dimension", "key": "id" }))]
+    group_by_dimension_id: Option<Uuid>,
 }
 
 #[derive(Serialize, JsonSchema, sqlx::FromRow)]
@@ -293,6 +501,22 @@ struct AccountLedgerRow {
     document_id: Option<Uuid>,
     document_type: Option<String>,
     document_number: Option<String>,
+    /// The entry's dimension values as DIMENSION:VALUE codes.
+    dimensions: Option<String>,
+}
+
+/// What the entries of an account ledger's range come to for one value of
+/// the dimension it groups by.
+#[derive(Serialize, JsonSchema, sqlx::FromRow)]
+struct AccountLedgerGroup {
+    dimension_value_id: Option<Uuid>,
+    dimension_value_code: Option<String>,
+    dimension_value_name: Option<String>,
+    debit: Decimal,
+    credit: Decimal,
+    /// Debit minus credit over the range.
+    balance: Decimal,
+    entries: i64,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -314,6 +538,8 @@ pub(crate) struct AccountLedgerOutput {
     limit: i64,
     offset: i64,
     entries: Vec<AccountLedgerRow>,
+    /// With `group_by_dimension_id`: the range per value of that dimension.
+    groups: Vec<AccountLedgerGroup>,
 }
 
 pub(crate) struct AccountLedger;
@@ -334,7 +560,10 @@ impl Command for AccountLedger {
              credit). opening_balance is the balance before `from`, closing_balance the balance \
              after the last entry of the whole range, total the number of entries in the range. \
              Page with limit (default 50, at most 500) and offset; the running balance is \
-             correct on every page.",
+             correct on every page. Each entry shows its dimension values; \
+             dimension_value_ids lists only entries with those values (the opening balance \
+             counts the same ones), and group_by_dimension_id totals the range per value of \
+             that dimension in `groups`.",
         )
         .report("Account ledger")
         .permission(READ)
@@ -354,6 +583,13 @@ impl Command for AccountLedger {
         let limit = input.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
         let offset = input.offset.unwrap_or(0).max(0);
         let currency = company::base_currency(&mut *ctx.conn, input.company_id).await?;
+        check_dimensions(
+            &mut *ctx.conn,
+            input.company_id,
+            &input.dimension_value_ids,
+            input.group_by_dimension_id,
+        )
+        .await?;
         let (code, name): (String, String) =
             sqlx::query_as("SELECT code, name FROM account WHERE id = $1 AND company_id = $2")
                 .bind(input.account_id)
@@ -366,19 +602,23 @@ impl Command for AccountLedger {
         // range come from the same snapshot. The running balance is
         // computed over the whole range before the page is cut out of it.
         // The totals row comes first; it is there even for an empty page.
-        let fetched = sqlx::query(
+        let filter = filter_sql(6);
+        let fetched = sqlx::query(&format!(
             "WITH opening AS (
-                 SELECT COALESCE(sum(debit - credit), 0) AS opening_balance
-                 FROM gl_entry
-                 WHERE account_id = $1 AND $2::date IS NOT NULL AND posting_date < $2
+                 SELECT COALESCE(sum(g.debit - g.credit), 0) AS opening_balance
+                 FROM gl_entry g
+                 WHERE g.account_id = $1 AND $2::date IS NOT NULL AND g.posting_date < $2
+                   AND {filter}
              ),
              in_range AS (
                  SELECT g.id, g.posting_date, g.debit, g.credit, g.memo, g.posting_id,
+                        g.dimension_set_id,
                         sum(g.debit - g.credit) OVER (ORDER BY g.posting_date, g.id) AS running
                  FROM gl_entry g
                  WHERE g.account_id = $1
                    AND ($2::date IS NULL OR g.posting_date >= $2)
                    AND ($3::date IS NULL OR g.posting_date <= $3)
+                   AND {filter}
              ),
              totals AS (
                  SELECT COALESCE(sum(debit - credit), 0) AS range_balance, count(*) AS total
@@ -391,21 +631,53 @@ impl Command for AccountLedger {
                     e.id, e.posting_date, e.debit, e.credit,
                     o.opening_balance + e.running AS balance,
                     e.memo, e.posting_id, p.memo AS posting_memo,
-                    p.document_id, d.doc_type AS document_type, d.number AS document_number
+                    p.document_id, d.doc_type AS document_type, d.number AS document_number,
+                    ds.label AS dimensions
              FROM opening o
              CROSS JOIN totals t
              LEFT JOIN page e ON true
              LEFT JOIN posting p ON p.id = e.posting_id
              LEFT JOIN document d ON d.id = p.document_id
-             ORDER BY e.posting_date, e.id",
-        )
+             LEFT JOIN dimension_set ds ON ds.id = e.dimension_set_id
+             ORDER BY e.posting_date, e.id"
+        ))
         .bind(input.account_id)
         .bind(input.from)
         .bind(input.to)
         .bind(limit)
         .bind(offset)
+        .bind(&input.dimension_value_ids)
         .fetch_all(&mut *ctx.conn)
         .await?;
+        let groups: Vec<AccountLedgerGroup> = match input.group_by_dimension_id {
+            None => vec![],
+            Some(dimension) => {
+                sqlx::query_as(&format!(
+                    "SELECT gv.value_id AS dimension_value_id,
+                            v.code AS dimension_value_code, v.name AS dimension_value_name,
+                            sum(g.debit) AS debit, sum(g.credit) AS credit,
+                            sum(g.debit - g.credit) AS balance, count(*) AS entries
+                     FROM gl_entry g
+                     LEFT JOIN dimension_set_value gv
+                         ON gv.set_id = g.dimension_set_id AND gv.dimension_id = $5
+                     LEFT JOIN dimension_value v ON v.id = gv.value_id
+                     WHERE g.account_id = $1
+                       AND ($2::date IS NULL OR g.posting_date >= $2)
+                       AND ($3::date IS NULL OR g.posting_date <= $3)
+                       AND {}
+                     GROUP BY gv.value_id, v.code, v.name
+                     ORDER BY v.code NULLS FIRST",
+                    filter_sql(4)
+                ))
+                .bind(input.account_id)
+                .bind(input.from)
+                .bind(input.to)
+                .bind(&input.dimension_value_ids)
+                .bind(dimension)
+                .fetch_all(&mut *ctx.conn)
+                .await?
+            }
+        };
 
         let first = fetched
             .first()
@@ -445,6 +717,69 @@ impl Command for AccountLedger {
             limit,
             offset,
             entries,
+            groups,
         })
     }
+}
+
+// --------------------------------------------------------------- dimensions
+
+/// SQL that holds for an entry `g` within the dimension filter bound as
+/// parameter `$n` (an array of dimension value ids): for every dimension
+/// among the values, the entry's set has one of them. An empty array lets
+/// every entry through. The subquery does not depend on the entry, so it
+/// runs once.
+pub(crate) fn filter_sql(n: usize) -> String {
+    format!(
+        "(cardinality(${n}::uuid[]) = 0 OR g.dimension_set_id IN (
+             SELECT sv.set_id FROM dimension_set_value sv
+             WHERE sv.value_id = ANY (${n}::uuid[])
+             GROUP BY sv.set_id
+             HAVING count(DISTINCT sv.dimension_id) =
+                 (SELECT count(DISTINCT dimension_id) FROM dimension_value
+                  WHERE id = ANY (${n}::uuid[]))))"
+    )
+}
+
+/// Check a report's dimension filter and grouping: the values and the
+/// dimension must be the company's. An unknown value would otherwise
+/// narrow nothing.
+pub(crate) async fn check_dimensions(
+    conn: &mut PgConnection,
+    company_id: Uuid,
+    values: &[Uuid],
+    group_by: Option<Uuid>,
+) -> Result<()> {
+    if !values.is_empty() {
+        let known: i64 = sqlx::query_scalar(
+            "SELECT count(DISTINCT id) FROM dimension_value WHERE id = ANY ($1) AND company_id = $2",
+        )
+        .bind(values)
+        .bind(company_id)
+        .fetch_one(&mut *conn)
+        .await?;
+        let distinct: std::collections::HashSet<&Uuid> = values.iter().collect();
+        if known != distinct.len() as i64 {
+            return Err(Error::validation(
+                "a dimension value to filter by is not one of the company's",
+            )
+            .with_field("dimension_value_ids"));
+        }
+    }
+    if let Some(dimension) = group_by {
+        let known: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM dimension WHERE id = $1 AND company_id = $2)",
+        )
+        .bind(dimension)
+        .bind(company_id)
+        .fetch_one(&mut *conn)
+        .await?;
+        if !known {
+            return Err(
+                Error::validation("the dimension to group by is not one of the company's")
+                    .with_field("group_by_dimension_id"),
+            );
+        }
+    }
+    Ok(())
 }

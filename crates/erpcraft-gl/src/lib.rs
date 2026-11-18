@@ -18,9 +18,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+mod dimensions;
 mod reports;
 mod rules;
 
+pub use dimensions::{
+    DIMENSIONS, Dimensions, dimension_for, dimension_set, set_values, values_refusal,
+};
 pub use rules::account_for;
 
 pub struct GlModule;
@@ -81,6 +85,11 @@ impl Module for GlModule {
                 name: "rate_precision",
                 sql: include_str!("../migrations/0009_rate_precision.sql"),
             },
+            Migration {
+                version: 10,
+                name: "dimensions",
+                sql: include_str!("../migrations/0010_dimensions.sql"),
+            },
         ]
     }
 
@@ -91,7 +100,7 @@ impl Module for GlModule {
                 .immutable()
         };
         let created = || FieldMeta::new("created_at", "Created", FieldType::Timestamp).readonly();
-        vec![
+        let mut entities = vec![
             EntityMeta::new("account", "Account")
                 .field(company())
                 .field(FieldMeta::new("code", "Code", FieldType::Text).required())
@@ -231,13 +240,20 @@ impl Module for GlModule {
                         .readonly()
                         .help("Debit less credit: a credit is below zero."),
                 )
+                .field(FieldMeta::new(
+                    "dimension_set_id",
+                    "Dimensions",
+                    FieldType::link("dimension_set"),
+                ))
                 .field(created())
                 .order_by(&["posting_date", "id"])
                 // A reference to an entry: its day, amount and memo.
                 .display(&["posting_date", "amount", "memo"])
                 .read_only()
                 .company_field("company_id"),
-        ]
+        ];
+        entities.extend(dimensions::entities());
+        entities
     }
 
     fn policies(&self) -> Vec<erpcraft_kernel::PolicyPoint> {
@@ -265,6 +281,7 @@ impl Module for GlModule {
             )
             .as_percent()
             .refusal("the stated exchange rate differs too much from the rate on record"),
+            dimensions::policy(),
         ]
     }
 
@@ -297,7 +314,7 @@ impl Module for GlModule {
 }
 
 /// One entry to write. Give the amount on one side, in `currency`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GlLine {
     pub account_id: Uuid,
     pub debit: Decimal,
@@ -312,6 +329,37 @@ pub struct GlLine {
     pub memo: Option<String>,
     /// The document line this entry comes from.
     pub source_line_id: Option<Uuid>,
+    /// What the line is about, most specific first, as pairs of an entity
+    /// name and a record id: a warehouse and the locations above it, its
+    /// site, the item, the party. They give the line's default dimension
+    /// values ([`dimension_for`]); the line's account and the company's
+    /// defaults come after them.
+    pub scopes: Vec<(&'static str, Uuid)>,
+    /// The line's dimension values. See [`Dimensions`].
+    pub dimensions: Dimensions,
+}
+
+impl GlLine {
+    /// The line, about these records as well (after the ones it names).
+    pub fn about(mut self, scopes: &[(&'static str, Uuid)]) -> Self {
+        self.scopes.extend_from_slice(scopes);
+        self
+    }
+}
+
+/// Add to every line the scopes of the document line it comes from, then
+/// `common` (what the whole document is about, such as its party).
+pub fn add_scopes(
+    lines: &mut [GlLine],
+    by_source: &std::collections::HashMap<Uuid, Vec<(&'static str, Uuid)>>,
+    common: &[(&'static str, Uuid)],
+) {
+    for line in lines {
+        if let Some(scopes) = line.source_line_id.and_then(|id| by_source.get(&id)) {
+            line.scopes.extend_from_slice(scopes);
+        }
+        line.scopes.extend_from_slice(common);
+    }
 }
 
 /// The latest rate on record that converts `from` into `to` on `date`:
@@ -418,6 +466,7 @@ pub async fn exchange_difference(
         fx_rate: None,
         memo: memo.map(str::to_owned),
         source_line_id: None,
+        ..GlLine::default()
     }))
 }
 
@@ -555,7 +604,8 @@ pub async fn line_account_refusal(
     }
     let inventory: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM account_rule
-                        WHERE company_id = $1 AND purpose = 'inventory' AND account_id = $2)",
+                        WHERE company_id = $1 AND purpose IN ('inventory', 'inventory_in_transit')
+                          AND account_id = $2)",
     )
     .bind(company_id)
     .bind(account_id)
@@ -585,7 +635,12 @@ pub async fn currency_decimals(conn: &mut PgConnection, currency: &str) -> Resul
 /// Amounts are converted to the company's accounting currency and must
 /// balance there. A posting whose foreign amounts leave a rounding
 /// difference needs an explicit line for it.
-pub async fn post(conn: &mut PgConnection, posting: &Posting, lines: &[GlLine]) -> Result<()> {
+///
+/// Every line is stamped with its dimension set: the values it states and
+/// the defaults for the rest (see [`Dimensions`]), each line asked of the
+/// policy [`DIMENSIONS`].
+pub async fn post(ctx: &mut Ctx<'_>, posting: &Posting, lines: &[GlLine]) -> Result<()> {
+    let conn = &mut *ctx.conn;
     if lines.is_empty() {
         return Err(Error::validation(
             "a posting needs at least one ledger entry",
@@ -680,6 +735,9 @@ pub async fn post(conn: &mut PgConnection, posting: &Posting, lines: &[GlLine]) 
         )));
     }
 
+    let sets = dimensions::stamp(ctx, posting, lines).await?;
+    let conn = &mut *ctx.conn;
+
     // One statement for all entries. The ledger's row triggers still check
     // each of them, in line order.
     let ids: Vec<Uuid> = rows.iter().map(|_| new_id()).collect();
@@ -695,13 +753,16 @@ pub async fn post(conn: &mut PgConnection, posting: &Posting, lines: &[GlLine]) 
     let memos: Vec<Option<&str>> = rows.iter().map(|r| r.line.memo.as_deref()).collect();
     sqlx::query(
         "INSERT INTO gl_entry (id, company_id, posting_id, line_no, source_line_id, account_id,
-            posting_date, debit, credit, currency, txn_debit, txn_credit, fx_rate, memo)
+            posting_date, debit, credit, currency, txn_debit, txn_credit, fx_rate, memo,
+            dimension_set_id)
          SELECT r.id, $1, $2, r.line_no, r.source_line_id, r.account_id,
-            $3, r.debit, r.credit, r.currency, r.txn_debit, r.txn_credit, r.fx_rate, r.memo
+            $3, r.debit, r.credit, r.currency, r.txn_debit, r.txn_credit, r.fx_rate, r.memo,
+            r.dimension_set_id
          FROM unnest($4::uuid[], $5::int4[], $6::uuid[], $7::uuid[], $8::numeric[], $9::numeric[],
-                     $10::text[], $11::numeric[], $12::numeric[], $13::numeric[], $14::text[])
+                     $10::text[], $11::numeric[], $12::numeric[], $13::numeric[], $14::text[],
+                     $15::uuid[])
             AS r(id, line_no, source_line_id, account_id, debit, credit,
-                 currency, txn_debit, txn_credit, fx_rate, memo)
+                 currency, txn_debit, txn_credit, fx_rate, memo, dimension_set_id)
          ORDER BY r.line_no",
     )
     .bind(posting.company_id)
@@ -718,6 +779,7 @@ pub async fn post(conn: &mut PgConnection, posting: &Posting, lines: &[GlLine]) 
     .bind(&txn_credits)
     .bind(&rates)
     .bind(&memos)
+    .bind(&sets)
     .execute(&mut *conn)
     .await?;
     Ok(())
@@ -755,6 +817,10 @@ struct GlEntryRow {
     /// Accounting-currency units per unit of the transaction currency.
     fx_rate: Option<String>,
     memo: Option<String>,
+    /// The entry's dimension set, if it has dimensions.
+    dimension_set_id: Option<Uuid>,
+    /// Its values as DIMENSION:VALUE codes, such as `COSTCENTER:ASSY, SITE:OHIO`.
+    dimensions: Option<String>,
 }
 
 #[async_trait]
@@ -792,11 +858,14 @@ impl Ledger for GeneralLedger {
                 .fetch_all(&mut *conn)
                 .await?;
         let ids: Vec<Uuid> = originals.iter().map(|_| new_id()).collect();
+        // The same dimension set as the original, exactly.
         sqlx::query(
             "INSERT INTO gl_entry (id, company_id, posting_id, line_no, source_line_id, account_id,
-                posting_date, debit, credit, currency, txn_debit, txn_credit, fx_rate, memo)
+                posting_date, debit, credit, currency, txn_debit, txn_credit, fx_rate, memo,
+                dimension_set_id)
              SELECT m.new_id, e.company_id, $2, e.line_no, e.source_line_id, e.account_id,
-                $3, e.credit, e.debit, e.currency, e.txn_credit, e.txn_debit, e.fx_rate, e.memo
+                $3, e.credit, e.debit, e.currency, e.txn_credit, e.txn_debit, e.fx_rate, e.memo,
+                e.dimension_set_id
              FROM unnest($1::uuid[], $4::uuid[]) AS m(old_id, new_id)
              JOIN gl_entry e ON e.id = m.old_id
              ORDER BY e.line_no",
@@ -831,8 +900,10 @@ impl Ledger for GeneralLedger {
                 'debit', g.debit::text, 'credit', g.credit::text,
                 'currency', g.currency,
                 'txn_debit', g.txn_debit::text, 'txn_credit', g.txn_credit::text,
-                'fx_rate', g.fx_rate::text, 'memo', g.memo)
+                'fx_rate', g.fx_rate::text, 'memo', g.memo,
+                'dimension_set_id', g.dimension_set_id, 'dimensions', ds.label)
              FROM gl_entry g JOIN account a ON a.id = g.account_id
+             LEFT JOIN dimension_set ds ON ds.id = g.dimension_set_id
              WHERE g.posting_id = $1 ORDER BY g.line_no",
         )
         .bind(posting.id)
@@ -853,6 +924,13 @@ struct TrialBalanceInput {
     company_id: Uuid,
     /// Include entries up to and including this date. Defaults to all.
     as_of: Option<NaiveDate>,
+    /// Count only entries with these dimension values: for each dimension
+    /// among them, one of its values given. Empty or absent: all entries.
+    #[serde(default)]
+    dimension_value_ids: Vec<Uuid>,
+    /// Show each account per value of this dimension.
+    #[schemars(extend("x-field-type" = { "kind": "link", "entity": "dimension", "key": "id" }))]
+    group_by_dimension_id: Option<Uuid>,
 }
 
 #[derive(Serialize, JsonSchema, sqlx::FromRow)]
@@ -865,6 +943,12 @@ struct TrialBalanceRow {
     credit: Decimal,
     /// Debit minus credit.
     balance: Decimal,
+    /// With `group_by_dimension_id`: the value of that dimension this row
+    /// is for; null for entries without one, and for an account without
+    /// entries.
+    dimension_value_id: Option<Uuid>,
+    dimension_value_code: Option<String>,
+    dimension_value_name: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -887,7 +971,11 @@ impl Command for TrialBalance {
     fn spec(&self) -> CommandSpec {
         CommandSpec::query(
             "gl.trial_balance",
-            "Total debit, credit and balance of every account of a company, in its accounting currency.",
+            "Total debit, credit and balance of every account of a company, in its accounting \
+             currency. dimension_value_ids counts only entries with those values (for each \
+             dimension among them, one of its values); the ledger balances per posting, not \
+             per dimension, so the totals of a part of the company need not be equal. \
+             group_by_dimension_id gives an account a row per value of that dimension.",
         )
         .report("Trial balance")
         .permission("gl_entry:read")
@@ -896,18 +984,35 @@ impl Command for TrialBalance {
     async fn run(&self, ctx: &mut Ctx<'_>, input: TrialBalanceInput) -> Result<TrialBalanceOutput> {
         ctx.require("gl_entry:read", input.company_id)?;
         let currency = company::base_currency(&mut *ctx.conn, input.company_id).await?;
-        let rows: Vec<TrialBalanceRow> = sqlx::query_as(
+        reports::check_dimensions(
+            &mut *ctx.conn,
+            input.company_id,
+            &input.dimension_value_ids,
+            input.group_by_dimension_id,
+        )
+        .await?;
+        let rows: Vec<TrialBalanceRow> = sqlx::query_as(&format!(
             "SELECT a.id AS account_id, a.code, a.name, a.account_type,
                     COALESCE(sum(g.debit), 0) AS debit,
                     COALESCE(sum(g.credit), 0) AS credit,
-                    COALESCE(sum(g.debit), 0) - COALESCE(sum(g.credit), 0) AS balance
+                    COALESCE(sum(g.debit), 0) - COALESCE(sum(g.credit), 0) AS balance,
+                    gv.value_id AS dimension_value_id,
+                    v.code AS dimension_value_code, v.name AS dimension_value_name
              FROM account a
-             LEFT JOIN gl_entry g ON g.account_id = a.id AND ($2::date IS NULL OR g.posting_date <= $2)
+             LEFT JOIN gl_entry g ON g.account_id = a.id
+                 AND ($2::date IS NULL OR g.posting_date <= $2) AND {}
+             LEFT JOIN dimension_set_value gv
+                 ON gv.set_id = g.dimension_set_id AND gv.dimension_id = $4
+             LEFT JOIN dimension_value v ON v.id = gv.value_id
              WHERE a.company_id = $1 AND NOT a.is_group
-             GROUP BY a.id ORDER BY a.code",
-        )
+             GROUP BY a.id, gv.value_id, v.code, v.name
+             ORDER BY a.code, v.code NULLS FIRST",
+            reports::filter_sql(3)
+        ))
         .bind(input.company_id)
         .bind(input.as_of)
+        .bind(&input.dimension_value_ids)
+        .bind(input.group_by_dimension_id)
         .fetch_all(&mut *ctx.conn)
         .await?;
         Ok(TrialBalanceOutput {

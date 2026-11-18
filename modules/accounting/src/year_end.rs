@@ -8,7 +8,7 @@
 //! command starts with `year_end_close.`. The commands of this document
 //! must therefore keep that prefix, and no other command may use it.
 
-use erpcraft_gl::GlLine;
+use erpcraft_gl::{Dimensions, GlLine};
 use erpcraft_kernel::document::{self, Document, DocumentHandler, DocumentView};
 use erpcraft_kernel::{
     Command, CommandSpec, Ctx, Decimal, DocTypeMeta, Error, FieldMeta, FieldType, JsonSchema,
@@ -435,17 +435,19 @@ impl Command for PostYearEndClose {
         }
 
         // Debit minus credit of each income and expense account over the
-        // period. Earlier closes of this period that were reversed are in
-        // there twice with opposite signs, so they do not count.
-        let balances: Vec<(Uuid, Decimal)> = sqlx::query_as(
-            "SELECT a.id, sum(g.debit) - sum(g.credit)
+        // period, per dimension set. Earlier closes of this period that were
+        // reversed are in there twice with opposite signs, so they do not
+        // count.
+        let balances: Vec<(Uuid, Option<Uuid>, Decimal)> = sqlx::query_as(
+            "SELECT a.id, g.dimension_set_id, sum(g.debit) - sum(g.credit)
              FROM account a
              JOIN gl_entry g ON g.account_id = a.id
+             LEFT JOIN dimension_set ds ON ds.id = g.dimension_set_id
              WHERE a.company_id = $1 AND a.account_type IN ('income', 'expense')
                AND g.posting_date BETWEEN $2 AND $3
-             GROUP BY a.id
+             GROUP BY a.id, g.dimension_set_id, ds.label
              HAVING sum(g.debit) <> sum(g.credit)
-             ORDER BY a.code",
+             ORDER BY a.code, ds.label NULLS FIRST",
         )
         .bind(doc.company_id)
         .bind(first.start_date)
@@ -465,7 +467,10 @@ impl Command for PostYearEndClose {
         }
 
         let memo = format!("Year-end close of {name}");
-        let line = |account_id: Uuid, debit: Decimal, credit: Decimal| GlLine {
+        // Every line keeps the dimension set it closes, so that the
+        // result of each site, cost center or project goes to equity under
+        // its own values.
+        let line = |account_id: Uuid, set: Option<Uuid>, debit: Decimal, credit: Decimal| GlLine {
             account_id,
             debit,
             credit,
@@ -473,41 +478,50 @@ impl Command for PostYearEndClose {
             fx_rate: None,
             memo: Some(memo.clone()),
             source_line_id: None,
+            dimensions: Dimensions::Exact(set),
+            ..GlLine::default()
         };
         // Each account receives the opposite of its balance.
         let mut entries: Vec<GlLine> = balances
             .iter()
-            .map(|&(account_id, balance)| {
+            .map(|&(account_id, set, balance)| {
                 if balance.is_sign_positive() {
-                    line(account_id, Decimal::ZERO, balance)
+                    line(account_id, set, Decimal::ZERO, balance)
                 } else {
-                    line(account_id, -balance, Decimal::ZERO)
+                    line(account_id, set, -balance, Decimal::ZERO)
                 }
             })
             .collect();
-        // Income minus expenses. A year that breaks even exactly has no
-        // entry for retained earnings.
-        let result: Decimal = -balances
-            .iter()
-            .map(|(_, balance)| *balance)
-            .sum::<Decimal>();
-        if result > Decimal::ZERO {
-            entries.push(line(
-                body.retained_earnings_account_id,
-                Decimal::ZERO,
-                result,
-            ));
-        } else if result < Decimal::ZERO {
-            entries.push(line(
-                body.retained_earnings_account_id,
-                -result,
-                Decimal::ZERO,
-            ));
+        // Income minus expenses, per dimension set. A set that breaks even
+        // exactly has no entry for retained earnings.
+        let mut results: Vec<(Option<Uuid>, Decimal)> = vec![];
+        for &(_, set, balance) in &balances {
+            match results.iter_mut().find(|(s, _)| *s == set) {
+                Some((_, total)) => *total -= balance,
+                None => results.push((set, -balance)),
+            }
+        }
+        for (set, result) in results {
+            if result > Decimal::ZERO {
+                entries.push(line(
+                    body.retained_earnings_account_id,
+                    set,
+                    Decimal::ZERO,
+                    result,
+                ));
+            } else if result < Decimal::ZERO {
+                entries.push(line(
+                    body.retained_earnings_account_id,
+                    set,
+                    -result,
+                    Decimal::ZERO,
+                ));
+            }
         }
 
         let posting_memo = doc.memo.clone().or_else(|| Some(memo.clone()));
         let posting = document::create_posting(ctx, &doc, period.end_date, posting_memo).await?;
-        erpcraft_gl::post(&mut *ctx.conn, &posting, &entries).await?;
+        erpcraft_gl::post(ctx, &posting, &entries).await?;
         sqlx::query(
             "INSERT INTO year_end_closing (document_id, fiscal_period_id, posting_id)
              VALUES ($1, $2, $3)",

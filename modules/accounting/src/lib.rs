@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use chrono::NaiveDate;
-use erpcraft_gl::GlLine;
+use erpcraft_gl::{Dimensions, GlLine};
 use erpcraft_kernel::document::{self, Document, DocumentHandler, DocumentView};
 use erpcraft_kernel::{
     CollectionMeta, Command, CommandSpec, Ctx, Decimal, DocTypeMeta, DynCommand, Error, FieldMeta,
@@ -52,6 +52,11 @@ impl Module for AccountingModule {
                 name: "rate_precision",
                 sql: include_str!("../migrations/0004_rate_precision.sql"),
             },
+            Migration {
+                version: 5,
+                name: "line_dimensions",
+                sql: include_str!("../migrations/0005_line_dimensions.sql"),
+            },
         ]
     }
 
@@ -90,6 +95,8 @@ struct LineInput {
     currency: Option<String>,
     fx_rate: Option<Decimal>,
     memo: Option<String>,
+    #[serde(default)]
+    dimension_value_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -102,11 +109,13 @@ struct Line {
     currency: Option<String>,
     fx_rate: Option<Decimal>,
     memo: Option<String>,
+    dimension_value_ids: Vec<Uuid>,
 }
 
 async fn load_lines(conn: &mut PgConnection, document_id: Uuid) -> Result<Vec<Line>> {
     let lines = sqlx::query_as(
-        "SELECT id, line_no, account_id, debit, credit, currency, fx_rate, memo
+        "SELECT id, line_no, account_id, debit, credit, currency, fx_rate, memo,
+                dimension_value_ids
          FROM journal_entry_line WHERE document_id = $1 ORDER BY line_no",
     )
     .bind(document_id)
@@ -147,6 +156,10 @@ impl DocumentHandler for JournalEntry {
                     FieldMeta::new("fx_rate", "Exchange rate", FieldType::Decimal)
                         .rate(erpcraft_gl::RATE_PLACES),
                     FieldMeta::new("memo", "Memo", FieldType::Text),
+                    FieldMeta::new("dimension_value_ids", "Dimensions", FieldType::TextArray).help(
+                        "Ids of dimension values, at most one per dimension. The company's \
+                             other dimensions take their defaults when the entry is posted.",
+                    ),
                 ],
             }],
             states: vec![
@@ -229,6 +242,23 @@ impl DocumentHandler for JournalEntry {
             ));
         }
 
+        for (index, line) in body.lines.iter().enumerate() {
+            if let Some(refusal) = erpcraft_gl::values_refusal(
+                &mut *ctx.conn,
+                doc.company_id,
+                &line.dimension_value_ids,
+            )
+            .await?
+            {
+                return Err(Error::line(
+                    "lines",
+                    index + 1,
+                    Some("dimension_value_ids"),
+                    &refusal,
+                ));
+            }
+        }
+
         let ids = document::line_ids(
             &mut *ctx.conn,
             "journal_entry_line",
@@ -252,12 +282,24 @@ impl DocumentHandler for JournalEntry {
             body.lines.iter().map(|l| l.currency.as_deref()).collect();
         let rates: Vec<Option<Decimal>> = body.lines.iter().map(|l| l.fx_rate).collect();
         let memos: Vec<Option<&str>> = body.lines.iter().map(|l| l.memo.as_deref()).collect();
+        // A list per line, sent as text since Postgres has no array of
+        // arrays of different lengths.
+        let dimensions: Vec<String> = body
+            .lines
+            .iter()
+            .map(|l| {
+                let ids: Vec<String> = l.dimension_value_ids.iter().map(Uuid::to_string).collect();
+                format!("{{{}}}", ids.join(","))
+            })
+            .collect();
         sqlx::query(
-            "INSERT INTO journal_entry_line (id, document_id, line_no, account_id, debit, credit, currency, fx_rate, memo)
-             SELECT r.id, $1, r.line_no, r.account_id, r.debit, r.credit, r.currency, r.fx_rate, r.memo
+            "INSERT INTO journal_entry_line (id, document_id, line_no, account_id, debit, credit,
+                 currency, fx_rate, memo, dimension_value_ids)
+             SELECT r.id, $1, r.line_no, r.account_id, r.debit, r.credit, r.currency, r.fx_rate,
+                 r.memo, r.dimensions::uuid[]
              FROM unnest($2::uuid[], $3::int4[], $4::uuid[], $5::numeric[], $6::numeric[],
-                         $7::text[], $8::numeric[], $9::text[])
-                AS r(id, line_no, account_id, debit, credit, currency, fx_rate, memo)
+                         $7::text[], $8::numeric[], $9::text[], $10::text[])
+                AS r(id, line_no, account_id, debit, credit, currency, fx_rate, memo, dimensions)
              ORDER BY r.line_no",
         )
         .bind(doc.id)
@@ -269,6 +311,7 @@ impl DocumentHandler for JournalEntry {
         .bind(&currencies)
         .bind(&rates)
         .bind(&memos)
+        .bind(&dimensions)
         .execute(&mut *ctx.conn)
         .await?;
         Ok(())
@@ -391,11 +434,17 @@ impl Command for PostJournalEntry {
                 fx_rate: line.fx_rate,
                 memo: line.memo.clone(),
                 source_line_id: Some(line.id),
+                dimensions: if line.dimension_value_ids.is_empty() {
+                    Dimensions::Defaults
+                } else {
+                    Dimensions::Stated(line.dimension_value_ids.clone())
+                },
+                ..GlLine::default()
             })
             .collect();
 
         let posting = document::create_posting(ctx, &doc, doc.doc_date, doc.memo.clone()).await?;
-        erpcraft_gl::post(&mut *ctx.conn, &posting, &entries)
+        erpcraft_gl::post(ctx, &posting, &entries)
             .await
             .map_err(at_line)?;
         document::transition(ctx, &mut doc, "posted").await?;

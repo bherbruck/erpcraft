@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 chrono.workspace = true
+erpcraft-inventory.workspace = true
 erpcraft-kernel.workspace = true
 erpcraft-manufacturing.workspace = true
 erpcraft-purchasing.workspace = true

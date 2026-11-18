@@ -805,6 +805,43 @@ async fn follows(conn: &mut PgConnection, body: &Value) -> Result<Value> {
     }))
 }
 
+/// A document line for [`gl_scopes`]: its id, item, warehouse and charge.
+pub(crate) type LineAbout = (Uuid, Option<Uuid>, Option<Uuid>, Option<Uuid>);
+
+/// What each document line is about, for the general ledger's dimension
+/// defaults: its warehouse and the places above it, its item, its charge.
+/// `lines` gives each line's id, item, warehouse and charge.
+pub(crate) async fn gl_scopes(
+    conn: &mut PgConnection,
+    lines: &[LineAbout],
+) -> Result<std::collections::HashMap<Uuid, Vec<(&'static str, Uuid)>>> {
+    let places =
+        erpcraft_stock::locations(conn, lines.iter().filter_map(|(_, _, w, _)| *w)).await?;
+    Ok(lines
+        .iter()
+        .map(|&(id, item, warehouse, charge)| {
+            let mut scopes = match warehouse {
+                Some(warehouse) => places.scopes(warehouse, item),
+                None => item.map(|item| vec![("item", item)]).unwrap_or_default(),
+            };
+            if let Some(charge) = charge {
+                scopes.push(("charge", charge));
+            }
+            (id, scopes)
+        })
+        .collect())
+}
+
+/// The customer of a sales order.
+pub(crate) async fn order_customer(conn: &mut PgConnection, order_id: Uuid) -> Result<Uuid> {
+    Ok(
+        sqlx::query_scalar("SELECT customer_id FROM sales_order WHERE document_id = $1")
+            .bind(order_id)
+            .fetch_one(&mut *conn)
+            .await?,
+    )
+}
+
 fn gl_line(account_id: Uuid, debit: Decimal, credit: Decimal, source: Uuid) -> GlLine {
     GlLine {
         account_id,
@@ -814,6 +851,7 @@ fn gl_line(account_id: Uuid, debit: Decimal, credit: Decimal, source: Uuid) -> G
         fx_rate: None,
         memo: None,
         source_line_id: Some(source),
+        ..GlLine::default()
     }
 }
 
@@ -1765,7 +1803,10 @@ impl Command for PostDelivery {
         )
         .await?;
         if !gl.is_empty() {
-            erpcraft_gl::post(&mut *ctx.conn, &posting, &gl).await?;
+            let scopes = erpcraft_stock::line_scopes(&mut *ctx.conn, &entries).await?;
+            let customer = order_customer(&mut *ctx.conn, order.id).await?;
+            erpcraft_gl::add_scopes(&mut gl, &scopes, &[("customer", customer)]);
+            erpcraft_gl::post(ctx, &posting, &gl).await?;
         }
 
         settle_order(ctx, &mut order, &order_lines, false).await?;
@@ -2665,7 +2706,19 @@ impl Command for PostInvoice {
 
         let posting = document::create_posting(ctx, &doc, doc.doc_date, doc.memo.clone()).await?;
         if !gl.is_empty() {
-            erpcraft_gl::post(&mut *ctx.conn, &posting, &gl).await?;
+            let about: Vec<_> = lines
+                .iter()
+                .map(
+                    |line| match line.order_line_id.and_then(|id| order_lines.get(&id)) {
+                        Some(o) => (line.id, o.item_id, o.warehouse_id, o.charge_id),
+                        None => (line.id, None, None, line.charge_id),
+                    },
+                )
+                .collect();
+            let scopes = gl_scopes(&mut *ctx.conn, &about).await?;
+            let customer = invoice_customer(&mut *ctx.conn, doc.id).await?;
+            erpcraft_gl::add_scopes(&mut gl, &scopes, &[("customer", customer)]);
+            erpcraft_gl::post(ctx, &posting, &gl).await?;
         }
         erpcraft_tax::record(&mut *ctx.conn, &posting, &taxes).await?;
         // What is now owed, as one open item for a payment to settle.
