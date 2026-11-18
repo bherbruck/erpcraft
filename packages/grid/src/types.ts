@@ -65,7 +65,7 @@ export interface GridColumn<Row> {
 
 // ------------------------------------------------------------------ filters
 
-export type TextOp = "contains" | "equals" | "startsWith" | "empty" | "notEmpty";
+export type TextOp = "contains" | "equals" | "startsWith" | "endsWith" | "empty" | "notEmpty";
 export type NumberOp = "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "between" | "empty" | "notEmpty";
 export type DateOp = "on" | "before" | "after" | "between" | "relative" | "empty" | "notEmpty";
 export type RelativeRange = "today" | "thisMonth" | "lastMonth" | "thisQuarter" | "thisYear";

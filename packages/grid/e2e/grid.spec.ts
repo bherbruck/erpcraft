@@ -393,9 +393,11 @@ test("server mode: the query state and the erpcraft query follow sort, filter an
   await page.getByRole("button", { name: "Next" }).click();
   const erpcraft = JSON.parse((await page.getByTestId("erpcraft").textContent()) ?? "null");
   expect(erpcraft.command).toBe("document.list");
-  expect(erpcraft.input.sort).toEqual(["summary.total"]);
-  // Unticking from "everything" keeps blanks, as Excel's checklist does.
-  expect(erpcraft.input.where).toBe("(record.status in ['posted'] || record.status == null)");
+  expect(erpcraft.input.sort).toEqual(["summary.total nulls last"]);
+  // Unticking from "everything" keeps blanks, as Excel's checklist does; the values go as params.
+  expect(erpcraft.input.where).toBe("(record.status in params.g0 || record.status == null)");
+  expect(erpcraft.input.params).toEqual({ g0: ["posted"] });
+  expect(typeof erpcraft.input.time_zone).toBe("string");
   expect(erpcraft.input.offset).toBe(50);
   await expect(pager(page)).toContainText("Page 2 of");
   for (let r = 0; r < 3; r += 1) await expect(cell(page, r, 2)).toHaveText("Posted");

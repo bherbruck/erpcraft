@@ -299,32 +299,52 @@ action that opens the filter popover, plus "clear all". Quick search matches the
 
 ## The erpcraft query adapter
 
-`toErpcraftQuery(state, target, { today })` turns a `GridQueryState` into the exact input
+`toErpcraftQuery(state, target, { timeZone })` turns a `GridQueryState` into the exact input
 of `entity.list` or `document.list` (see `crates/erpcraft-kernel/src/builtin.rs`):
 
 ```ts
 const q = toErpcraftQuery(state, { kind: "entity", entity: "item", filters: { company_id }, activeOnly: true });
 // q.command === "entity.list"
-// q.input = { entity, filters, q, where, sort: ["name", "-price"], limit, offset, active_only }
+// q.input = { entity, filters, q, where, params, time_zone, sort: ["name nulls last"], limit, offset, active_only }
 // q.unsupported = [{ columnId, what: "filter" | "sort" | "page", reason }]
 const page = await api.run(q.command, q.input, { signal });
 
-toErpcraftQuery(state, { kind: "document", docType: "sales_order", companyId, status, summary });
-// q.input = { doc_type, company_id, status, q, where, sort, limit, offset, summary }
+toErpcraftQuery(state, { kind: "document", docType: "sales_order", companyId, status });
+// q.input = { doc_type, company_id, status, q, where, params, time_zone, sort, limit, offset, summary }
 ```
 
-The filters become one `where` condition in the rule language of `erpcraft-rules`
-(comparisons, `in`, `&&`, `||` over `record.<field>`). Values are written as quoted
-strings and cast by the server to the column's type, so decimals and days arrive exactly
-as typed. Conditions are joined as a balanced tree, which stays well inside the server's
-nesting limit of 64. Field names must be plain identifiers. On a document list, `summary.<field>`
-filters go to `summary` when they are a single exact value, and the sort takes header
-fields and `summary.<field>`. Every generated condition has been checked against the
-real `Rule::parse` and `to_sql`.
+How each filter is sent (the server needs commit fb678ec or later):
+
+| Grid filter | `where` |
+| --- | --- |
+| text contains, equals, starts with, ends with | `record.f.containsIgnoreCase('x')`, `equalsIgnoreCase`, `startsWithIgnoreCase`, `endsWithIgnoreCase`: case-insensitive like the grid in memory, `ILIKE` on the server with wildcards escaped |
+| text empty / not empty | `(record.f == null \|\| record.f == '')` and its opposite |
+| number, money | `record.f >= '1000.5'`, between as two bounds; values are exact decimal strings |
+| date on, before, after, between | `record.f == '2026-11-18'`, `<`, `>=` the next day, two bounds |
+| date relative | `record.f >= startOfMonth(addMonths(today(), -1)) && record.f <= endOfMonth(addMonths(today(), -1))`: worked out by the server each time, so a saved view stays relative |
+| datetime | from a day's midnight to the next one's in `time_zone` (the browser's zone unless `timeZone` says otherwise) |
+| checklist (enum, state, reference) | `record.f in params.g0` with the values in `params`: bound, so 500 ids cost the condition nothing |
+| boolean | `record.f == true`, `== false`, `== null` |
+| a document's summary field | the same, on `record.summary.<field>` |
+
+Every sort is sent with ` nulls last`, as the grid sorts empty values last in both
+directions. The server sorts a choice (state, enum) in its declared order and a reference
+by the linked record's name. Conditions are joined as a balanced tree, which stays well
+inside the server's nesting limit of 64. A target's own `where` and `params` are kept, and
+the grid's params are named `g0`, `g1` and so on.
 
 Anything the API cannot express is **left out of the query and listed in `unsupported`**,
 so the UI can say "this filter is not applied" instead of showing unfiltered rows as
-filtered. See "What the list API cannot express yet" in the report for the full list.
+filtered. What is still left out:
+
+- On a document list, filters and sorts on fields that are neither header fields
+  (`number`, `status`, `doc_date`, `memo`, …) nor summary fields. Sorting also excludes
+  `memo` and the other header fields outside `DOCUMENT_SORT_FIELDS`.
+- A page larger than 500 rows. It is clamped and reported.
+- A condition longer than 4,000 characters. With checklists in `params`, this takes dozens
+  of long text filters.
+- Quick search goes to `q`, which the server matches against the entity's own search
+  fields rather than against every visible text column.
 
 ## Layout of the package
 

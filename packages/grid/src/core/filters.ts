@@ -6,7 +6,7 @@ import { cellValue, formatCell, isEmptyValue, isSearchable, optionLabel } from "
 import { addDays, formatDay, resolveRange, toDay } from "./dates";
 import { compareDecimal, formatDecimal, toDecimal } from "./decimal";
 
-export const TEXT_OPS: TextOp[] = ["contains", "equals", "startsWith", "empty", "notEmpty"];
+export const TEXT_OPS: TextOp[] = ["contains", "equals", "startsWith", "endsWith", "empty", "notEmpty"];
 export const NUMBER_OPS: NumberOp[] = ["eq", "ne", "lt", "le", "gt", "ge", "between", "empty", "notEmpty"];
 export const DATE_OPS: DateOp[] = ["on", "before", "after", "between", "relative", "empty", "notEmpty"];
 export const RELATIVE_RANGES: RelativeRange[] = ["today", "thisMonth", "lastMonth", "thisQuarter", "thisYear"];
@@ -16,6 +16,7 @@ export const DEFAULT_LABELS = {
   contains: "contains",
   equals: "equals",
   startsWith: "starts with",
+  endsWith: "ends with",
   empty: "is empty",
   notEmpty: "is not empty",
   eq: "=",
@@ -134,6 +135,7 @@ export function matches(condition: FilterCondition, value: unknown, today?: Date
       const wanted = (condition.value ?? "").toLocaleLowerCase();
       if (condition.op === "equals") return text === wanted;
       if (condition.op === "startsWith") return text.startsWith(wanted);
+      if (condition.op === "endsWith") return text.endsWith(wanted);
       return text.includes(wanted);
     }
     case "number": {
