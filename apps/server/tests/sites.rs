@@ -330,3 +330,64 @@ async fn access_rules_read_the_sites_of_a_user() {
     assert_eq!(entries["items"][0]["site_id"], json!(f.ohio_site));
     t.stop().await;
 }
+
+/// A transfer says which sites it moves between, so rules by site can
+/// limit who moves what.
+#[tokio::test]
+async fn a_user_limited_to_ohio_cannot_move_texas_stock() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    f.adjust(&t, &f.houston, "3", Some("1")).await;
+    let dallas = t
+        .create(
+            "warehouse",
+            json!({ "company_id": f.c.id, "code": "DAL", "name": "Dallas", "site_id": f.texas_site }),
+        )
+        .await;
+    let ohio_only =
+        "record.summary.from_site_id in user.sites && record.summary.to_site_id in user.sites";
+    let (token, user) = t
+        .user_with_rules(
+            "ohio@example.com",
+            json!([
+                "stock_transfer:create", "stock_transfer:read", "stock_transfer:update",
+                { "allow": "stock_transfer:post", "where": ohio_only },
+            ]),
+            Some(&f.c.id),
+        )
+        .await;
+    t.set_attributes(&user, json!({ "sites": [f.ohio_site] }))
+        .await;
+    let draft = |from: String, to: String| {
+        let (t, token, c, item) = (&t, token.clone(), f.c.id.clone(), f.item.clone());
+        async move {
+            let (status, draft) = t
+                .post(
+                    &token,
+                    "/api/documents/stock_transfer",
+                    json!({ "company_id": c, "doc_date": "2026-03-15", "body": {
+                        "from_warehouse_id": from, "to_warehouse_id": to,
+                        "lines": [{ "item_id": item, "qty": "1" }] } }),
+                )
+                .await;
+            assert_eq!(status, StatusCode::CREATED, "{draft}");
+            draft
+        }
+    };
+    let texas = draft(f.houston.clone(), dallas).await;
+    assert_eq!(texas["summary"]["from_site_id"], json!(f.texas_site));
+    let (status, body) = t
+        .command(&token, "stock_transfer.post", json!({ "id": texas["id"] }))
+        .await;
+    assert!(
+        status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND,
+        "an Ohio-only user moved Texas stock: {status} {body}"
+    );
+    f.adjust(&t, &f.main, "2", Some("1")).await;
+    let ohio = draft(f.main.clone(), f.bin.clone()).await;
+    let (status, body) = t
+        .command(&token, "stock_transfer.post", json!({ "id": ohio["id"] }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    t.stop().await;
+}

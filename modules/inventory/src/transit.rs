@@ -28,6 +28,29 @@ use crate::{PostInput, ReverseInput, STOCK_TRANSFER, TransferLine, load_transfer
 pub(crate) const IN_TRANSIT_ACCOUNT: &str = "inventory_in_transit";
 /// The policy point asked for a transfer between sites in one step.
 pub(crate) const BETWEEN_SITES: &str = "stock_transfer.between_sites";
+/// The policy point asked when a shipped transfer is closed short.
+pub(crate) const CLOSE_SHORT: &str = "stock_transfer.close_short";
+/// The account purpose of goods lost on the way.
+const TRANSIT_LOSS: &str = "transit_loss";
+
+pub(crate) fn close_short_point() -> PolicyPoint {
+    PolicyPoint::new(
+        CLOSE_SHORT,
+        "Asked when a shipped transfer is closed short: may what has not arrived be written \
+         off as lost on the way? Unless configured otherwise it may. A company that wants a \
+         second pair of eyes on large losses asks for approval, for example when \
+         `facts.value_left > 1000`.",
+    )
+    .number("qty_left", "What is still on its way, all lines together")
+    .as_quantity()
+    .number(
+        "value_left",
+        "What it is worth at the transit warehouse's average cost",
+    )
+    .as_company_money()
+    .number("lines", "Lines with something still on their way")
+    .refusal("this transfer cannot be closed short")
+}
 const RECEIPT: &str = "stock_transfer_receipt";
 
 pub(crate) fn between_sites() -> PolicyPoint {
@@ -131,6 +154,23 @@ pub(crate) async fn ask_between_sites(
     .map_err(|e| e.with_field("transit_warehouse_id"))
 }
 
+/// The sites of two warehouses, for a summary that rules by site read.
+pub(crate) async fn sites_of(
+    conn: &mut PgConnection,
+    from: Option<Uuid>,
+    to: Option<Uuid>,
+) -> Result<(Option<Uuid>, Option<Uuid>)> {
+    let rows: Vec<(Uuid, Option<Uuid>)> =
+        sqlx::query_as("SELECT id, site_id FROM warehouse WHERE id = ANY ($1)")
+            .bind(from.into_iter().chain(to).collect::<Vec<_>>())
+            .fetch_all(&mut *conn)
+            .await?;
+    let site = |w: Option<Uuid>| {
+        w.and_then(|w| rows.iter().find(|(id, _)| *id == w).and_then(|(_, s)| *s))
+    };
+    Ok((site(from), site(to)))
+}
+
 /// A transfer was shipped: every line is on its way, nothing arrived yet.
 pub(crate) async fn start(
     conn: &mut PgConnection,
@@ -158,6 +198,7 @@ struct LineWithProgress {
     item_id: Uuid,
     qty: Decimal,
     qty_received: Option<Decimal>,
+    qty_written_off: Option<Decimal>,
 }
 
 /// The lines of a transfer as a reader sees them: with what has arrived of
@@ -167,7 +208,7 @@ pub(crate) async fn lines_with_progress(
     document_id: Uuid,
 ) -> Result<Vec<Value>> {
     let lines: Vec<LineWithProgress> = sqlx::query_as(
-        "SELECT l.id, l.line_no, l.item_id, l.qty, p.qty_received
+        "SELECT l.id, l.line_no, l.item_id, l.qty, p.qty_received, p.qty_written_off
          FROM stock_transfer_line l LEFT JOIN stock_transfer_progress p ON p.line_id = l.id
          WHERE l.document_id = $1 ORDER BY l.line_no",
     )
@@ -186,7 +227,7 @@ async fn left_on_lines(
     transfer_id: Uuid,
 ) -> Result<Vec<(Uuid, i32, Uuid, Decimal, Decimal)>> {
     Ok(sqlx::query_as(
-        "SELECT l.id, l.line_no, l.item_id, p.qty_shipped, p.qty_received
+        "SELECT l.id, l.line_no, l.item_id, p.qty_shipped, p.qty_received + p.qty_written_off
          FROM stock_transfer_progress p JOIN stock_transfer_line l ON l.id = p.line_id
          WHERE p.document_id = $1 ORDER BY l.line_no
          FOR UPDATE OF p",
@@ -302,11 +343,18 @@ impl DocumentHandler for TransferReceipt {
                     FieldType::document(STOCK_TRANSFER),
                 )
                 .readonly(),
+                FieldMeta::new("from_site_id", "From site", FieldType::link("site"))
+                    .readonly()
+                    .help("The site the transfer left from: what rules by site read."),
+                FieldMeta::new("to_site_id", "To site", FieldType::link("site"))
+                    .readonly()
+                    .help("The site the goods arrive at."),
                 FieldMeta::new("total_value", "Value", FieldType::Decimal)
                     .money()
                     .readonly()
                     .help("Known once posted: the value that arrived."),
             ],
+            summary_version: 1,
             plural: "Transfer receipts".into(),
             ..DocTypeMeta::default()
         }
@@ -408,8 +456,17 @@ impl DocumentHandler for TransferReceipt {
         body: &Value,
     ) -> Result<Value> {
         let moved = erpcraft_stock::value_moved(conn, doc.id).await?;
+        let (from_site, to_site) = match document::body::uuid(&body["transfer_id"]) {
+            Some(transfer) => {
+                let (from, to, _) = load_transfer(conn, transfer).await?;
+                sites_of(conn, Some(from), Some(to)).await?
+            }
+            None => (None, None),
+        };
         Ok(json!({
             "transfer_id": body["transfer_id"],
+            "from_site_id": from_site,
+            "to_site_id": to_site,
             "total_value": moved.map(|(arrived, _)| arrived),
         }))
     }
@@ -758,13 +815,14 @@ pub struct InTransit {
 pub async fn in_transit(conn: &mut PgConnection, company_id: Uuid) -> Result<Vec<InTransit>> {
     Ok(sqlx::query_as(
         "SELECT d.id AS transfer_id, l.id AS transfer_line_id, l.item_id,
-                t.to_warehouse_id AS warehouse_id, p.qty_shipped - p.qty_received AS qty
+                t.to_warehouse_id AS warehouse_id,
+                p.qty_shipped - p.qty_received - p.qty_written_off AS qty
          FROM stock_transfer_progress p
          JOIN stock_transfer_line l ON l.id = p.line_id
          JOIN stock_transfer t ON t.document_id = p.document_id
          JOIN document d ON d.id = p.document_id
          WHERE d.company_id = $1 AND d.status = 'in_transit'
-           AND p.qty_shipped > p.qty_received
+           AND p.qty_shipped > p.qty_received + p.qty_written_off
          ORDER BY d.doc_date, d.id, l.line_no",
     )
     .bind(company_id)
@@ -838,9 +896,11 @@ impl Command for InTransitReport {
             "SELECT d.id AS transfer_id, d.number AS transfer_number, d.doc_date AS shipped_on,
                     l.item_id, CASE WHEN $5 THEN i.code END AS item_code,
                     t.from_warehouse_id, t.to_warehouse_id, t.transit_warehouse_id,
-                    p.qty_shipped, p.qty_received, p.qty_shipped - p.qty_received AS qty_left,
+                    p.qty_shipped, p.qty_received,
+                    p.qty_shipped - p.qty_received - p.qty_written_off AS qty_left,
                     CASE WHEN s.qty > 0
-                         THEN round((p.qty_shipped - p.qty_received) * s.value / s.qty, $4)
+                         THEN round((p.qty_shipped - p.qty_received - p.qty_written_off)
+                                    * s.value / s.qty, $4)
                     END AS value
              FROM stock_transfer_progress p
              JOIN stock_transfer_line l ON l.id = p.line_id
@@ -850,7 +910,7 @@ impl Command for InTransitReport {
              LEFT JOIN stock_level s
                  ON s.item_id = l.item_id AND s.warehouse_id = t.transit_warehouse_id
              WHERE d.company_id = $1 AND d.status = 'in_transit'
-               AND p.qty_shipped > p.qty_received
+               AND p.qty_shipped > p.qty_received + p.qty_written_off
                AND ($2::uuid IS NULL OR t.to_warehouse_id = $2)
                AND ($3::uuid IS NULL OR l.item_id = $3)
              ORDER BY d.doc_date, d.number, l.line_no",
@@ -868,5 +928,152 @@ impl Command for InTransitReport {
             total_value: rows.iter().filter_map(|r| r.value).sum(),
             rows,
         })
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CloseShortInput {
+    /// Stock transfer id.
+    id: Uuid,
+    /// Accounting date of the write-off. Today when omitted.
+    posting_date: Option<NaiveDate>,
+    /// Memo of the posting.
+    memo: Option<String>,
+}
+
+/// Writes off what a shipped transfer never delivered.
+pub(crate) struct CloseShort;
+
+#[async_trait]
+impl Command for CloseShort {
+    type Input = CloseShortInput;
+    type Output = DocumentView;
+
+    fn spec(&self) -> CommandSpec {
+        CommandSpec::action(
+            "stock_transfer.close_short",
+            "Close a shipped transfer whose goods will not all arrive: what is still on its way \
+             leaves the transit warehouse at its average cost there and is written off to the \
+             account for `transit_loss` (by item or warehouse, else the company's), and the \
+             transfer is closed: nothing more can be received on it, and it no longer counts as \
+             coming in. Asks the policy stock_transfer.close_short. Receipts already posted \
+             stay. A transfer closed short is not reversed.",
+        )
+        .permission("stock_transfer:close_short")
+        .from_states(&["in_transit"])
+        .destructive()
+    }
+
+    async fn run(&self, ctx: &mut Ctx<'_>, input: CloseShortInput) -> Result<DocumentView> {
+        let mut doc = document::lock(ctx, STOCK_TRANSFER, input.id, "close_short").await?;
+        if doc.status == "closed" {
+            ctx.no_change();
+            return document::view(ctx, doc).await;
+        }
+        if doc.status != "in_transit" {
+            return Err(Error::state(format!(
+                "only a transfer in transit can be closed short; this one is {}",
+                doc.status
+            )));
+        }
+        let (_, _, through) = load_transfer(&mut *ctx.conn, doc.id).await?;
+        let through =
+            through.ok_or_else(|| Error::internal("a transfer in transit without its way"))?;
+        let left: Vec<(Uuid, i32, Uuid, Decimal, Decimal)> = left_on_lines(&mut *ctx.conn, doc.id)
+            .await?
+            .into_iter()
+            .filter(|(_, _, _, shipped, done)| shipped > done)
+            .collect();
+        let decimals = company::currency_decimals(&mut *ctx.conn, doc.company_id).await?;
+        let mut qty_left = Decimal::ZERO;
+        let mut value_left = Decimal::ZERO;
+        for (_, _, item, shipped, done) in &left {
+            let qty = shipped - done;
+            qty_left += qty;
+            let level: Option<(Decimal, Decimal)> = sqlx::query_as(
+                "SELECT qty, value FROM stock_level WHERE item_id = $1 AND warehouse_id = $2",
+            )
+            .bind(item)
+            .bind(through)
+            .fetch_optional(&mut *ctx.conn)
+            .await?;
+            if let Some((on_hand, value)) = level.filter(|(q, _)| *q > Decimal::ZERO) {
+                value_left += erpcraft_kernel::round_money(qty * value / on_hand, decimals);
+            }
+        }
+        ctx.decide(
+            CLOSE_SHORT,
+            doc.company_id,
+            json!({
+                "qty_left": qty_left.normalize().to_string(),
+                "value_left": value_left.to_string(),
+                "lines": left.len(),
+            }),
+        )
+        .await?;
+
+        if !left.is_empty() {
+            let date = input
+                .posting_date
+                .unwrap_or_else(|| erpcraft_kernel::Utc::now().date_naive());
+            let memo = input
+                .memo
+                .or_else(|| doc.number.as_ref().map(|n| format!("Lost on the way: {n}")));
+            let posting = document::create_posting(ctx, &doc, date, memo).await?;
+            let pairs = left
+                .iter()
+                .map(|(_, _, item, _, _)| (*item, through))
+                .collect();
+            erpcraft_stock::lock_levels(&mut *ctx.conn, doc.company_id, pairs).await?;
+            let places = erpcraft_stock::locations(&mut *ctx.conn, [through]).await?;
+            let movements: Vec<erpcraft_stock::StockLine> = left
+                .iter()
+                .map(|(line, _, item, shipped, done)| erpcraft_stock::StockLine {
+                    item_id: *item,
+                    warehouse_id: through,
+                    qty: -(shipped - done),
+                    cost: None,
+                    source_line_id: Some(*line),
+                })
+                .collect();
+            let entries = erpcraft_stock::post(ctx, &posting, &movements, "transfer").await?;
+            let mut gl = vec![];
+            for entry in &entries {
+                let value = -entry.value;
+                if value.is_zero() {
+                    continue;
+                }
+                let scopes = places.scopes(through, Some(entry.item_id));
+                let carried = crate::inventory_account(ctx, &doc, entry.item_id, through).await?;
+                let lost = erpcraft_gl::account_for(
+                    &mut *ctx.conn,
+                    doc.company_id,
+                    TRANSIT_LOSS,
+                    &[("item", entry.item_id), ("warehouse", through)],
+                )
+                .await?;
+                gl.extend(
+                    crate::signed(lost, value, entry.source_line_id).map(|l| l.about(&scopes)),
+                );
+                gl.extend(
+                    crate::signed(carried, -value, entry.source_line_id).map(|l| l.about(&scopes)),
+                );
+            }
+            if !gl.is_empty() {
+                erpcraft_gl::post(ctx, &posting, &gl).await?;
+            }
+            let ids: Vec<Uuid> = left.iter().map(|l| l.0).collect();
+            sqlx::query(
+                "UPDATE stock_transfer_progress
+                 SET qty_written_off = qty_shipped - qty_received
+                 WHERE line_id = ANY ($1)",
+            )
+            .bind(&ids)
+            .execute(&mut *ctx.conn)
+            .await?;
+        }
+        document::transition(ctx, &mut doc, "closed").await?;
+        document::view(ctx, doc).await
     }
 }

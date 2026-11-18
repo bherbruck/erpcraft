@@ -1482,15 +1482,16 @@ impl Registry {
     }
 
     /// The fields of a resource that permission rules can refer to: the
-    /// fields of an entity, or the header of a document type. `None` when
-    /// the name is neither.
+    /// fields of an entity, or the header of a document type with its
+    /// summary's fields as `summary.<field>`. `None` when the name is
+    /// neither.
     pub fn rule_columns(&self, resource: &str) -> Option<BTreeMap<String, ColumnType>> {
         if let Some(entity) = self.entities.get(resource) {
             return Some(entity.rule_columns());
         }
         self.doc_types
-            .contains_key(resource)
-            .then(crate::document::rule_columns)
+            .get(resource)
+            .map(|entry| crate::document::rule_columns_of(&entry.meta))
     }
 
     pub fn policy(&self, name: &str) -> Result<&PolicyPoint> {

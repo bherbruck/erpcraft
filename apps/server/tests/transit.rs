@@ -331,3 +331,151 @@ async fn goods_in_transit_move_only_with_transfers() {
     assert_eq!(f.ties(&t).await, (0.0, 10.0));
     t.stop().await;
 }
+
+/// A transit warehouse that holds goods stays one, and a warehouse that
+/// holds stock keeps its site and place: the value carried for it would
+/// otherwise stay where it was posted.
+#[tokio::test]
+async fn a_warehouse_holding_stock_keeps_what_it_is() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let (status, body) = f
+        .draft(
+            &t,
+            "stock_adjustment",
+            json!({ "offset_account_id": f.expense, "lines": [
+                { "item_id": f.item, "warehouse_id": f.main, "qty": "10", "unit_cost": "5" }] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    f.ok(&t, "stock_adjustment.post", &id(&body)).await;
+    let (status, shipped) = f.transfer(&t, "10", Some(&f.transit)).await;
+    assert_eq!(status, StatusCode::OK, "{shipped}");
+    assert_eq!(f.ties(&t).await, (0.0, 50.0));
+    let (status, body) = t
+        .patch(
+            &t.admin,
+            &format!("/api/entities/warehouse/{}", f.transit),
+            json!({ "transit": false }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("holds stock")
+    );
+    let (status, received) = f.receive(&t, &shipped, "10").await;
+    assert_eq!(status, StatusCode::OK, "{received}");
+    assert_eq!(f.ties(&t).await, (50.0, 0.0));
+    // Empty, the transit warehouse may become an ordinary one.
+    let (status, body) = t
+        .patch(
+            &t.admin,
+            &format!("/api/entities/warehouse/{}", f.transit),
+            json!({ "transit": false }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // Houston holds the goods: it stays at its site and in its place.
+    let (_, sites) = t.get(&t.admin, "/api/entities/site").await;
+    let ohio = sites["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["code"] == "OH")
+        .unwrap()["id"]
+        .clone();
+    let (status, _) = t
+        .patch(
+            &t.admin,
+            &format!("/api/entities/warehouse/{}", f.houston),
+            json!({ "site_id": ohio }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK);
+    let (status, _) = t
+        .patch(
+            &t.admin,
+            &format!("/api/entities/warehouse/{}", f.houston),
+            json!({ "parent_id": f.main }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK);
+    t.stop().await;
+}
+
+/// Goods that will never arrive are written off and the transfer closed.
+#[tokio::test]
+async fn a_shipped_transfer_is_closed_short() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let loss = t
+        .create(
+            "account",
+            json!({ "company_id": f.c.id, "code": "6500", "name": "Lost in transit",
+                    "account_type": "expense" }),
+        )
+        .await;
+    t.create(
+        "account_rule",
+        json!({ "company_id": f.c.id, "purpose": "transit_loss", "account_id": loss }),
+    )
+    .await;
+    let (_, body) = f
+        .draft(
+            &t,
+            "stock_adjustment",
+            json!({ "offset_account_id": f.expense, "lines": [
+                { "item_id": f.item, "warehouse_id": f.main, "qty": "10", "unit_cost": "5" }] }),
+        )
+        .await;
+    f.ok(&t, "stock_adjustment.post", &id(&body)).await;
+    let (_, shipped) = f.transfer(&t, "10", Some(&f.transit)).await;
+    let (status, received) = f.receive(&t, &shipped, "7").await;
+    assert_eq!(status, StatusCode::OK, "{received}");
+
+    // A company can hold large losses for a question first.
+    t.create(
+        "policy_rule",
+        json!({ "company_id": f.c.id, "point": "stock_transfer.close_short", "effect": "refuse",
+                "condition": "facts.value_left > 100", "message": "ask the controller" }),
+    )
+    .await;
+    let closed = f.ok(&t, "stock_transfer.close_short", &id(&shipped)).await;
+    assert_eq!(closed["status"], "closed");
+    assert_eq!(dec(&closed["body"]["lines"][0]["qty_written_off"]), 3.0);
+    // Nothing on its way, nothing in the transit warehouse, the loss on
+    // its account, and the ledgers equal.
+    assert_eq!(f.ties(&t).await, (35.0, 0.0));
+    let (_, tb) = t
+        .command(
+            &t.admin,
+            "gl.trial_balance",
+            json!({ "company_id": f.c.id }),
+        )
+        .await;
+    let lost: f64 = tb["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["code"] == "6500")
+        .map(|r| dec(&r["balance"]))
+        .sum();
+    assert_eq!(lost, 15.0);
+    let (_, report) = t
+        .command(
+            &t.admin,
+            "stock_transfer.in_transit",
+            json!({ "company_id": f.c.id }),
+        )
+        .await;
+    assert_eq!(report["rows"], json!([]));
+    // Closed is closed: no receipt, no reversal.
+    let (status, _) = f.run(&t, "stock_transfer.receive", &id(&shipped)).await;
+    assert_ne!(status, StatusCode::OK);
+    let (status, _) = f.run(&t, "stock_transfer.reverse", &id(&shipped)).await;
+    assert_ne!(status, StatusCode::OK);
+    t.stop().await;
+}

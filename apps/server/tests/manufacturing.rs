@@ -1174,3 +1174,73 @@ async fn absorbed_cost_is_not_credited_to_a_stock_account() {
     assert_eq!(p.books(&t).await, (70.0, 0.0));
     t.stop().await;
 }
+
+/// A component carried on the product's own account still moves when it
+/// has other dimension values than the product: each component's credit
+/// keeps its own dimension set.
+#[tokio::test]
+async fn a_component_on_the_products_account_moves_between_its_dimensions() {
+    let t = TestApp::start().await;
+    let p = setup(&t).await;
+    p.made(&t, &p.sugar).await;
+    let project = t
+        .create(
+            "dimension",
+            json!({ "company_id": p.c.id, "code": "LINE", "name": "Product line" }),
+        )
+        .await;
+    let value = |code: &'static str| {
+        let (company, project) = (p.c.id.clone(), project.clone());
+        let t = &t;
+        async move {
+            t.create(
+                "dimension_value",
+                json!({ "company_id": company, "dimension_id": project, "code": code, "name": code }),
+            )
+            .await
+        }
+    };
+    let baking = value("BAKING").await;
+    let cakes = value("CAKES").await;
+    for (item, value) in [(&p.sugar, &baking), (&p.cake, &cakes)] {
+        t.create(
+            "dimension_rule",
+            json!({ "company_id": p.c.id, "scope_type": "item", "scope_id": item, "value_id": value }),
+        )
+        .await;
+    }
+    p.stock_up(&t).await;
+    let order = p.released(&t, "3").await;
+    let (status, done) = step(&t, "complete", &order).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    let entries = done["postings"][0]["entries"]["gl"].as_array().unwrap();
+    // Sugar leaves 1310 under BAKING; the cake arrives there under CAKES.
+    let sugar = entries
+        .iter()
+        .find(|e| e["account_code"] == "1310" && dec(&e["credit"]) > 0.0)
+        .unwrap_or_else(|| panic!("no credit of the sugar on 1310: {entries:?}"));
+    assert_eq!(sugar["dimensions"], "LINE:BAKING");
+    let balance = |value: String| {
+        let (t, c) = (&t, p.c.id.clone());
+        async move {
+            let (_, tb) = t
+                .command(
+                    &t.admin,
+                    "gl.trial_balance",
+                    json!({ "company_id": c, "dimension_value_ids": [value] }),
+                )
+                .await;
+            tb["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|r| r["code"] == "1310")
+                .map(|r| dec(&r["balance"]))
+                .sum::<f64>()
+        }
+    };
+    // All the sugar went into the cakes: nothing is left under BAKING.
+    assert!(balance(baking).await.abs() < 1e-9);
+    assert!(balance(cakes).await > 0.0);
+    t.stop().await;
+}

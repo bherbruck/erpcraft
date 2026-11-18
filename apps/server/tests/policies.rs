@@ -909,6 +909,7 @@ async fn policy_points_are_described_for_interfaces_and_agents() {
             "sales_order.reopen_on_return",
             "stock.negative",
             "stock_transfer.between_sites",
+            "stock_transfer.close_short",
             "tax_code.use",
             VENDOR_INACTIVE,
             "vendor_credit.without_invoice",

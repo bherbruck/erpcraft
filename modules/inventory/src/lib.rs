@@ -61,6 +61,11 @@ impl Module for InventoryModule {
                 name: "transit",
                 sql: include_str!("../migrations/0004_transit.sql"),
             },
+            Migration {
+                version: 5,
+                name: "close_short",
+                sql: include_str!("../migrations/0005_close_short.sql"),
+            },
         ]
     }
 
@@ -73,7 +78,7 @@ impl Module for InventoryModule {
     }
 
     fn policies(&self) -> Vec<erpcraft_kernel::PolicyPoint> {
-        vec![transit::between_sites()]
+        vec![transit::between_sites(), transit::close_short_point()]
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
@@ -90,6 +95,7 @@ impl Module for InventoryModule {
             }),
             command(PostTransfer),
             command(transit::ReverseTransfer),
+            command(transit::CloseShort),
             command(transit::Receive),
             command(transit::PostReceipt),
             command(transit::ReverseReceipt),
@@ -703,6 +709,11 @@ impl DocumentHandler for StockTransfer {
                         .unit_of("item_id", "uom")
                         .readonly()
                         .help("Of a shipped transfer: what has arrived at the destination."),
+                    FieldMeta::new("qty_written_off", "Written off", FieldType::Decimal)
+                        .quantity()
+                        .unit_of("item_id", "uom")
+                        .readonly()
+                        .help("Of a transfer closed short: what never arrived."),
                 ],
             }],
             states: vec![
@@ -710,6 +721,7 @@ impl DocumentHandler for StockTransfer {
                 StateMeta::locked("posted", "Posted"),
                 StateMeta::locked("in_transit", "In transit").tone(Tone::Info),
                 StateMeta::locked("received", "Received"),
+                StateMeta::locked("closed", "Closed short"),
                 StateMeta::locked("reversed", "Reversed"),
             ],
             initial_state: "draft".into(),
@@ -720,6 +732,7 @@ impl DocumentHandler for StockTransfer {
                 ("in_transit".into(), "received".into()),
                 ("received".into(), "in_transit".into()),
                 ("in_transit".into(), "reversed".into()),
+                ("in_transit".into(), "closed".into()),
             ],
             summary: vec![
                 FieldMeta::new(
@@ -734,11 +747,18 @@ impl DocumentHandler for StockTransfer {
                     FieldType::link("warehouse"),
                 )
                 .readonly(),
+                FieldMeta::new("from_site_id", "From site", FieldType::link("site"))
+                    .readonly()
+                    .help("The source warehouse's site: what rules by site read."),
+                FieldMeta::new("to_site_id", "To site", FieldType::link("site"))
+                    .readonly()
+                    .help("The destination warehouse's site."),
                 FieldMeta::new("total_value", "Value", FieldType::Decimal)
                     .money()
                     .readonly()
                     .help("Known once posted: the value that moved."),
             ],
+            summary_version: 1,
             ..DocTypeMeta::default()
         }
     }
@@ -835,9 +855,17 @@ impl DocumentHandler for StockTransfer {
         body: &Value,
     ) -> Result<Value> {
         let moved = erpcraft_stock::value_moved(conn, doc.id).await?;
+        let (from_site, to_site) = transit::sites_of(
+            conn,
+            erpcraft_kernel::document::body::uuid(&body["from_warehouse_id"]),
+            erpcraft_kernel::document::body::uuid(&body["to_warehouse_id"]),
+        )
+        .await?;
         Ok(json!({
             "from_warehouse_id": body["from_warehouse_id"],
             "to_warehouse_id": body["to_warehouse_id"],
+            "from_site_id": from_site,
+            "to_site_id": to_site,
             "total_value": moved.map(|(arrived, _)| arrived),
         }))
     }

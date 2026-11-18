@@ -506,6 +506,20 @@ pub struct DocumentChange {
     pub body: Option<Value>,
 }
 
+/// The fields of a document of this type that permission rules can refer
+/// to: its header, and its summary's fields as `summary.<field>`, so that
+/// a rule can limit documents by what their summary says (a transfer's
+/// sites, an order's vendor).
+pub(crate) fn rule_columns_of(meta: &DocTypeMeta) -> BTreeMap<String, ColumnType> {
+    let mut columns = rule_columns();
+    for field in &meta.summary {
+        if let Some(ty) = field.ty.column_type() {
+            columns.insert(format!("summary.{}", field.name), ty);
+        }
+    }
+    columns
+}
+
 /// The header fields of a document that permission rules can refer to.
 pub(crate) fn rule_columns() -> BTreeMap<String, ColumnType> {
     [
@@ -1033,10 +1047,14 @@ pub async fn list(
             ))
         })
     };
+    // A caller's condition names the header and, below, the summary fields
+    // the caller may filter by; permission rules may name every summary
+    // field.
     let columns = rule_columns();
+    let rule_columns = rule_columns_of(meta);
     let scope = RowScope {
         alias: "t",
-        columns: &columns,
+        columns: &rule_columns,
         company_column: Some("company_id"),
     };
 

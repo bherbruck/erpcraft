@@ -88,6 +88,11 @@ impl Module for StockModule {
                 name: "sites",
                 sql: include_str!("../migrations/0008_sites.sql"),
             },
+            Migration {
+                version: 9,
+                name: "warehouse_guards",
+                sql: include_str!("../migrations/0009_warehouse_guards.sql"),
+            },
         ]
     }
 

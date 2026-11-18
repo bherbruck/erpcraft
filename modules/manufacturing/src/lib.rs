@@ -943,7 +943,8 @@ impl Command for Complete {
         let variance: Decimal = made.iter().map(|entry| entry.variance).sum();
 
         // The value moves from each component's account to the product's.
-        // A component kept on the product's own account moves nothing.
+        // A component kept on the product's own account, with the same
+        // dimension values (its item's, its warehouse's), moves nothing.
         let line = |account_id, debit, credit, source_line_id| GlLine {
             account_id,
             debit,
@@ -954,14 +955,49 @@ impl Command for Complete {
             source_line_id,
             ..GlLine::default()
         };
-        let mut gl: Vec<GlLine> = consumed
-            .iter()
-            .zip(&accounts)
-            .filter(|(entry, account)| !entry.value.is_zero() && **account != product_account)
-            .map(|(entry, account)| {
-                line(*account, Decimal::ZERO, -entry.value, entry.source_line_id)
-            })
-            .collect();
+        let component_scopes = erpcraft_stock::line_scopes(&mut *ctx.conn, &consumed).await?;
+        let product_scopes = erpcraft_stock::locations(&mut *ctx.conn, [order.warehouse_id])
+            .await?
+            .scopes(order.warehouse_id, Some(order.item_id));
+        let dims_of = |scopes: &[(&'static str, Uuid)], account: Uuid| {
+            let mut scopes = scopes.to_vec();
+            scopes.push(("account", account));
+            scopes
+        };
+        let product_dims = erpcraft_gl::dimension_for(
+            &mut *ctx.conn,
+            doc.company_id,
+            &dims_of(&product_scopes, product_account),
+        )
+        .await?;
+        let mut gl: Vec<GlLine> = vec![];
+        for (entry, account) in consumed.iter().zip(&accounts) {
+            if entry.value.is_zero() {
+                continue;
+            }
+            if *account == product_account {
+                let scopes = entry
+                    .source_line_id
+                    .and_then(|id| component_scopes.get(&id))
+                    .cloned()
+                    .unwrap_or_default();
+                let dims = erpcraft_gl::dimension_for(
+                    &mut *ctx.conn,
+                    doc.company_id,
+                    &dims_of(&scopes, *account),
+                )
+                .await?;
+                if dims == product_dims {
+                    continue;
+                }
+            }
+            gl.push(line(
+                *account,
+                Decimal::ZERO,
+                -entry.value,
+                entry.source_line_id,
+            ));
+        }
         gl.extend(absorbed.iter().map(|(account, amount, source)| {
             line(*account, Decimal::ZERO, *amount, Some(*source))
         }));
