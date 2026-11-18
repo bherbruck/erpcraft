@@ -70,8 +70,16 @@ struct PartyRow {
     account_name: Option<String>,
 }
 
-async fn party_row(conn: &mut PgConnection, kind: &str, id: Uuid) -> Result<PartyRow> {
-    let d = erpcraft_party::load(&mut *conn, kind, id).await?;
+/// The party as the document shows it: what it kept when it was posted,
+/// else the party's data now.
+async fn party_row(
+    conn: &mut PgConnection,
+    document_id: Uuid,
+    role: erpcraft_party::Role,
+    kind: &str,
+    id: Uuid,
+) -> Result<PartyRow> {
+    let d = erpcraft_party::load_for_document(&mut *conn, document_id, role, kind, id).await?;
     let address = d.address.clone();
     let mut row = PartyRow {
         legal_name: d.legal_name.clone(),
@@ -191,7 +199,14 @@ pub async fn build(
         )));
     }
 
-    let seller = party_row(&mut *conn, "company", doc.company_id).await?;
+    let seller = party_row(
+        &mut *conn,
+        doc.id,
+        erpcraft_party::Role::Seller,
+        "company",
+        doc.company_id,
+    )
+    .await?;
     let customer_id = doc.summary["customer_id"]
         .as_str()
         .and_then(|s| Uuid::parse_str(s).ok())
@@ -201,7 +216,14 @@ pub async fn build(
             .bind(customer_id)
             .fetch_one(&mut *conn)
             .await?;
-    let buyer = party_row(&mut *conn, "customer", customer_id).await?;
+    let buyer = party_row(
+        &mut *conn,
+        doc.id,
+        erpcraft_party::Role::Buyer,
+        "customer",
+        customer_id,
+    )
+    .await?;
 
     // Everything the invoice needs that a person has to set, and where:
     // the party module's records of the company and the customer.

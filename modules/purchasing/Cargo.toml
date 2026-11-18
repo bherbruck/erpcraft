@@ -10,6 +10,7 @@ license.workspace = true
 erpcraft-kernel.workspace = true
 erpcraft-gl.workspace = true
 erpcraft-openitems.workspace = true
+erpcraft-party.workspace = true
 erpcraft-stock.workspace = true
 erpcraft-tax.workspace = true
 chrono.workspace = true

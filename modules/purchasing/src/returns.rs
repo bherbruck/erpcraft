@@ -465,6 +465,13 @@ impl Command for PostReturn {
             }
         }
         settle_order(ctx, &mut order, &order_lines, false).await?;
+        // The parties as the order showed them, kept from now on.
+        let vendor: Uuid =
+            sqlx::query_scalar("SELECT vendor_id FROM purchase_order WHERE document_id = $1")
+                .bind(order_id)
+                .fetch_one(&mut *ctx.conn)
+                .await?;
+        crate::keep_parties(&mut *ctx.conn, &doc, order_id, vendor).await?;
         document::transition(ctx, &mut doc, "posted").await?;
         document::view(ctx, doc).await
     }
@@ -1557,6 +1564,9 @@ impl Command for PostCreditNote {
         if let Some(order) = &mut order {
             settle_order(ctx, order, &order_lines, false).await?;
         }
+        // The parties as the invoice showed them, kept from now on.
+        let vendor = crate::invoice_vendor(&mut *ctx.conn, invoice_id).await?;
+        crate::keep_parties(&mut *ctx.conn, &doc, invoice_id, vendor).await?;
         document::transition(ctx, &mut doc, "posted").await?;
         document::view(ctx, doc).await
     }

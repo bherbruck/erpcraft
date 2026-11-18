@@ -103,6 +103,11 @@ impl Module for PurchasingModule {
                 name: "allocate_by_weight",
                 sql: include_str!("../migrations/0010_allocate_by_weight.sql"),
             },
+            Migration {
+                version: 11,
+                name: "addresses",
+                sql: include_str!("../migrations/0011_addresses.sql"),
+            },
         ]
     }
 
@@ -635,6 +640,9 @@ struct OrderBody {
     currency: Option<String>,
     /// The vendor's terms when omitted.
     payment_terms_id: Option<Uuid>,
+    /// One of the vendor's addresses, the one it sells from; its default
+    /// billing address when omitted.
+    billing_address_id: Option<Uuid>,
     #[serde(default)]
     lines: Vec<OrderLineInput>,
 }
@@ -674,6 +682,7 @@ impl DocumentHandler for PurchaseOrder {
                      accounting currency when left out; fixed once the order is approved.",
                 ),
                 terms_field("The vendor's usual terms when left out; what its invoices start with."),
+                vendor_address_field(),
             ],
             collections: vec![CollectionMeta {
                 name: "lines".into(),
@@ -810,18 +819,31 @@ impl DocumentHandler for PurchaseOrder {
                 .await
                 .map_err(|e| e.with_field("currency"))?;
         }
+        if let Some(address) = body.billing_address_id {
+            erpcraft_party::check_address(
+                &mut *ctx.conn,
+                "vendor",
+                body.vendor_id,
+                address,
+                "billing_address_id",
+            )
+            .await?;
+        }
         // The vendor's terms unless the order names others.
         sqlx::query(
-            "INSERT INTO purchase_order (document_id, vendor_id, currency, payment_terms_id)
+            "INSERT INTO purchase_order (document_id, vendor_id, currency, payment_terms_id,
+                 billing_address_id)
              VALUES ($1, $2, $3,
-                     COALESCE($4, (SELECT payment_terms_id FROM vendor WHERE id = $2)))
+                     COALESCE($4, (SELECT payment_terms_id FROM vendor WHERE id = $2)), $5)
              ON CONFLICT (document_id) DO UPDATE SET vendor_id = EXCLUDED.vendor_id,
-                currency = EXCLUDED.currency, payment_terms_id = EXCLUDED.payment_terms_id",
+                currency = EXCLUDED.currency, payment_terms_id = EXCLUDED.payment_terms_id,
+                billing_address_id = EXCLUDED.billing_address_id",
         )
         .bind(doc.id)
         .bind(body.vendor_id)
         .bind(currency)
         .bind(body.payment_terms_id)
+        .bind(body.billing_address_id)
         .execute(&mut *ctx.conn)
         .await?;
         let line_ids = document::line_ids(
@@ -945,15 +967,17 @@ impl DocumentHandler for PurchaseOrder {
     }
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
-        let (vendor, currency, terms): (Uuid, String, Option<Uuid>) = sqlx::query_as(
-            "SELECT o.vendor_id, COALESCE(o.currency, c.base_currency), o.payment_terms_id
+        let (vendor, currency, terms, billing): (Uuid, String, Option<Uuid>, Option<Uuid>) =
+            sqlx::query_as(
+                "SELECT o.vendor_id, COALESCE(o.currency, c.base_currency), o.payment_terms_id,
+                    o.billing_address_id
              FROM purchase_order o
              JOIN company c ON c.id = $2 WHERE o.document_id = $1",
-        )
-        .bind(doc.id)
-        .bind(doc.company_id)
-        .fetch_one(&mut *conn)
-        .await?;
+            )
+            .bind(doc.id)
+            .bind(doc.company_id)
+            .fetch_one(&mut *conn)
+            .await?;
         let decimals = erpcraft_gl::currency_decimals(conn, &currency).await?;
         let mut lines = order_lines(conn, doc.id).await?;
         for line in &mut lines {
@@ -963,6 +987,7 @@ impl DocumentHandler for PurchaseOrder {
             "vendor_id": vendor,
             "currency": currency,
             "payment_terms_id": terms,
+            "billing_address_id": billing,
             "lines": lines,
         }))
     }
@@ -1028,6 +1053,22 @@ impl Command for OrderStep {
                     ));
                 }
                 check_vendor(ctx, &order, PURCHASE_ORDER).await?;
+                // The parties the order is sent with.
+                let (vendor, billing): (Uuid, Option<Uuid>) = sqlx::query_as(
+                    "SELECT vendor_id, billing_address_id FROM purchase_order
+                     WHERE document_id = $1",
+                )
+                .bind(order.id)
+                .fetch_one(&mut *ctx.conn)
+                .await?;
+                erpcraft_party::snapshot_purchase(
+                    &mut *ctx.conn,
+                    order.id,
+                    order.company_id,
+                    vendor,
+                    billing,
+                )
+                .await?;
                 ctx.decide(
                     policy::APPROVE_ORDER,
                     order.company_id,
@@ -1204,6 +1245,46 @@ fn currency_field() -> FieldMeta {
 }
 
 /// The payment terms an order or invoice is on.
+/// The vendor's address a document names: where it sells from.
+fn vendor_address_field() -> FieldMeta {
+    erpcraft_party::address_field(
+        "billing_address_id",
+        "Vendor address",
+        "vendor",
+        "vendor_id",
+        "billing",
+        "One of the vendor's addresses; the order's, else its default billing address, when \
+         left out. The document keeps a copy of it when it is posted.",
+    )
+}
+
+/// The vendor of an invoice: its own, or its order's.
+pub(crate) async fn invoice_vendor(conn: &mut PgConnection, invoice: Uuid) -> Result<Uuid> {
+    Ok(sqlx::query_scalar(
+        "SELECT COALESCE(i.vendor_id, o.vendor_id)
+         FROM vendor_invoice i LEFT JOIN purchase_order o ON o.document_id = i.purchase_order_id
+         WHERE i.document_id = $1",
+    )
+    .bind(invoice)
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+/// Keep on `doc` the parties of the document it follows (`from`): a
+/// receipt or a return those of its order, a credit note those of its
+/// invoice. When that one kept none, the vendor's defaults now.
+pub(crate) async fn keep_parties(
+    conn: &mut PgConnection,
+    doc: &Document,
+    from: Uuid,
+    vendor: Uuid,
+) -> Result<()> {
+    if !erpcraft_party::copy_parties(&mut *conn, from, doc.id).await? {
+        erpcraft_party::snapshot_purchase(conn, doc.id, doc.company_id, vendor, None).await?;
+    }
+    Ok(())
+}
+
 fn terms_field(help: &str) -> FieldMeta {
     FieldMeta::new(
         "payment_terms_id",
@@ -1779,6 +1860,13 @@ impl Command for PostReceipt {
         }
 
         settle_order(ctx, &mut order, &order_lines, false).await?;
+        // The parties as the order showed them, kept from now on.
+        let vendor: Uuid =
+            sqlx::query_scalar("SELECT vendor_id FROM purchase_order WHERE document_id = $1")
+                .bind(order_id)
+                .fetch_one(&mut *ctx.conn)
+                .await?;
+        crate::keep_parties(&mut *ctx.conn, &doc, order_id, vendor).await?;
         document::transition(ctx, &mut doc, "posted").await?;
         document::view(ctx, doc).await
     }
@@ -1893,6 +1981,9 @@ struct InvoiceBody {
     fx_rate: Option<Decimal>,
     /// The order's terms when omitted.
     payment_terms_id: Option<Uuid>,
+    /// One of the vendor's addresses; the order's, else the vendor's
+    /// default billing address, when omitted.
+    billing_address_id: Option<Uuid>,
     #[serde(default)]
     lines: Vec<InvoiceLineInput>,
 }
@@ -1991,6 +2082,7 @@ impl DocumentHandler for VendorInvoice {
                     "The order's terms when left out. They set when the invoice is due and the \
                      discount for paying it early.",
                 ),
+                vendor_address_field(),
             ],
             collections: vec![CollectionMeta {
                 name: "lines".into(),
@@ -2147,18 +2239,33 @@ impl DocumentHandler for VendorInvoice {
             .vendor_reference
             .map(|r| r.trim().to_owned())
             .filter(|r| !r.is_empty());
-        // The order's terms unless the invoice names others.
+        if let Some(address) = body.billing_address_id {
+            let vendor = invoice_vendor(&mut *ctx.conn, doc.id).await?;
+            erpcraft_party::check_address(
+                &mut *ctx.conn,
+                "vendor",
+                vendor,
+                address,
+                "billing_address_id",
+            )
+            .await?;
+        }
+        // The order's terms and address unless the invoice names others.
         sqlx::query(
             "UPDATE vendor_invoice i SET vendor_reference = $2,
                 payment_terms_id = COALESCE($3, (SELECT o.payment_terms_id FROM purchase_order o
                                                  WHERE o.document_id = i.purchase_order_id),
                                             (SELECT v.payment_terms_id FROM vendor v
-                                             WHERE v.id = i.vendor_id))
+                                             WHERE v.id = i.vendor_id)),
+                billing_address_id = COALESCE($4, (SELECT o.billing_address_id
+                                                   FROM purchase_order o
+                                                   WHERE o.document_id = i.purchase_order_id))
              WHERE i.document_id = $1",
         )
         .bind(doc.id)
         .bind(reference)
         .bind(body.payment_terms_id)
+        .bind(body.billing_address_id)
         .execute(&mut *ctx.conn)
         .await?;
         let ids: Vec<Uuid> = body.lines.iter().filter_map(|l| l.order_line_id).collect();
@@ -2381,13 +2488,15 @@ impl DocumentHandler for VendorInvoice {
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
         #[allow(clippy::type_complexity)]
-        let (order, vendor, reference, terms): (
+        let (order, vendor, reference, terms, billing): (
             Option<Uuid>,
             Option<Uuid>,
             Option<String>,
             Option<Uuid>,
+            Option<Uuid>,
         ) = sqlx::query_as(
-            "SELECT purchase_order_id, vendor_id, vendor_reference, payment_terms_id
+            "SELECT purchase_order_id, vendor_id, vendor_reference, payment_terms_id,
+                    billing_address_id
              FROM vendor_invoice WHERE document_id = $1",
         )
         .bind(doc.id)
@@ -2399,6 +2508,7 @@ impl DocumentHandler for VendorInvoice {
             "vendor_id": vendor,
             "vendor_reference": reference,
             "payment_terms_id": terms,
+            "billing_address_id": billing,
             "currency": currency,
             "fx_rate": fx_rate,
             "lines": invoice_lines(conn, doc.id).await?,
@@ -2984,6 +3094,16 @@ impl Command for PostInvoice {
         if let Some(order) = &mut order {
             settle_order(ctx, order, &order_lines, false).await?;
         }
+        // The parties as the invoice shows them, kept from now on.
+        let billing: Option<Uuid> = sqlx::query_scalar(
+            "SELECT billing_address_id FROM vendor_invoice WHERE document_id = $1",
+        )
+        .bind(doc.id)
+        .fetch_one(&mut *ctx.conn)
+        .await?;
+        let vendor = invoice_vendor(&mut *ctx.conn, doc.id).await?;
+        erpcraft_party::snapshot_purchase(&mut *ctx.conn, doc.id, doc.company_id, vendor, billing)
+            .await?;
         document::transition(ctx, &mut doc, "posted").await?;
         document::view(ctx, doc).await
     }

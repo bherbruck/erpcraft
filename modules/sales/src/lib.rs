@@ -97,6 +97,11 @@ impl Module for SalesModule {
                 name: "lines",
                 sql: include_str!("../migrations/0009_lines.sql"),
             },
+            Migration {
+                version: 10,
+                name: "addresses",
+                sql: include_str!("../migrations/0010_addresses.sql"),
+            },
         ]
     }
 
@@ -509,6 +514,50 @@ fn terms_field(help: &str) -> FieldMeta {
     .help(help)
 }
 
+/// Where a document's invoices go: one of the customer's addresses.
+fn billing_field(customer_field: &str) -> FieldMeta {
+    erpcraft_party::address_field(
+        "billing_address_id",
+        "Bill to",
+        "customer",
+        customer_field,
+        "billing",
+        "One of the customer's addresses; its default billing address when left out. The \
+         document keeps a copy of it when it is posted.",
+    )
+}
+
+/// Where a document's goods go: one of the customer's addresses.
+fn shipping_field(customer_field: &str) -> FieldMeta {
+    erpcraft_party::address_field(
+        "shipping_address_id",
+        "Ship to",
+        "customer",
+        customer_field,
+        "shipping",
+        "One of the customer's addresses; its default shipping address when left out. The \
+         document keeps a copy of it when it is posted.",
+    )
+}
+
+/// Refuse addresses that are not the customer's.
+async fn check_addresses(
+    conn: &mut PgConnection,
+    customer: Uuid,
+    billing: Option<Uuid>,
+    shipping: Option<Uuid>,
+) -> Result<()> {
+    if let Some(address) = billing {
+        erpcraft_party::check_address(conn, "customer", customer, address, "billing_address_id")
+            .await?;
+    }
+    if let Some(address) = shipping {
+        erpcraft_party::check_address(conn, "customer", customer, address, "shipping_address_id")
+            .await?;
+    }
+    Ok(())
+}
+
 /// The exchange rate an invoice in a foreign currency states or posted at.
 fn rate_field() -> FieldMeta {
     FieldMeta::new("fx_rate", "Exchange rate", FieldType::Decimal)
@@ -708,6 +757,12 @@ struct OrderBody {
     currency: Option<String>,
     /// The customer's terms when omitted.
     payment_terms_id: Option<Uuid>,
+    /// One of the customer's addresses its invoices go to; its default
+    /// billing address when omitted.
+    billing_address_id: Option<Uuid>,
+    /// One of the customer's addresses its goods go to; its default
+    /// shipping address when omitted.
+    shipping_address_id: Option<Uuid>,
     #[serde(default)]
     lines: Vec<OrderLineInput>,
 }
@@ -772,6 +827,8 @@ impl DocumentHandler for SalesOrder {
                 terms_field(
                     "The customer's usual terms when left out; what its invoices start with.",
                 ),
+                billing_field("customer_id"),
+                shipping_field("customer_id"),
             ],
             collections: vec![CollectionMeta {
                 name: "lines".into(),
@@ -908,18 +965,30 @@ impl DocumentHandler for SalesOrder {
                 .await
                 .map_err(|e| e.with_field("currency"))?;
         }
+        check_addresses(
+            &mut *ctx.conn,
+            body.customer_id,
+            body.billing_address_id,
+            body.shipping_address_id,
+        )
+        .await?;
         // The customer's terms unless the order names others.
         sqlx::query(
-            "INSERT INTO sales_order (document_id, customer_id, currency, payment_terms_id)
+            "INSERT INTO sales_order (document_id, customer_id, currency, payment_terms_id,
+                 billing_address_id, shipping_address_id)
              VALUES ($1, $2, $3,
-                     COALESCE($4, (SELECT payment_terms_id FROM customer WHERE id = $2)))
+                     COALESCE($4, (SELECT payment_terms_id FROM customer WHERE id = $2)), $5, $6)
              ON CONFLICT (document_id) DO UPDATE SET customer_id = EXCLUDED.customer_id,
-                currency = EXCLUDED.currency, payment_terms_id = EXCLUDED.payment_terms_id",
+                currency = EXCLUDED.currency, payment_terms_id = EXCLUDED.payment_terms_id,
+                billing_address_id = EXCLUDED.billing_address_id,
+                shipping_address_id = EXCLUDED.shipping_address_id",
         )
         .bind(doc.id)
         .bind(body.customer_id)
         .bind(currency)
         .bind(body.payment_terms_id)
+        .bind(body.billing_address_id)
+        .bind(body.shipping_address_id)
         .execute(&mut *ctx.conn)
         .await?;
         let line_ids = document::line_ids(
@@ -1005,8 +1074,15 @@ impl DocumentHandler for SalesOrder {
     }
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
-        let (customer, currency, terms): (Uuid, String, Option<Uuid>) = sqlx::query_as(
-            "SELECT o.customer_id, COALESCE(o.currency, c.base_currency), o.payment_terms_id
+        let (customer, currency, terms, billing, shipping): (
+            Uuid,
+            String,
+            Option<Uuid>,
+            Option<Uuid>,
+            Option<Uuid>,
+        ) = sqlx::query_as(
+            "SELECT o.customer_id, COALESCE(o.currency, c.base_currency), o.payment_terms_id,
+                    o.billing_address_id, o.shipping_address_id
              FROM sales_order o
              JOIN company c ON c.id = $2 WHERE o.document_id = $1",
         )
@@ -1029,6 +1105,8 @@ impl DocumentHandler for SalesOrder {
             "customer_id": customer,
             "currency": currency,
             "payment_terms_id": terms,
+            "billing_address_id": billing,
+            "shipping_address_id": shipping,
             "lines": lines,
         }))
     }
@@ -1094,6 +1172,24 @@ impl Command for OrderStep {
                 check_customer(ctx, &order, SALES_ORDER).await?;
                 // Fail now rather than at the first delivery.
                 settings(&mut *ctx.conn, order.company_id).await?;
+                // The addresses the order is confirmed with.
+                let (customer, billing, shipping): (Uuid, Option<Uuid>, Option<Uuid>) =
+                    sqlx::query_as(
+                        "SELECT customer_id, billing_address_id, shipping_address_id
+                         FROM sales_order WHERE document_id = $1",
+                    )
+                    .bind(order.id)
+                    .fetch_one(&mut *ctx.conn)
+                    .await?;
+                erpcraft_party::snapshot_sale(
+                    &mut *ctx.conn,
+                    order.id,
+                    order.company_id,
+                    customer,
+                    billing,
+                    shipping,
+                )
+                .await?;
             }
             "cancelled" => {
                 if lines
@@ -1212,6 +1308,9 @@ impl Command for Follow {
 #[serde(deny_unknown_fields)]
 struct DeliveryBody {
     sales_order_id: Uuid,
+    /// One of the customer's addresses; the order's, else the customer's
+    /// default shipping address, when omitted.
+    shipping_address_id: Option<Uuid>,
     #[serde(default)]
     lines: Vec<DeliveryLineInput>,
 }
@@ -1263,6 +1362,7 @@ impl DocumentHandler for SalesDelivery {
                 )
                 .required()
                 .immutable(),
+                shipping_field("customer_id"),
             ],
             collections: vec![CollectionMeta {
                 name: "lines".into(),
@@ -1323,6 +1423,23 @@ impl DocumentHandler for SalesDelivery {
             }
         }
         save_order_ref(ctx, "sales_delivery", doc, body.sales_order_id, "delivery").await?;
+        // The order's shipping address unless the delivery names another.
+        let customer: Uuid =
+            sqlx::query_scalar("SELECT customer_id FROM sales_order WHERE document_id = $1")
+                .bind(body.sales_order_id)
+                .fetch_one(&mut *ctx.conn)
+                .await?;
+        check_addresses(&mut *ctx.conn, customer, None, body.shipping_address_id).await?;
+        sqlx::query(
+            "UPDATE sales_delivery d SET shipping_address_id = COALESCE($2,
+                 (SELECT o.shipping_address_id FROM sales_order o
+                  WHERE o.document_id = d.sales_order_id))
+             WHERE d.document_id = $1",
+        )
+        .bind(doc.id)
+        .bind(body.shipping_address_id)
+        .execute(&mut *ctx.conn)
+        .await?;
         let ids: Vec<Uuid> = body.lines.iter().map(|l| l.order_line_id).collect();
         check_order_lines(ctx, body.sales_order_id, &ids).await?;
 
@@ -1381,12 +1498,17 @@ impl DocumentHandler for SalesDelivery {
     }
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
-        let order: Uuid =
-            sqlx::query_scalar("SELECT sales_order_id FROM sales_delivery WHERE document_id = $1")
-                .bind(doc.id)
-                .fetch_one(&mut *conn)
-                .await?;
-        Ok(json!({ "sales_order_id": order, "lines": delivery_lines(conn, doc.id).await? }))
+        let (order, shipping): (Uuid, Option<Uuid>) = sqlx::query_as(
+            "SELECT sales_order_id, shipping_address_id FROM sales_delivery WHERE document_id = $1",
+        )
+        .bind(doc.id)
+        .fetch_one(&mut *conn)
+        .await?;
+        Ok(json!({
+            "sales_order_id": order,
+            "shipping_address_id": shipping,
+            "lines": delivery_lines(conn, doc.id).await?,
+        }))
     }
 }
 
@@ -1525,6 +1647,24 @@ impl Command for PostDelivery {
         }
 
         settle_order(ctx, &mut order, &order_lines, false).await?;
+        // The parties as the delivery note shows them, kept from now on.
+        let (customer, shipping): (Uuid, Option<Uuid>) = sqlx::query_as(
+            "SELECT o.customer_id, d.shipping_address_id
+             FROM sales_delivery d JOIN sales_order o ON o.document_id = d.sales_order_id
+             WHERE d.document_id = $1",
+        )
+        .bind(doc.id)
+        .fetch_one(&mut *ctx.conn)
+        .await?;
+        erpcraft_party::snapshot_sale(
+            &mut *ctx.conn,
+            doc.id,
+            doc.company_id,
+            customer,
+            None,
+            shipping,
+        )
+        .await?;
         document::transition(ctx, &mut doc, "posted").await?;
         document::view(ctx, doc).await
     }
@@ -1639,6 +1779,12 @@ struct InvoiceBody {
     fx_rate: Option<Decimal>,
     /// The order's terms when omitted.
     payment_terms_id: Option<Uuid>,
+    /// One of the customer's addresses; the order's, else the customer's
+    /// default billing address, when omitted.
+    billing_address_id: Option<Uuid>,
+    /// One of the customer's addresses; the order's, else the customer's
+    /// default shipping address, when omitted.
+    shipping_address_id: Option<Uuid>,
     #[serde(default)]
     lines: Vec<InvoiceLineInput>,
 }
@@ -1723,6 +1869,8 @@ impl DocumentHandler for SalesInvoice {
                     "The order's terms when left out. They set when the invoice is due and the \
                      discount for paying it early.",
                 ),
+                billing_field("customer_id"),
+                shipping_field("customer_id"),
             ],
             collections: vec![CollectionMeta {
                 name: "lines".into(),
@@ -1879,18 +2027,34 @@ impl DocumentHandler for SalesInvoice {
             )
             .with_field("fx_rate"));
         }
-        // The order's terms unless the invoice names others.
+        let customer = invoice_customer(&mut *ctx.conn, doc.id).await?;
+        check_addresses(
+            &mut *ctx.conn,
+            customer,
+            body.billing_address_id,
+            body.shipping_address_id,
+        )
+        .await?;
+        // The order's terms and addresses unless the invoice names others.
         sqlx::query(
             "UPDATE sales_invoice i SET fx_rate = $2,
                 payment_terms_id = COALESCE($3, (SELECT o.payment_terms_id FROM sales_order o
                                                  WHERE o.document_id = i.sales_order_id),
                                             (SELECT c.payment_terms_id FROM customer c
-                                             WHERE c.id = i.customer_id))
+                                             WHERE c.id = i.customer_id)),
+                billing_address_id = COALESCE($4, (SELECT o.billing_address_id
+                                                   FROM sales_order o
+                                                   WHERE o.document_id = i.sales_order_id)),
+                shipping_address_id = COALESCE($5, (SELECT o.shipping_address_id
+                                                    FROM sales_order o
+                                                    WHERE o.document_id = i.sales_order_id))
              WHERE i.document_id = $1",
         )
         .bind(doc.id)
         .bind(body.fx_rate)
         .bind(body.payment_terms_id)
+        .bind(body.billing_address_id)
+        .bind(body.shipping_address_id)
         .execute(&mut *ctx.conn)
         .await?;
         let ids: Vec<Uuid> = body.lines.iter().filter_map(|l| l.order_line_id).collect();
@@ -2047,20 +2211,52 @@ impl DocumentHandler for SalesInvoice {
         .fetch_one(&mut *conn)
         .await?;
         let (currency, fx_rate) = currency_of(conn, "sales_invoice", doc).await?;
-        let terms: Option<Uuid> =
-            sqlx::query_scalar("SELECT payment_terms_id FROM sales_invoice WHERE document_id = $1")
-                .bind(doc.id)
-                .fetch_one(&mut *conn)
-                .await?;
+        let (terms, billing, shipping): (Option<Uuid>, Option<Uuid>, Option<Uuid>) =
+            sqlx::query_as(
+                "SELECT payment_terms_id, billing_address_id, shipping_address_id
+                 FROM sales_invoice WHERE document_id = $1",
+            )
+            .bind(doc.id)
+            .fetch_one(&mut *conn)
+            .await?;
         Ok(json!({
             "sales_order_id": order,
             "customer_id": customer,
             "currency": currency,
             "fx_rate": fx_rate,
             "payment_terms_id": terms,
+            "billing_address_id": billing,
+            "shipping_address_id": shipping,
             "lines": invoice_lines(conn, doc.id).await?,
         }))
     }
+}
+
+/// Keep on `doc` the parties of the document it follows (`from`): a credit
+/// note those of its invoice, a return those of its order. When that one
+/// kept none, the customer's defaults now.
+pub(crate) async fn keep_parties(
+    conn: &mut PgConnection,
+    doc: &Document,
+    from: Uuid,
+    customer: Uuid,
+) -> Result<()> {
+    if !erpcraft_party::copy_parties(&mut *conn, from, doc.id).await? {
+        erpcraft_party::snapshot_sale(conn, doc.id, doc.company_id, customer, None, None).await?;
+    }
+    Ok(())
+}
+
+/// The customer of an invoice: its own, or its order's.
+pub(crate) async fn invoice_customer(conn: &mut PgConnection, invoice: Uuid) -> Result<Uuid> {
+    Ok(sqlx::query_scalar(
+        "SELECT COALESCE(i.customer_id, o.customer_id)
+         FROM sales_invoice i LEFT JOIN sales_order o ON o.document_id = i.sales_order_id
+         WHERE i.document_id = $1",
+    )
+    .bind(invoice)
+    .fetch_one(&mut *conn)
+    .await?)
 }
 
 /// Store the header of a direct invoice: its customer and currency. Its
@@ -2381,6 +2577,24 @@ impl Command for PostInvoice {
         if let Some(order) = &mut order {
             settle_order(ctx, order, &order_lines, false).await?;
         }
+        // The parties as the invoice shows them, kept from now on.
+        let (billing, shipping): (Option<Uuid>, Option<Uuid>) = sqlx::query_as(
+            "SELECT billing_address_id, shipping_address_id FROM sales_invoice
+             WHERE document_id = $1",
+        )
+        .bind(doc.id)
+        .fetch_one(&mut *ctx.conn)
+        .await?;
+        let customer = invoice_customer(&mut *ctx.conn, doc.id).await?;
+        erpcraft_party::snapshot_sale(
+            &mut *ctx.conn,
+            doc.id,
+            doc.company_id,
+            customer,
+            billing,
+            shipping,
+        )
+        .await?;
         document::transition(ctx, &mut doc, "posted").await?;
         document::view(ctx, doc).await
     }

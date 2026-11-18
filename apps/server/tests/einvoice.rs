@@ -1367,3 +1367,259 @@ async fn hostile_numbers_bombs_and_differences_are_caught() {
     assert_eq!(body["invoice"]["issue_date"], "2026-04-05");
     t.stop().await;
 }
+
+/// A posted invoice keeps the addresses it was posted with: after the
+/// customer moves, it still prints, and is still sent, to the old one.
+/// A document may name one of the customer's addresses, and only one of
+/// theirs; a draft follows the customer until it is posted.
+#[tokio::test]
+async fn a_posted_invoice_keeps_the_address_it_was_posted_with() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let invoice = f.invoice(&t, &f.customer).await;
+    // The purchase order of the stock kept its vendor as seller and the
+    // company as buyer when it was approved; its receipt kept the same.
+    let kept = t
+        .count(&format!(
+            "SELECT count(*) FROM document_party p JOIN document d ON d.id = p.document_id
+             WHERE d.doc_type IN ('purchase_order', 'purchase_receipt')
+               AND ((p.role = 'seller' AND p.party_type = 'vendor')
+                    OR (p.role = 'buyer' AND p.party_type = 'company'))
+               AND d.company_id = '{}'",
+            f.company
+        ))
+        .await;
+    assert_eq!(kept, 4);
+
+    // The customer moves, and gets a warehouse to ship to.
+    let (status, moved) = t
+        .command(
+            &t.admin,
+            "party.set",
+            json!({ "party_type": "customer", "party_id": f.customer, "addresses": [
+                { "kind": "billing", "street": "Neue Straße 7", "city": "Bonn",
+                  "postcode": "53111", "country_code": "DE", "is_default": true },
+                { "kind": "shipping", "street": "Lagerweg 2", "city": "Hürth",
+                  "postcode": "50354", "country_code": "DE", "is_default": true },
+            ] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+
+    // The posted invoice: its parties, its page and its e-invoice show the
+    // address it was posted with.
+    let (status, parties) = t
+        .command(
+            &t.admin,
+            "document.parties",
+            json!({ "doc_type": "sales_invoice", "id": invoice["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{parties}");
+    assert_eq!(parties["buyer"]["street"], "Marktplatz 5");
+    assert_eq!(parties["buyer"]["city"], "Köln");
+    assert_eq!(parties["buyer"]["vat_id"], "DE987654321");
+    assert_eq!(parties["seller"]["city"], "München");
+    // It had no shipping address then, so it shows none now.
+    assert!(parties.get("ship_to").is_none(), "{parties}");
+    let (status, page) = t
+        .command(
+            &t.admin,
+            "document.render",
+            json!({ "doc_type": "sales_invoice", "id": invoice["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let html = page["html"].as_str().unwrap();
+    assert!(html.contains("Marktplatz 5"), "the old address is printed");
+    assert!(!html.contains("Neue Straße 7"), "the new address is not");
+    let (status, out) = export(&t, "sales_invoice", &invoice, "ubl").await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    let parsed = read(out["xml"].as_str().unwrap());
+    assert_eq!(parsed.buyer.city.as_deref(), Some("Köln"));
+    assert_eq!(parsed.buyer.street.as_deref(), Some("Marktplatz 5"));
+    // A credit note of it keeps the invoice's parties.
+    let line = invoice["body"]["lines"][2]["id"].clone();
+    let credit = f
+        .posted(
+            &t,
+            "sales_credit_note",
+            "2026-04-10",
+            json!({ "sales_invoice_id": invoice["id"],
+                    "lines": [{ "invoice_line_id": line, "qty": "1" }] }),
+        )
+        .await;
+    let (status, out) = export(&t, "sales_credit_note", &credit, "cii").await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(
+        read(out["xml"].as_str().unwrap()).buyer.city.as_deref(),
+        Some("Köln")
+    );
+
+    // The addresses on record now, with their ids.
+    let (_, records) = t
+        .command(
+            &t.admin,
+            "party.get",
+            json!({ "party_type": "customer", "party_id": f.customer }),
+        )
+        .await;
+    let bonn = records["addresses"][0]["id"].as_str().unwrap().to_owned();
+    let hurth = records["addresses"][1]["id"].as_str().unwrap().to_owned();
+    assert_eq!(records["addresses"][0]["city"], "Bonn");
+    // Only the shipping ones, when asked.
+    let (_, shipping) = t
+        .command(
+            &t.admin,
+            "party.get",
+            json!({ "party_type": "customer", "party_id": f.customer,
+                    "address_kind": "shipping" }),
+        )
+        .await;
+    assert_eq!(shipping["addresses"].as_array().unwrap().len(), 1);
+    assert_eq!(shipping["addresses"][0]["id"], hurth.as_str());
+    // Given back with its id, an address keeps it; a third is added.
+    let (status, kept) = t
+        .command(
+            &t.admin,
+            "party.set",
+            json!({ "party_type": "customer", "party_id": f.customer, "addresses": [
+                records["addresses"][0], records["addresses"][1],
+                { "kind": "billing", "street": "Filiale 3", "city": "Aachen",
+                  "country_code": "DE" },
+            ] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{kept}");
+    assert_eq!(kept["addresses"][0]["id"], bonn);
+    let aachen = kept["addresses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["city"] == "Aachen")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // An order may name an address of its customer, and no other party's.
+    let (_, other) = t
+        .command(
+            &t.admin,
+            "party.set",
+            json!({ "party_type": "vendor", "party_id": f.vendor, "addresses": [
+                { "street": "Fremd 1", "country_code": "DE" } ] }),
+        )
+        .await;
+    let foreign = other["addresses"][0]["id"].clone();
+    let order_body = |billing: Value| {
+        json!({ "company_id": f.company, "doc_date": "2026-05-01", "body": {
+            "customer_id": f.customer, "billing_address_id": billing,
+            "lines": [{ "item_id": f.widget, "warehouse_id": f.warehouse, "qty": "1",
+                        "unit_price": "25.00" }] } })
+    };
+    let (status, refused) = t
+        .post(&t.admin, "/api/documents/sales_order", order_body(foreign))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert!(
+        refused.to_string().contains("billing_address_id"),
+        "{refused}"
+    );
+    let (status, draft) = t
+        .post(
+            &t.admin,
+            "/api/documents/sales_order",
+            order_body(json!(aachen)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{draft}");
+    assert_eq!(draft["body"]["billing_address_id"], aachen.as_str());
+    let (status, order) = t
+        .command(
+            &t.admin,
+            "sales_order.approve",
+            json!({ "id": draft["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{order}");
+    // Its invoice takes the order's address unless it names its own, and
+    // ships to the customer's default shipping address.
+    let line = order["body"]["lines"][0]["id"].clone();
+    f.posted(
+        &t,
+        "sales_delivery",
+        "2026-05-02",
+        json!({ "sales_order_id": order["id"], "lines": [{ "order_line_id": line, "qty": "1" }] }),
+    )
+    .await;
+    let second = f
+        .posted(
+            &t,
+            "sales_invoice",
+            "2026-05-03",
+            json!({ "sales_order_id": order["id"], "lines": [
+                { "order_line_id": line, "qty": "1", "unit_price": "25.00",
+                  "tax_code_id": f.vat19 } ] }),
+        )
+        .await;
+    assert_eq!(second["body"]["billing_address_id"], aachen.as_str());
+    assert_eq!(second["body"]["shipping_address_id"], Value::Null);
+    let (_, parties) = t
+        .command(
+            &t.admin,
+            "document.parties",
+            json!({ "doc_type": "sales_invoice", "id": second["id"] }),
+        )
+        .await;
+    assert_eq!(parties["buyer"]["city"], "Aachen");
+    assert_eq!(parties["ship_to"]["city"], "Hürth");
+    // A posted document's copy cannot be changed.
+    let changed = sqlx::query("UPDATE document_party SET city = 'X' WHERE document_id = $1")
+        .bind(uuid::Uuid::parse_str(second["id"].as_str().unwrap()).unwrap())
+        .execute(&t.pool)
+        .await;
+    assert!(changed.is_err(), "the copy is locked with its document");
+
+    // An address a draft names that is removed before it is posted is
+    // refused at posting, on the field that names it.
+    let (status, draft) = t
+        .post(
+            &t.admin,
+            "/api/documents/sales_invoice",
+            json!({ "company_id": f.company, "doc_date": "2026-05-04", "body": {
+                "customer_id": f.customer, "billing_address_id": aachen,
+                "lines": [{ "account_id": f.account["8400"], "qty": "1", "unit_price": "10.00",
+                            "tax_code_id": f.vat19 }] } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{draft}");
+    let (status, _) = t
+        .command(
+            &t.admin,
+            "party.set",
+            json!({ "party_type": "customer", "party_id": f.customer, "addresses": [
+                { "id": bonn, "kind": "billing", "street": "Neue Straße 7", "city": "Bonn",
+                  "country_code": "DE", "is_default": true } ] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, refused) = t
+        .command(&t.admin, "sales_invoice.post", json!({ "id": draft["id"] }))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert!(
+        refused.to_string().contains("billing_address_id"),
+        "{refused}"
+    );
+    // The earlier invoice still shows Aachen, the address it was posted with.
+    let (_, parties) = t
+        .command(
+            &t.admin,
+            "document.parties",
+            json!({ "doc_type": "sales_invoice", "id": second["id"] }),
+        )
+        .await;
+    assert_eq!(parties["buyer"]["city"], "Aachen");
+    t.stop().await;
+}
