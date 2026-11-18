@@ -4,11 +4,11 @@
 /** Any JSON value. Used where a command's schema leaves a value open. */
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
-export type EntityName = "account" | "account_rule" | "asset" | "asset_class" | "asset_settings" | "bank_csv_mapping" | "bom" | "bom_line" | "charge" | "company" | "currency" | "customer" | "einvoice_bank_account" | "einvoice_import" | "einvoice_party" | "einvoice_profile" | "einvoice_tax_category" | "exchange_rate" | "fiscal_period" | "gl_entry" | "item" | "payment_terms" | "policy_rule" | "print_template" | "purchasing_settings" | "role" | "sales_settings" | "sso_provider" | "stock_entry" | "tax_code" | "tax_code_component" | "tax_settings" | "user" | "vendor" | "warehouse" | "webhook";
+export type EntityName = "account" | "account_rule" | "asset" | "asset_class" | "asset_settings" | "bank_account_number" | "bank_csv_mapping" | "bom" | "bom_activity" | "bom_line" | "charge" | "company" | "cost_activity" | "cost_activity_rate" | "currency" | "customer" | "einvoice_import" | "exchange_rate" | "fiscal_period" | "gl_entry" | "item" | "payment_terms" | "payment_terms_instalment" | "payment_terms_step" | "policy_rule" | "print_template" | "purchasing_settings" | "reorder_rule" | "role" | "sales_settings" | "sso_provider" | "stock_entry" | "tax_code" | "tax_code_component" | "tax_rule" | "tax_settings" | "user" | "vendor" | "warehouse" | "webhook";
 
-export type DocTypeName = "asset_disposal" | "bank_statement" | "depreciation_run" | "fx_revaluation" | "journal_entry" | "payment" | "production_order" | "purchase_order" | "purchase_receipt" | "purchase_return" | "sales_credit_note" | "sales_delivery" | "sales_invoice" | "sales_order" | "sales_return" | "stock_adjustment" | "stock_transfer" | "vendor_credit_note" | "vendor_invoice" | "year_end_close";
+export type DocTypeName = "asset_disposal" | "bank_statement" | "depreciation_run" | "fx_revaluation" | "journal_entry" | "payment" | "production_order" | "purchase_order" | "purchase_receipt" | "purchase_return" | "sales_credit" | "sales_credit_note" | "sales_delivery" | "sales_invoice" | "sales_order" | "sales_return" | "stock_adjustment" | "stock_transfer" | "vendor_credit" | "vendor_credit_note" | "vendor_invoice" | "year_end_close";
 
-export type ModuleName = "accounting" | "assets" | "auth" | "banking" | "einvoice" | "gl" | "inventory" | "kernel" | "manufacturing" | "open_items" | "payments" | "printing" | "purchasing" | "sales" | "setup" | "stock" | "tax" | "webhooks";
+export type ModuleName = "accounting" | "assets" | "auth" | "banking" | "einvoice" | "gl" | "inventory" | "kernel" | "manufacturing" | "open_items" | "party" | "payments" | "planning" | "printing" | "purchasing" | "sales" | "setup" | "stock" | "tax" | "webhooks";
 
 /**
  * Approve a pending request. Its requester never can. When as many distinct people as the rule asks have approved, the command runs, once, as the person who asked, with exactly the input they gave, and its result is kept on the request. If what it was about has changed since it was asked for, it does not run and the request is stale.
@@ -387,6 +387,12 @@ export type DocumentListInput = {
   limit?: number | null;
   /** Records to skip, for paging. */
   offset?: number | null;
+  /** Values the condition reads as `params.<name>`, bound as parameters
+   * so that a long list does not lengthen it: `{"customers": ["…"]}`
+   * for `record.customer_id in params.customers`. */
+  params?: {
+    [key: string]: Json;
+  };
   /** Text to look for in the number and the memo, ignoring case. */
   q?: string | null;
   /** Sort by `number`, `status`, `doc_date`, `created_at`, `updated_at`
@@ -401,10 +407,18 @@ export type DocumentListInput = {
   summary?: {
     [key: string]: string;
   };
+  /** The reader's time zone, such as `Europe/Berlin`: the day `today()`
+   * is in the condition, and where a day starts when a timestamp field
+   * is compared with one (`record.created_at >= '2026-11-18'`). The
+   * database's own zone when omitted. */
+  time_zone?: string | null;
   /** A condition over the document header, as an expression over
    * `record`: `record.doc_date >= '2026-01-01' && record.status == 'draft'`.
    * The header fields are id, company_id, number, status, locked,
-   * version, doc_date, memo, created_by, created_at and updated_at. */
+   * version, doc_date, memo, created_by, created_at and updated_at; the
+   * type's summary fields are `record.summary.<field>`
+   * (`record.summary.total_net > '1000'`). The language is the one of
+   * `entity.list`'s `where`, with its text tests and dates. */
   where?: string | null;
 };
 
@@ -461,7 +475,7 @@ export type DocumentUpdateInput = {
 };
 
 /**
- * Write a posted sales invoice or sales credit note as an EN 16931 electronic invoice: XRechnung 3.0 by default, in UBL 2.1 or CII syntax. The XML is read back and checked against the rules this module checks (mandatory terms, line and VAT arithmetic, totals, XRechnung's German rules) before it is returned. Refused with what is missing and where to set it when the company's einvoice_profile, the customer's einvoice_party or a tax code's VAT category lacks something the invoice needs. Takes einvoice:export and the right to read the document.
+ * Write a posted sales invoice or sales credit note as an EN 16931 electronic invoice: XRechnung 3.0 by default, in UBL 2.1 or CII syntax. The XML is read back and checked against the rules this module checks (mandatory terms, line and VAT arithmetic, totals, XRechnung's German rules) before it is returned. Refused with what is missing and where to set it when the company's or the customer's party records (address, tax identifier, contact, electronic address) or a tax code's VAT category lack something the invoice needs. Takes einvoice:export and the right to read the document.
  */
 export type EinvoiceExportInput = {
   /** What to send: `sales_invoice` or `sales_credit_note`. */
@@ -477,9 +491,14 @@ export type EinvoiceExportInput = {
 };
 
 /**
- * Draft a vendor invoice from an incoming EN 16931 invoice. The vendor is the one whose einvoice_party has the seller's VAT identifier, or the one given as vendor_id; nothing is guessed from a name. When the buyer's order reference (BT-13) is the number of an open purchase order of that vendor, the invoice is drafted against it and each line against the order line its line reference or item code names; other lines, and a direct invoice, go to account_id. An invoice that breaks a rule, a credit note, and one imported before are refused. The draft is checked and posted like one entered by hand.
+ * Draft a vendor invoice from an incoming EN 16931 invoice. The vendor is the one whose EU VAT identifier (party.set) is the seller's, or the one given as vendor_id; nothing is guessed from a name. When the buyer's order reference (BT-13) is the number of an open purchase order of that vendor, the invoice is drafted against it and each line against the order line its line reference or item code names; other lines, and a direct invoice, go to account_id. An invoice that breaks a rule, a credit note, and one imported before are refused. The draft is checked and posted like one entered by hand.
  */
 export type EinvoiceImportInput = {
+  /** Draft it although the draft would not say what the invoice says
+   * (`differences` of `einvoice.read`: totals that differ by rounding,
+   * an amount already paid). The differences are written into the
+   * draft's memo. */
+  accept_differences?: boolean;
   /** The account for lines that invoice no order line (a service, a
    * direct invoice). */
   account_id?: string | null;
@@ -489,6 +508,12 @@ export type EinvoiceImportInput = {
   content?: string | null;
   /** The file, base64-encoded: XML or a ZUGFeRD / Factur-X PDF. */
   content_base64?: string | null;
+  /** The tax code for a line, by the line's identifier (BT-126), where
+   * `einvoice.read` found none or several for its VAT category and
+   * rate. */
+  line_tax_codes?: {
+    [key: string]: string;
+  } | null;
   /** The vendor, when the seller's VAT identifier does not name one:
    * one of the candidates `einvoice.read` proposes. */
   vendor_id?: string | null;
@@ -559,14 +584,31 @@ export type EntityListInput = {
   limit?: number | null;
   /** Records to skip, for paging. */
   offset?: number | null;
+  /** Values the condition reads as `params.<name>`, bound as parameters
+   * so that a long list does not lengthen it: `{"customers": ["…"]}`
+   * for `record.customer_id in params.customers`. */
+  params?: {
+    [key: string]: Json;
+  };
   /** Text to look for in the fields the entity is searched by (see
    * `search` in `meta.describe`), ignoring case. */
   q?: string | null;
   /** Field names to sort by; prefix one with `-` for descending. */
   sort?: Array<string>;
+  /** The reader's time zone, such as `Europe/Berlin`: the day `today()`
+   * is in the condition, and where a day starts when a timestamp field
+   * is compared with one (`record.created_at >= '2026-11-18'`). The
+   * database's own zone when omitted. */
+  time_zone?: string | null;
   /** A condition each record must meet, as an expression over `record`:
    * `record.account_type == 'asset' && !record.is_group`. Supports
-   * comparisons, `in`, `&&`, `||`, `!` and `user.<attribute>`. */
+   * comparisons, `in`, `&&`, `||`, `!`, `user.<attribute>` and
+   * `params.<name>`; the text tests `contains`, `startsWith`, `endsWith`
+   * and, ignoring case, `containsIgnoreCase`, `startsWithIgnoreCase`,
+   * `endsWithIgnoreCase`, `equalsIgnoreCase` (`record.name.containsIgnoreCase('bolt')`);
+   * and dates relative to today: `today()`, `addDays(d, n)`,
+   * `addMonths(d, n)`, `startOfMonth(d)`, `endOfMonth(d)`, and the same
+   * for `Quarter` and `Year`. */
   where?: string | null;
 };
 
@@ -769,6 +811,95 @@ export type OutboxListInput = {
 };
 
 /**
+ * Everything the company, a customer or a vendor has on record outside the books: its legal particulars, addresses, tax identifiers, electronic addresses and contacts. Takes the right to read that company, customer or vendor.
+ */
+export type PartyGetInput = {
+  /** Only the addresses of this kind, `billing` or `shipping`: what a
+   * document offers to choose from. */
+  address_kind?: string | null;
+  /** The company, customer or vendor. */
+  party_id: string;
+  /** `company`, `customer` or `vendor`. */
+  party_type: "company" | "customer" | "vendor";
+};
+
+/**
+ * Record the company's, a customer's or a vendor's particulars, addresses, tax identifiers, electronic addresses or contacts. Each part given replaces what is on record; a part left out is kept. At most one default address of each kind, one default electronic address and one default contact; one tax identifier of each scheme. Takes the right to change that company, customer or vendor.
+ */
+export type PartySetInput = {
+  /** Every address, replacing those on record. Left out: kept. */
+  addresses?: Array<{
+    additional_street?: string | null;
+    /** Who or which site at the address. */
+    attention?: string | null;
+    city?: string | null;
+    /** ISO 3166-1 alpha-2, such as DE or US. */
+    country_code: string;
+    /** The address on record this one is, when it was read before. An
+     * address keeps its id while it is given back with it, so that the
+     * documents that name it still find it; one left out is removed. */
+    id?: string | null;
+    /** The party's address of this kind unless a document names another.
+     * At most one of each kind. */
+    is_default?: boolean;
+    /** `billing` (where invoices go) or `shipping` (where goods go). */
+    kind?: string;
+    postcode?: string | null;
+    /** State, province or region. */
+    region?: string | null;
+    street?: string | null;
+  }> | null;
+  /** Every contact, replacing those on record. Left out: kept. */
+  contacts?: Array<{
+    email?: string | null;
+    /** At most one. */
+    is_default?: boolean;
+    name?: string | null;
+    phone?: string | null;
+    /** What they do: accounts payable, sales. */
+    role?: string | null;
+  }> | null;
+  /** Every electronic address, replacing those on record. Left out: kept. */
+  electronic_addresses?: Array<{
+    /** At most one. */
+    is_default?: boolean;
+    /** From the EAS code list: EM for email (the default), 0204 for a
+     * Leitweg-ID, 9930 for a German VAT number, 0088 for a GLN. */
+    scheme?: string;
+    value: string;
+  }> | null;
+  /** The company, customer or vendor. */
+  party_id: string;
+  /** `company`, `customer` or `vendor`. */
+  party_type: "company" | "customer" | "vendor";
+  /** The legal particulars, replacing what is on record. Left out: kept. */
+  profile?: {
+    /** For a customer: the reference it asks its invoices to quote; for a
+     * German public buyer its Leitweg-ID. */
+    invoice_reference?: string | null;
+    /** Legal form, share capital, managing directors. */
+    legal_info?: string | null;
+    /** The registered name, when it is not the record's name. */
+    legal_name?: string | null;
+    /** The commercial register entry: "HRB 12345, Amtsgericht München". */
+    legal_registration?: string | null;
+    /** For the company: the bank account customers pay into. */
+    payment_account_id?: string | null;
+    trading_name?: string | null;
+  } | null;
+  /** Every tax identifier, replacing those on record. Left out: kept. */
+  tax_ids?: Array<{
+    /** The country that issued it. */
+    country_code?: string | null;
+    /** `eu_vat`, `tax_number` (a national tax number, such as the German
+     * Steuernummer), `us_ein`, `ca_bn` or `other`. One of each. */
+    scheme: string;
+    /** As the authority writes it, such as DE123456789. */
+    value: string;
+  }> | null;
+};
+
+/**
  * Apply a credit of a vendor or customer (a credit note, money paid on account) to one of its debts (an invoice), without money moving: a payment of nothing is posted that settles the debt and the credit by the same amount. Reverse it with payment.reverse.
  */
 export type PaymentApplyCreditInput = {
@@ -823,6 +954,40 @@ export type PaymentReverseInput = {
 };
 
 /**
+ * Draft a production order for everything planning.suggestions says to make, by the item's active bill of materials (the first by code when it has several), in the warehouse that needs it. The orders are drafts: check and release them as any other. Their components are not planned until they are released.
+ */
+export type PlanningDraftProductionOrdersInput = {
+  /** The company to make for. */
+  company_id: string;
+  /** The date of the drafted orders. Today when omitted. */
+  doc_date?: string | null;
+};
+
+/**
+ * Draft a purchase order per vendor for what planning.suggestions says to buy, from the vendor each item's reorder rule names, at the rule's price or else the last price paid. The orders are drafts in the accounting currency: check and approve them as any other. Suggestions without a vendor are returned, not ordered.
+ */
+export type PlanningDraftPurchaseOrdersInput = {
+  /** The company to order for. */
+  company_id: string;
+  /** The date of the drafted orders. Today when omitted. */
+  doc_date?: string | null;
+  /** Only for this vendor. */
+  vendor_id?: string | null;
+};
+
+/**
+ * What to order or make, per item and warehouse, so that what is left once every open order is done (see stock.availability) is at least the reorder rule's minimum, or not below zero for an item without a rule: the quantity fills up to the rule's fill-up quantity, rounded up to its multiple. Each suggestion says whether the item is made (it has an active bill of materials) or bought, and for one bought the rule's vendor and the price a purchase order would ask. Orders nothing; planning.draft_purchase_orders drafts the purchase orders.
+ */
+export type PlanningSuggestionsInput = {
+  /** The company to plan for. */
+  company_id: string;
+  /** Only this item. */
+  item_id?: string | null;
+  /** Only this warehouse. */
+  warehouse_id?: string | null;
+};
+
+/**
  * The source of the print template built into the server for a document type, to start a template of your own from. It shows the data a template is given.
  */
 export type PrintTemplateBuiltinInput = {
@@ -852,7 +1017,7 @@ export type ProductionOrderCancelInput = {
 };
 
 /**
- * Complete a released production order: every component leaves the warehouse at its average cost and the product arrives worth exactly what was consumed. In the general ledger that value moves from each component's inventory account to the product's, where the account rules make them differ. If any component is short, nothing is posted, unless the company's policy lets stock go below zero. Completing an order that is already completed returns it unchanged.
+ * Complete a released production order: every component leaves the warehouse at its average cost and the product arrives worth what was consumed plus the labor and overhead the order absorbs (each activity's quantity times its rate). In the general ledger that value moves from each component's inventory account to the product's, where the account rules make them differ, and the absorbed cost is credited to the account for absorbed_cost. If any component is short, nothing is posted, unless the company's policy lets stock go below zero. Completing an order that is already completed returns it unchanged.
  */
 export type ProductionOrderCompleteInput = {
   /** Production order id. */
@@ -890,6 +1055,16 @@ export type ProductionOrderReverseInput = {
 export type PurchaseOrderApproveInput = {
   /** Document id. */
   id: string;
+};
+
+/**
+ * Goods sent back to vendors that they had invoiced and have not yet credited, per purchase order line of a company: what a vendor credit note is still to come for, at the order line's price. GRNI holds their value until it comes.
+ */
+export type PurchaseOrderAwaitingCreditInput = {
+  /** The company whose orders are looked at. */
+  company_id: string;
+  /** Only this vendor. */
+  vendor_id?: string | null;
 };
 
 /**
@@ -1005,6 +1180,28 @@ export type SalesCreditNoteReverseInput = {
 };
 
 /**
+ * Post a draft customer credit, a credit not tied to an invoice (a rebate, goodwill). It takes back revenue, or charges the line's account, and the tax at each line's code, in this credit's period, and leaves the customer a credit: an open item below zero, settled with its invoices by a payment or applied to one with payment.apply_credit. The company's policy sales_credit.without_invoice is asked first. Posting a credit that is already posted returns it unchanged.
+ */
+export type SalesCreditPostInput = {
+  /** Document id. */
+  id: string;
+};
+
+/**
+ * Cancel a posted customer credit entered by mistake: revenue, tax and what the customer is owed back are as they were. Refused once the credit has been settled or applied; reverse that payment first.
+ */
+export type SalesCreditReverseInput = {
+  /** Document id. */
+  id: string;
+  /** Memo of the reversing posting. Defaults to "Reversal of" and the
+   * document number. */
+  memo?: string | null;
+  /** Accounting date of the reversal. Defaults to the date of the
+   * original posting, whose period must then still be open. */
+  posting_date?: string | null;
+};
+
+/**
  * Post a draft delivery against an open sales order: the goods leave stock at their average cost, which is debited to cost of goods sold and credited to inventory. An order can be delivered in several parts; more than was ordered only where the company's policy allows it, and never more than is on hand. Posting a delivery that is already posted returns it unchanged.
  */
 export type SalesDeliveryPostInput = {
@@ -1064,6 +1261,16 @@ export type SalesInvoiceReverseInput = {
 export type SalesOrderApproveInput = {
   /** Document id. */
   id: string;
+};
+
+/**
+ * Goods customers sent back that they had been invoiced for and have not yet been credited, per sales order line of a company: what a sales credit note is still owed for, at the order line's price.
+ */
+export type SalesOrderAwaitingCreditInput = {
+  /** The company whose orders are looked at. */
+  company_id: string;
+  /** Only this customer. */
+  customer_id?: string | null;
 };
 
 /**
@@ -1348,6 +1555,21 @@ export type StockTransferReverseInput = {
 };
 
 /**
+ * For each item and warehouse of a company: what is on hand, what open sales orders still have to deliver (committed), what released production orders still have to consume, what can still be promised (available), what open purchase orders and released production orders will bring in, and what is left once every open order is done (projected; below zero the item falls short). Quantities are in each item's unit. Takes the right to read stock entries, sales orders, purchase orders and production orders of the company.
+ */
+export type StockAvailabilityInput = {
+  /** The company whose stock and orders are counted. */
+  company_id: string;
+  /** Only this item. */
+  item_id?: string | null;
+  /** Only the items that will fall short: whose projected quantity is
+   * below zero. */
+  short_only?: boolean;
+  /** Only this warehouse. */
+  warehouse_id?: string | null;
+};
+
+/**
  * Quantity, value and average cost of every item on hand in a company's warehouses, in its accounting currency. Items with nothing on hand are left out. An item that the company's policy let go below zero is listed with a negative quantity and a negative value: the estimate its missing goods left stock at, so that the total still equals the inventory accounts. Values are left out for a caller from whom the value of stock entries is withheld.
  */
 export type StockOnHandInput = {
@@ -1502,6 +1724,28 @@ export type VendorCreditNoteReverseInput = {
 };
 
 /**
+ * Post a draft vendor credit, a credit from a vendor not tied to an invoice (a volume rebate, goodwill). It takes the amount off each line's account and the tax at its code off the account it was reclaimed on, in this credit's period, and leaves a credit with the vendor: an open item below zero, settled with its invoices by a payment or applied to one with payment.apply_credit. The company's policy vendor_credit.without_invoice is asked first. Posting a credit that is already posted returns it unchanged.
+ */
+export type VendorCreditPostInput = {
+  /** Document id. */
+  id: string;
+};
+
+/**
+ * Cancel a posted vendor credit entered by mistake: costs, tax and what the vendor is owed are as they were. Refused once the credit has been settled or applied; reverse that payment first.
+ */
+export type VendorCreditReverseInput = {
+  /** Document id. */
+  id: string;
+  /** Memo of the reversing posting. Defaults to "Reversal of" and the
+   * document number. */
+  memo?: string | null;
+  /** Accounting date of the reversal. Defaults to the date of the
+   * original posting, whose period must then still be open. */
+  posting_date?: string | null;
+};
+
+/**
  * Draft a credit note for a posted vendor invoice, with a line for each of its lines whose goods were returned and not yet credited, at the invoice's price. Nothing is posted: set the quantities and prices the vendor credits and its credit note number, then post it with vendor_credit_note.post.
  */
 export type VendorInvoiceCreditInput = {
@@ -1607,7 +1851,7 @@ export type WebhookUpdateInput = {
 };
 
 /**
- * Post a draft year-end close. In one posting dated the last day of the fiscal period, every income and expense account of the company is brought to zero for the period, and the result goes to the retained earnings account: a credit for a profit, a debit for a loss. The amounts are worked out from the ledger at that moment. The command then closes the fiscal period, as fiscal_period.close does, so nothing more can be posted into the closed year; it needs no permission beyond year_end_close:post for that. Refused if the period is closed, already has a year-end close that is not reversed, or has nothing to close. Posting a close that is already posted returns it unchanged.
+ * Post a draft year-end close. In one posting dated the last day of the fiscal period, every income and expense account of the company is brought to zero for the period, and the result goes to the retained earnings account: a credit for a profit, a debit for a loss. The amounts are worked out from the ledger at that moment. The command then closes the fiscal period, as fiscal_period.close does, so nothing more can be posted into the closed year; it needs no permission beyond year_end_close:post for that. Refused if the period is closed, already has a year-end close that is not reversed, or has nothing to close. Posting a close that is already posted returns it unchanged. With first_period_id the year is every period from that one to the fiscal period: their income and expenses are closed together, and all of them are closed.
  */
 export type YearEndClosePostInput = {
   /** Year-end close id. */
@@ -2067,12 +2311,18 @@ export type Finding = {
 export type Syntax = "ubl" | "cii";
 
 export type Candidate = {
-  code: string;
+  code: string | null;
   /** `vat_id` when the seller's VAT identifier (BT-31) is the vendor's;
    * `name` when only the name is alike. */
   matched_by: string;
-  name: string;
+  name: string | null;
   vendor_id: string;
+};
+
+export type DraftTotals = {
+  gross: string;
+  net: string;
+  tax: string;
 };
 
 export type AllowanceCharge = {
@@ -2122,6 +2372,17 @@ export type Party = {
   trading_name: string | null;
   /** BT-31 / BT-48. */
   vat_id: string | null;
+};
+
+export type Address = {
+  additional_street: string | null;
+  /** BT-77, BT-78. */
+  city: string | null;
+  /** BT-80. */
+  country: string;
+  postcode: string | null;
+  /** BT-75, BT-76. */
+  street: string | null;
 };
 
 export type Line = {
@@ -2201,6 +2462,8 @@ export type Invoice = {
   buyer_reference: string | null;
   /** BT-5, and BT-6 when VAT is accounted in another currency. */
   currency: string;
+  /** BG-15: the address the goods were delivered to. */
+  delivery_address: Address | null;
   /** BT-72. */
   delivery_date: string | null;
   /** BT-9. */
@@ -2217,6 +2480,9 @@ export type Invoice = {
   payment: Payment | null;
   /** BT-20. */
   payment_terms: string | null;
+  period_end: string | null;
+  /** BT-73, BT-74: the invoicing period (BG-14). */
+  period_start: string | null;
   /** BT-25, BT-26: the invoice a credit note credits. */
   preceding_invoice: string | null;
   preceding_invoice_date: string | null;
@@ -2233,7 +2499,13 @@ export type Invoice = {
   vat: Array<VatBreakdown>;
 };
 
+export type TaxCandidate = {
+  code: string;
+  tax_code_id: string;
+};
+
 export type LineProposal = {
+  discount_amount: string | null;
   /** The invoice line's identifier (BT-126). */
   line: string;
   /** `line_reference` (BT-132 names the order line), `item` (the buyer's
@@ -2245,9 +2517,15 @@ export type LineProposal = {
   /** The purchase order line it invoices, when one was found. */
   order_line_id: string | null;
   quantity: string;
-  /** The company's tax code for the line's VAT category and rate, when
-   * exactly one fits. */
+  /** The company's codes for the line's category and rate. Where there
+   * is more than one, choose with `line_tax_codes`. */
+  tax_candidates: Array<TaxCandidate>;
+  /** The tax code the line takes: the one chosen in `line_tax_codes`, or
+   * the company's only code for the line's VAT category and rate. */
   tax_code_id: string | null;
+  /** The unit price and the discount the draft line takes, so that its
+   * net is the invoice line's to the cent. */
+  unit_price: string;
 };
 
 export type AccountLedgerRow = {
@@ -2654,6 +2932,10 @@ export type PolicyDefault = {
 export type FactType = "text" | "bool" | "number";
 
 export type FactMeta = {
+  /** The fact depends on when it is asked (days from today), not only on
+   * what is decided: an approval given on one day still holds for it
+   * on another. */
+  changes_with_time?: boolean;
   /** For a number: what kind of number it is, as for a field: money (and
    * in which currency: `{"from": "field", "field": "currency"}` names
    * another fact of the point), a quantity, a unit price, a rate, a
@@ -2737,6 +3019,9 @@ export type ListedItem = {
   /** The last day the early-payment discount may be taken, when the
    * item offers one. */
   discount_date: string | null;
+  /** Every early-payment discount the item offers, earliest first, when
+   * its terms give more than one step: `[{"until", "amount"}]`. */
+  discount_steps: Json;
   doc_date: string;
   doc_type: string | null;
   /** The document that created the debt: its id, type and number. All
@@ -2744,6 +3029,11 @@ export type ListedItem = {
   document_id: string | null;
   due_date: string | null;
   id: string;
+  /** The parts the item is due in, when its terms make it due in parts,
+   * earliest first, in its currency: `[{"seq", "due_date", "amount",
+   * "open"}]`. A payment that names no part pays the earliest part
+   * still open first. */
+  instalments: Json;
   /** `payable` or `receivable`. */
   kind: string;
   number: string | null;
@@ -2770,6 +3060,131 @@ export type EventStatus = {
   next_attempt_at: string;
   published_at: string | null;
   topic: string;
+};
+
+export type AddressRecord = {
+  additional_street: string | null;
+  /** Who or which site at the address. */
+  attention: string | null;
+  city: string | null;
+  /** ISO 3166-1 alpha-2, such as DE or US. */
+  country_code: string;
+  /** The address on record this one is, when it was read before. An
+   * address keeps its id while it is given back with it, so that the
+   * documents that name it still find it; one left out is removed. */
+  id: string | null;
+  /** The party's address of this kind unless a document names another.
+   * At most one of each kind. */
+  is_default: boolean;
+  /** `billing` (where invoices go) or `shipping` (where goods go). */
+  kind: string;
+  postcode: string | null;
+  /** State, province or region. */
+  region: string | null;
+  street: string | null;
+};
+
+export type ContactRecord = {
+  email: string | null;
+  /** At most one. */
+  is_default: boolean;
+  name: string | null;
+  phone: string | null;
+  /** What they do: accounts payable, sales. */
+  role: string | null;
+};
+
+export type ElectronicAddressRecord = {
+  /** At most one. */
+  is_default: boolean;
+  /** From the EAS code list: EM for email (the default), 0204 for a
+   * Leitweg-ID, 9930 for a German VAT number, 0088 for a GLN. */
+  scheme: string;
+  value: string;
+};
+
+export type Profile = {
+  /** For a customer: the reference it asks its invoices to quote; for a
+   * German public buyer its Leitweg-ID. */
+  invoice_reference: string | null;
+  /** Legal form, share capital, managing directors. */
+  legal_info: string | null;
+  /** The registered name, when it is not the record's name. */
+  legal_name: string | null;
+  /** The commercial register entry: "HRB 12345, Amtsgericht München". */
+  legal_registration: string | null;
+  /** For the company: the bank account customers pay into. */
+  payment_account_id: string | null;
+  trading_name: string | null;
+};
+
+export type TaxIdRecord = {
+  /** The country that issued it. */
+  country_code: string | null;
+  /** `eu_vat`, `tax_number` (a national tax number, such as the German
+   * Steuernummer), `us_ein`, `ca_bn` or `other`. One of each. */
+  scheme: string;
+  /** As the authority writes it, such as DE123456789. */
+  value: string;
+};
+
+export type Suggestion = {
+  /** Absent for a caller who may not read items. */
+  item_code: string | null;
+  item_id: string;
+  /** The reorder rule's minimum; zero without a rule. */
+  min_qty: string;
+  /** What is left once every open order is done. */
+  projected: string;
+  /** What to order or make: up to the rule's fill-up quantity (or its
+   * minimum, or zero without a rule), rounded up to its multiple. */
+  qty: string;
+  /** `make` when the item has an active bill of materials, else `buy`. */
+  source: string;
+  /** The price a purchase order would ask: the rule's, else the last
+   * price paid on a purchase order of the company. */
+  unit_price: string | null;
+  /** The vendor the rule names, for an item bought. */
+  vendor_id: string | null;
+  /** Absent for a caller who may not read warehouses. */
+  warehouse_code: string | null;
+  warehouse_id: string;
+};
+
+export type AwaitingRow = {
+  /** The quantity at the order line's price, before discounts and tax. */
+  amount: string;
+  currency: string;
+  item_code: string | null;
+  item_id: string | null;
+  line_no: number;
+  /** The order the goods were received on. */
+  order_id: string;
+  order_number: string | null;
+  /** Returned and invoiced, and not yet credited. */
+  qty: string;
+  /** The order line's price, in the order's currency. */
+  unit_price: string;
+  vendor_id: string;
+  vendor_name: string;
+};
+
+export type SalesOrderAwaitingCreditAwaitingRow = {
+  /** The quantity at the order line's price, before discounts and tax. */
+  amount: string;
+  currency: string;
+  customer_id: string;
+  customer_name: string;
+  item_code: string | null;
+  item_id: string | null;
+  line_no: number;
+  /** The order the goods were delivered on. */
+  order_id: string;
+  order_number: string | null;
+  /** Returned and invoiced, and not yet credited. */
+  qty: string;
+  /** The order line's price, in the order's currency. */
+  unit_price: string;
 };
 
 export type SearchHit = {
@@ -2853,6 +3268,32 @@ export type ProviderView = {
   scopes: string;
   slug: string;
   trusted_for_admins: boolean;
+};
+
+export type AvailabilityRow = {
+  /** On hand less what is committed and needed: what can still be
+   * promised from stock. */
+  available: string;
+  /** Still to be delivered on open sales orders. */
+  committed: string;
+  /** Still to be made by released production orders. */
+  in_production: string;
+  /** Absent for a caller who may not read items. */
+  item_code: string | null;
+  item_id: string;
+  item_name: string | null;
+  /** Still to be consumed by released production orders. */
+  needed_for_production: string;
+  /** In the warehouse now. */
+  on_hand: string;
+  /** Still to come in on open purchase orders. */
+  on_order: string;
+  /** Available plus what is on order and in production: what is left
+   * once every open order is done. Below zero, the item falls short. */
+  projected: string;
+  /** Absent for a caller who may not read warehouses. */
+  warehouse_code: string | null;
+  warehouse_id: string;
 };
 
 export type OnHandRow = {
@@ -3439,6 +3880,9 @@ export type DocumentListOutput = {
 export type DocumentPartiesOutput = {
   buyer: PartyView | null;
   seller: PartyView | null;
+  /** Where the goods go, when the document kept a shipping address of
+   * its buyer. Absent otherwise. */
+  ship_to?: PartyView | null;
 };
 
 export type DocumentRefreshSummariesOutput = {
@@ -3534,18 +3978,28 @@ export type EinvoiceImportOutput = {
 };
 
 export type EinvoiceReadOutput = {
-  /** Every vendor it may be, best first. Confirm one with `vendor_id`
-   * when importing if the VAT identifier did not decide. */
+  /** Every vendor it may be that the caller may read, best first.
+   * Confirm one with `vendor_id` when importing if the VAT identifier
+   * did not decide. */
   candidates: Array<Candidate>;
   /** Where the XML came from: `xml`, or `pdf` for ZUGFeRD / Factur-X. */
   container: string;
+  /** Where the draft would not say what the invoice says: totals that
+   * differ, an amount already paid, a buyer the invoice does not name.
+   * `einvoice.import` refuses them unless `accept_differences` is given. */
+  differences: Array<string>;
+  /** What the draft will come to, once the vendor is known. */
+  draft: DraftTotals | null;
   findings: Array<Finding>;
   /** The vendor invoice this invoice was imported as before. */
   imported_as: string | null;
   invoice: Invoice;
   lines: Array<LineProposal>;
+  /** What stops the import until it is put right: a line charged VAT
+   * without a tax code, for one. */
+  problems: Array<string>;
   /** The open purchase order the buyer's order reference (BT-13) names,
-   * of that vendor. */
+   * of that vendor, when the caller may read it. */
   purchase_order_id: string | null;
   syntax: Syntax;
   /** Whether every rule checked here holds. */
@@ -3798,6 +4252,26 @@ export type OutboxListOutput = {
   total: number;
 };
 
+export type PartyGetOutput = {
+  addresses: Array<AddressRecord>;
+  contacts: Array<ContactRecord>;
+  electronic_addresses: Array<ElectronicAddressRecord>;
+  party_id: string;
+  party_type: string;
+  profile: Profile | null;
+  tax_ids: Array<TaxIdRecord>;
+};
+
+export type PartySetOutput = {
+  addresses: Array<AddressRecord>;
+  contacts: Array<ContactRecord>;
+  electronic_addresses: Array<ElectronicAddressRecord>;
+  party_id: string;
+  party_type: string;
+  profile: Profile | null;
+  tax_ids: Array<TaxIdRecord>;
+};
+
 export type PaymentApplyCreditOutput = {
   /** The content the document's type defines. See the fields and
    * collections of the type in `meta.describe`. */
@@ -3908,6 +4382,24 @@ export type PaymentReverseOutput = {
   summary: Json;
   updated_at: string;
   version: number;
+};
+
+export type PlanningDraftProductionOrdersOutput = {
+  /** The production orders drafted, one per item and warehouse. */
+  production_order_ids: Array<string>;
+};
+
+export type PlanningDraftPurchaseOrdersOutput = {
+  /** The purchase orders drafted, one per vendor. */
+  purchase_order_ids: Array<string>;
+  /** Suggestions to buy that name no vendor: no order was drafted for
+   * them. */
+  without_vendor: Array<Suggestion>;
+};
+
+export type PlanningSuggestionsOutput = {
+  company_id: string;
+  suggestions: Array<Suggestion>;
 };
 
 export type PrintTemplateBuiltinOutput = {
@@ -4066,6 +4558,11 @@ export type PurchaseOrderApproveOutput = {
   summary: Json;
   updated_at: string;
   version: number;
+};
+
+export type PurchaseOrderAwaitingCreditOutput = {
+  company_id: string;
+  rows: Array<AwaitingRow>;
 };
 
 export type PurchaseOrderCancelOutput = {
@@ -4376,6 +4873,62 @@ export type SalesCreditNoteReverseOutput = {
   version: number;
 };
 
+export type SalesCreditPostOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
+};
+
+export type SalesCreditReverseOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
+};
+
 export type SalesDeliveryPostOutput = {
   /** The content the document's type defines. See the fields and
    * collections of the type in `meta.describe`. */
@@ -4542,6 +5095,11 @@ export type SalesOrderApproveOutput = {
   summary: Json;
   updated_at: string;
   version: number;
+};
+
+export type SalesOrderAwaitingCreditOutput = {
+  company_id: string;
+  rows: Array<SalesOrderAwaitingCreditAwaitingRow>;
 };
 
 export type SalesOrderCancelOutput = {
@@ -4942,6 +5500,11 @@ export type StockTransferReverseOutput = {
   version: number;
 };
 
+export type StockAvailabilityOutput = {
+  company_id: string;
+  rows: Array<AvailabilityRow>;
+};
+
 export type StockOnHandOutput = {
   company_id: string;
   currency: string;
@@ -5071,6 +5634,62 @@ export type VendorCreditNotePostOutput = {
 };
 
 export type VendorCreditNoteReverseOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
+};
+
+export type VendorCreditPostOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
+};
+
+export type VendorCreditReverseOutput = {
   /** The content the document's type defines. See the fields and
    * collections of the type in `meta.describe`. */
   body: Json;
@@ -5339,10 +5958,15 @@ export interface CommandOutputs {
   "open_item.aging": OpenItemAgingOutput;
   "open_item.list": OpenItemListOutput;
   "outbox.list": OutboxListOutput;
+  "party.get": PartyGetOutput;
+  "party.set": PartySetOutput;
   "payment.apply_credit": PaymentApplyCreditOutput;
   "payment.draft": PaymentDraftOutput;
   "payment.post": PaymentPostOutput;
   "payment.reverse": PaymentReverseOutput;
+  "planning.draft_production_orders": PlanningDraftProductionOrdersOutput;
+  "planning.draft_purchase_orders": PlanningDraftPurchaseOrdersOutput;
+  "planning.suggestions": PlanningSuggestionsOutput;
   "print_template.builtin": PrintTemplateBuiltinOutput;
   "print_template.preview": PrintTemplatePreviewOutput;
   "production_order.cancel": ProductionOrderCancelOutput;
@@ -5350,6 +5974,7 @@ export interface CommandOutputs {
   "production_order.release": ProductionOrderReleaseOutput;
   "production_order.reverse": ProductionOrderReverseOutput;
   "purchase_order.approve": PurchaseOrderApproveOutput;
+  "purchase_order.awaiting_credit": PurchaseOrderAwaitingCreditOutput;
   "purchase_order.cancel": PurchaseOrderCancelOutput;
   "purchase_order.close": PurchaseOrderCloseOutput;
   "purchase_order.invoice": PurchaseOrderInvoiceOutput;
@@ -5361,12 +5986,15 @@ export interface CommandOutputs {
   "purchase_return.reverse": PurchaseReturnReverseOutput;
   "sales_credit_note.post": SalesCreditNotePostOutput;
   "sales_credit_note.reverse": SalesCreditNoteReverseOutput;
+  "sales_credit.post": SalesCreditPostOutput;
+  "sales_credit.reverse": SalesCreditReverseOutput;
   "sales_delivery.post": SalesDeliveryPostOutput;
   "sales_delivery.reverse": SalesDeliveryReverseOutput;
   "sales_invoice.credit": SalesInvoiceCreditOutput;
   "sales_invoice.post": SalesInvoicePostOutput;
   "sales_invoice.reverse": SalesInvoiceReverseOutput;
   "sales_order.approve": SalesOrderApproveOutput;
+  "sales_order.awaiting_credit": SalesOrderAwaitingCreditOutput;
   "sales_order.cancel": SalesOrderCancelOutput;
   "sales_order.close": SalesOrderCloseOutput;
   "sales_order.deliver": SalesOrderDeliverOutput;
@@ -5388,6 +6016,7 @@ export interface CommandOutputs {
   "stock_adjustment.reverse": StockAdjustmentReverseOutput;
   "stock_transfer.post": StockTransferPostOutput;
   "stock_transfer.reverse": StockTransferReverseOutput;
+  "stock.availability": StockAvailabilityOutput;
   "stock.on_hand": StockOnHandOutput;
   "tax.report": TaxReportOutput;
   "user.activate": UserActivateOutput;
@@ -5401,6 +6030,8 @@ export interface CommandOutputs {
   "user.update": UserUpdateOutput;
   "vendor_credit_note.post": VendorCreditNotePostOutput;
   "vendor_credit_note.reverse": VendorCreditNoteReverseOutput;
+  "vendor_credit.post": VendorCreditPostOutput;
+  "vendor_credit.reverse": VendorCreditReverseOutput;
   "vendor_invoice.credit": VendorInvoiceCreditOutput;
   "vendor_invoice.post": VendorInvoicePostOutput;
   "vendor_invoice.reverse": VendorInvoiceReverseOutput;
@@ -5470,10 +6101,15 @@ export interface CommandInputs {
   "open_item.aging": OpenItemAgingInput;
   "open_item.list": OpenItemListInput;
   "outbox.list": OutboxListInput;
+  "party.get": PartyGetInput;
+  "party.set": PartySetInput;
   "payment.apply_credit": PaymentApplyCreditInput;
   "payment.draft": PaymentDraftInput;
   "payment.post": PaymentPostInput;
   "payment.reverse": PaymentReverseInput;
+  "planning.draft_production_orders": PlanningDraftProductionOrdersInput;
+  "planning.draft_purchase_orders": PlanningDraftPurchaseOrdersInput;
+  "planning.suggestions": PlanningSuggestionsInput;
   "print_template.builtin": PrintTemplateBuiltinInput;
   "print_template.preview": PrintTemplatePreviewInput;
   "production_order.cancel": ProductionOrderCancelInput;
@@ -5481,6 +6117,7 @@ export interface CommandInputs {
   "production_order.release": ProductionOrderReleaseInput;
   "production_order.reverse": ProductionOrderReverseInput;
   "purchase_order.approve": PurchaseOrderApproveInput;
+  "purchase_order.awaiting_credit": PurchaseOrderAwaitingCreditInput;
   "purchase_order.cancel": PurchaseOrderCancelInput;
   "purchase_order.close": PurchaseOrderCloseInput;
   "purchase_order.invoice": PurchaseOrderInvoiceInput;
@@ -5492,12 +6129,15 @@ export interface CommandInputs {
   "purchase_return.reverse": PurchaseReturnReverseInput;
   "sales_credit_note.post": SalesCreditNotePostInput;
   "sales_credit_note.reverse": SalesCreditNoteReverseInput;
+  "sales_credit.post": SalesCreditPostInput;
+  "sales_credit.reverse": SalesCreditReverseInput;
   "sales_delivery.post": SalesDeliveryPostInput;
   "sales_delivery.reverse": SalesDeliveryReverseInput;
   "sales_invoice.credit": SalesInvoiceCreditInput;
   "sales_invoice.post": SalesInvoicePostInput;
   "sales_invoice.reverse": SalesInvoiceReverseInput;
   "sales_order.approve": SalesOrderApproveInput;
+  "sales_order.awaiting_credit": SalesOrderAwaitingCreditInput;
   "sales_order.cancel": SalesOrderCancelInput;
   "sales_order.close": SalesOrderCloseInput;
   "sales_order.deliver": SalesOrderDeliverInput;
@@ -5519,6 +6159,7 @@ export interface CommandInputs {
   "stock_adjustment.reverse": StockAdjustmentReverseInput;
   "stock_transfer.post": StockTransferPostInput;
   "stock_transfer.reverse": StockTransferReverseInput;
+  "stock.availability": StockAvailabilityInput;
   "stock.on_hand": StockOnHandInput;
   "tax.report": TaxReportInput;
   "user.activate": UserActivateInput;
@@ -5532,6 +6173,8 @@ export interface CommandInputs {
   "user.update": UserUpdateInput;
   "vendor_credit_note.post": VendorCreditNotePostInput;
   "vendor_credit_note.reverse": VendorCreditNoteReverseInput;
+  "vendor_credit.post": VendorCreditPostInput;
+  "vendor_credit.reverse": VendorCreditReverseInput;
   "vendor_invoice.credit": VendorInvoiceCreditInput;
   "vendor_invoice.post": VendorInvoicePostInput;
   "vendor_invoice.reverse": VendorInvoiceReverseInput;
@@ -5547,4 +6190,4 @@ export interface CommandInputs {
 export type CommandName = keyof CommandInputs;
 
 /** Commands that only read. */
-export type ReadOnlyCommandName = "approval.get" | "approval.list" | "asset.cost_lines" | "asset.register" | "asset.schedule" | "audit.history" | "audit.list" | "auth.events" | "bank_statement.proposals" | "bank.reconciliation" | "document.get" | "document.list" | "document.parties" | "document.render" | "einvoice.export" | "einvoice.read" | "entity.get" | "entity.list" | "gl.account_ledger" | "gl.balance_sheet" | "gl.income_statement" | "gl.trial_balance" | "meta.describe" | "open_item.aging" | "open_item.list" | "outbox.list" | "print_template.builtin" | "print_template.preview" | "search.records" | "setup.templates" | "sso_identity.list" | "sso_provider.list" | "stock.on_hand" | "tax.report" | "user.get" | "user.list" | "webhook.deliveries";
+export type ReadOnlyCommandName = "approval.get" | "approval.list" | "asset.cost_lines" | "asset.register" | "asset.schedule" | "audit.history" | "audit.list" | "auth.events" | "bank_statement.proposals" | "bank.reconciliation" | "document.get" | "document.list" | "document.parties" | "document.render" | "einvoice.export" | "einvoice.read" | "entity.get" | "entity.list" | "gl.account_ledger" | "gl.balance_sheet" | "gl.income_statement" | "gl.trial_balance" | "meta.describe" | "open_item.aging" | "open_item.list" | "outbox.list" | "party.get" | "planning.suggestions" | "print_template.builtin" | "print_template.preview" | "purchase_order.awaiting_credit" | "sales_order.awaiting_credit" | "search.records" | "setup.templates" | "sso_identity.list" | "sso_provider.list" | "stock.availability" | "stock.on_hand" | "tax.report" | "user.get" | "user.list" | "webhook.deliveries";
