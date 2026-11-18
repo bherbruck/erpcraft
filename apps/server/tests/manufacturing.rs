@@ -884,3 +884,102 @@ async fn a_company_can_release_orders_for_a_retired_bill() {
     assert_eq!(body["status"], "released");
     t.stop().await;
 }
+
+/// Labor and overhead: a bill says how many hours of each activity a run
+/// takes, the company charges each at its rate, and the product comes in
+/// at its components plus what it absorbed, credited to the account for
+/// absorbed cost. Reversing the order takes all of it back.
+#[tokio::test]
+async fn an_order_absorbs_labor_and_overhead_into_the_product() {
+    let t = TestApp::start().await;
+    let p = setup(&t).await;
+    p.stock_up(&t).await;
+    let absorbed = t
+        .create(
+            "account",
+            json!({ "company_id": p.c.id, "code": "5900", "name": "Absorbed cost",
+                    "account_type": "expense" }),
+        )
+        .await;
+    let baking = t
+        .create(
+            "cost_activity",
+            json!({ "code": "BAKE", "name": "Baking", "kind": "labor", "unit": "h" }),
+        )
+        .await;
+    let oven = t
+        .create(
+            "cost_activity",
+            json!({ "code": "OVEN", "name": "Oven", "kind": "machine", "unit": "h" }),
+        )
+        .await;
+    // A run of three cakes takes 1.5 hours of baking and 1 of the oven.
+    for (activity, qty) in [(&baking, "1.5"), (&oven, "1")] {
+        t.create(
+            "bom_activity",
+            json!({ "bom_id": p.bom, "activity_id": activity, "qty": qty }),
+        )
+        .await;
+    }
+    t.create(
+        "account_rule",
+        json!({ "company_id": p.c.id, "purpose": "absorbed_cost", "account_id": absorbed }),
+    )
+    .await;
+
+    // Without a rate for every activity the order is not released.
+    t.create(
+        "cost_activity_rate",
+        json!({ "company_id": p.c.id, "activity_id": baking, "rate": "40.00" }),
+    )
+    .await;
+    let draft = p.draft(&t, "1").await;
+    let (status, body) = step(&t, "release", &draft).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(message(&body).contains("OVEN"), "{body}");
+    t.create(
+        "cost_activity_rate",
+        json!({ "company_id": p.c.id, "activity_id": oven, "rate": "12.00" }),
+    )
+    .await;
+
+    // One cake: half an hour of baking (20.00) and a third of an hour of
+    // the oven (4.00), on top of its 9.33 of components.
+    let order = p.released(&t, "1").await;
+    let activities = order["body"]["activities"].as_array().unwrap();
+    assert_eq!(activities.len(), 2);
+    assert_eq!(dec(&activities[0]["qty"]), 0.5);
+    assert_eq!(dec(&activities[0]["rate"]), 40.0);
+    assert_eq!(dec(&activities[1]["qty"]), 0.333333);
+    // A later rate does not reach a released order.
+    let rate: String = sqlx::query_scalar(
+        "UPDATE cost_activity_rate SET rate = 99 WHERE activity_id = $1::uuid
+         RETURNING id::text",
+    )
+    .bind(&baking)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert!(!rate.is_empty());
+    let (status, done) = step(&t, "complete", &order).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(dec(&done["summary"]["total_value"]), 33.33, "{done}");
+    assert_eq!(p.level(&t, &p.cake).await, on_hand("1", 3333));
+    let (materials, finished) = p.books(&t).await;
+    assert_eq!(materials, 70.0 - 9.33);
+    assert_eq!(finished, 33.33);
+    let absorbed_balance: f64 = sqlx::query_scalar(
+        "SELECT COALESCE(sum(debit - credit), 0)::float8 FROM gl_entry WHERE account_id = $1::uuid",
+    )
+    .bind(&absorbed)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(absorbed_balance, -24.0);
+
+    // Reversed, everything goes back.
+    let (status, body) = step(&t, "reverse", &done).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(p.books(&t).await, (70.0, 0.0));
+    t.stop().await;
+}

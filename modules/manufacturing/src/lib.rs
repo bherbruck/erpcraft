@@ -16,7 +16,8 @@ use erpcraft_kernel::document::{self, Document, DocumentHandler, DocumentView};
 use erpcraft_kernel::{
     CollectionMeta, Command, CommandSpec, Ctx, Decimal, Decision, DocTypeMeta, DynCommand,
     EntityMeta, Error, FieldMeta, FieldType, JsonSchema, Migration, Module, PgConnection,
-    PolicyPoint, Registry, Result, StateMeta, async_trait, command, company, new_id, schemars,
+    PolicyPoint, Registry, Result, StateMeta, async_trait, command, company, new_id, round_money,
+    schemars,
 };
 use erpcraft_stock::{Cost, StockLine};
 use serde::{Deserialize, Serialize};
@@ -50,6 +51,11 @@ impl Module for ManufacturingModule {
                 version: 2,
                 name: "inventory_account_rule",
                 sql: include_str!("../migrations/0002_inventory_account_rule.sql"),
+            },
+            Migration {
+                version: 3,
+                name: "activities",
+                sql: include_str!("../migrations/0003_activities.sql"),
             },
         ]
     }
@@ -111,6 +117,70 @@ impl Module for ManufacturingModule {
                 .order_by(&["bom_id", "created_at", "id"])
                 .display(&["item_id"])
                 // A line is entered on the page of its bill.
+                .child_of("bom", "bom_id")
+                .validator(validate_bom_line),
+            EntityMeta::new("cost_activity", "Activity")
+                .field(FieldMeta::new("code", "Code", FieldType::Text).required())
+                .field(FieldMeta::new("name", "Name", FieldType::Text).required())
+                .field(
+                    FieldMeta::new(
+                        "kind",
+                        "Kind",
+                        FieldType::options(&["labor", "machine", "overhead"]),
+                    )
+                    .help("What the cost is: people's time, a machine's, or overhead."),
+                )
+                .field(
+                    FieldMeta::new("unit", "Unit", FieldType::Text)
+                        .help("What its quantity counts, such as h for hours."),
+                )
+                .field(FieldMeta::new("active", "Active", FieldType::Bool))
+                .field(created())
+                .order_by(&["code"])
+                .search(&["code", "name"])
+                .plural("Activities"),
+            EntityMeta::new("cost_activity_rate", "Activity rate")
+                .field(
+                    FieldMeta::new("company_id", "Company", FieldType::link("company"))
+                        .required()
+                        .immutable(),
+                )
+                .field(
+                    FieldMeta::new("activity_id", "Activity", FieldType::link("cost_activity"))
+                        .required()
+                        .immutable(),
+                )
+                .field(
+                    FieldMeta::new("rate", "Rate", FieldType::Decimal)
+                        .unit_price()
+                        .required()
+                        .help(
+                            "Per unit of the activity, in the company's accounting currency: \
+                             what a production order absorbs for it.",
+                        ),
+                )
+                .field(created())
+                .order_by(&["activity_id"])
+                .company_field("company_id"),
+            EntityMeta::new("bom_activity", "Bill of materials activity")
+                .field(
+                    FieldMeta::new("bom_id", "Bill of materials", FieldType::link("bom"))
+                        .required()
+                        .immutable(),
+                )
+                .field(
+                    FieldMeta::new("activity_id", "Activity", FieldType::link("cost_activity"))
+                        .required(),
+                )
+                .field(
+                    FieldMeta::new("qty", "Quantity", FieldType::Decimal)
+                        .quantity()
+                        .required()
+                        .help("Units of the activity one run of the bill takes."),
+                )
+                .field(created())
+                .order_by(&["bom_id", "created_at", "id"])
+                .display(&["activity_id"])
                 .child_of("bom", "bom_id")
                 .validator(validate_bom_line),
         ]
@@ -191,6 +261,26 @@ struct Order {
     item_id: Uuid,
 }
 
+/// One activity of a released order: how much of it, at what rate.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+struct Activity {
+    id: Uuid,
+    line_no: i32,
+    activity_id: Uuid,
+    qty: Decimal,
+    rate: Decimal,
+}
+
+async fn load_activities(conn: &mut PgConnection, document_id: Uuid) -> Result<Vec<Activity>> {
+    Ok(sqlx::query_as(
+        "SELECT id, line_no, activity_id, qty, rate FROM production_order_activity
+         WHERE document_id = $1 ORDER BY line_no",
+    )
+    .bind(document_id)
+    .fetch_all(&mut *conn)
+    .await?)
+}
+
 /// One component of a released order.
 #[derive(Debug, Serialize, sqlx::FromRow)]
 struct Component {
@@ -243,19 +333,38 @@ impl DocumentHandler for ProductionOrder {
                     .required(),
                 FieldMeta::new("item_id", "Product", FieldType::link("item")).readonly(),
             ],
-            collections: vec![CollectionMeta {
-                name: "components".into(),
-                label: "Components".into(),
-                fields: vec![
-                    FieldMeta::line_id(),
-                    FieldMeta::line_no(),
-                    FieldMeta::new("item_id", "Item", FieldType::link("item")).readonly(),
-                    FieldMeta::new("qty", "Quantity", FieldType::Decimal)
-                        .quantity()
-                        .unit_of("item_id", "uom")
-                        .readonly(),
-                ],
-            }],
+            collections: vec![
+                CollectionMeta {
+                    name: "components".into(),
+                    label: "Components".into(),
+                    fields: vec![
+                        FieldMeta::line_id(),
+                        FieldMeta::line_no(),
+                        FieldMeta::new("item_id", "Item", FieldType::link("item")).readonly(),
+                        FieldMeta::new("qty", "Quantity", FieldType::Decimal)
+                            .quantity()
+                            .unit_of("item_id", "uom")
+                            .readonly(),
+                    ],
+                },
+                CollectionMeta {
+                    name: "activities".into(),
+                    label: "Labor and overhead".into(),
+                    fields: vec![
+                        FieldMeta::line_id(),
+                        FieldMeta::line_no(),
+                        FieldMeta::new("activity_id", "Activity", FieldType::link("cost_activity"))
+                            .readonly(),
+                        FieldMeta::new("qty", "Quantity", FieldType::Decimal)
+                            .quantity()
+                            .readonly(),
+                        FieldMeta::new("rate", "Rate", FieldType::Decimal)
+                            .unit_price()
+                            .readonly()
+                            .help("The company's rate when the order was released."),
+                    ],
+                },
+            ],
             states: vec![
                 StateMeta::editable("draft", "Draft"),
                 StateMeta::locked("released", "Released"),
@@ -350,6 +459,7 @@ impl DocumentHandler for ProductionOrder {
             "warehouse_id": order.warehouse_id,
             "item_id": order.item_id,
             "components": load_components(conn, doc.id).await?,
+            "activities": load_activities(conn, doc.id).await?,
         }))
     }
 }
@@ -459,6 +569,46 @@ impl Command for Release {
         .bind(&quantities)
         .execute(&mut *ctx.conn)
         .await?;
+        // The labor and overhead it will absorb, at the company's rates now.
+        let activities: Vec<(Uuid, String, Decimal, Option<Decimal>)> = sqlx::query_as(
+            "SELECT a.activity_id, c.code, a.qty, r.rate
+             FROM bom_activity a JOIN cost_activity c ON c.id = a.activity_id
+             LEFT JOIN cost_activity_rate r ON r.activity_id = a.activity_id
+                                           AND r.company_id = $2
+             WHERE a.bom_id = $1 ORDER BY a.created_at, a.id",
+        )
+        .bind(order.bom_id)
+        .bind(doc.company_id)
+        .fetch_all(&mut *ctx.conn)
+        .await?;
+        for (index, (activity, code, per_run, rate)) in activities.iter().enumerate() {
+            let Some(rate) = rate else {
+                return Err(Error::validation(format!(
+                    "this company has no rate for activity {code}: add a cost_activity_rate"
+                )));
+            };
+            let qty = per_run
+                .checked_mul(order.qty)
+                .and_then(|needed| needed.checked_div(output_qty))
+                .ok_or_else(|| Error::validation("the quantity to make is too large"))?
+                .round_dp(6);
+            if qty.is_zero() {
+                continue;
+            }
+            sqlx::query(
+                "INSERT INTO production_order_activity (id, document_id, line_no, activity_id,
+                     qty, rate)
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(new_id())
+            .bind(doc.id)
+            .bind(index as i32 + 1)
+            .bind(activity)
+            .bind(qty)
+            .bind(rate)
+            .execute(&mut *ctx.conn)
+            .await?;
+        }
 
         document::transition(ctx, &mut doc, "released").await?;
         document::view(ctx, doc).await
@@ -521,9 +671,11 @@ impl Command for Complete {
         CommandSpec::action(
             "production_order.complete",
             "Complete a released production order: every component leaves the warehouse at its \
-             average cost and the product arrives worth exactly what was consumed. In the \
+             average cost and the product arrives worth what was consumed plus the labor and \
+             overhead the order absorbs (each activity's quantity times its rate). In the \
              general ledger that value moves from each component's inventory account to the \
-             product's, where the account rules make them differ. If any \
+             product's, where the account rules make them differ, and the absorbed cost is \
+             credited to the account for absorbed_cost. If any \
              component is short, nothing is posted, unless the company's policy lets stock go \
              below zero. Completing an order that is already \
              completed returns it unchanged.",
@@ -590,8 +742,31 @@ impl Command for Complete {
             })
             .collect();
         let consumed = erpcraft_stock::post(ctx, &posting, &issues, "production").await?;
-        // What was consumed is what the product is worth, to the cent.
-        let total: Decimal = consumed.iter().map(|entry| -entry.value).sum();
+        // The labor and overhead absorbed: each activity's quantity times
+        // its rate, rounded, credited to the account for absorbed cost.
+        let decimals = company::currency_decimals(&mut *ctx.conn, doc.company_id).await?;
+        let mut absorbed: Vec<(Uuid, Decimal, Uuid)> = vec![];
+        for activity in load_activities(&mut *ctx.conn, doc.id).await? {
+            let amount = round_money(activity.qty * activity.rate, decimals);
+            if amount.is_zero() {
+                continue;
+            }
+            let account = erpcraft_gl::account_for(
+                &mut *ctx.conn,
+                doc.company_id,
+                "absorbed_cost",
+                &[("cost_activity", activity.activity_id)],
+            )
+            .await?;
+            absorbed.push((account, amount, activity.id));
+        }
+        // What was consumed and absorbed is what the product is worth, to
+        // the cent.
+        let total: Decimal = consumed.iter().map(|entry| -entry.value).sum::<Decimal>()
+            + absorbed
+                .iter()
+                .map(|(_, amount, _)| *amount)
+                .sum::<Decimal>();
         let made = erpcraft_stock::post(
             ctx,
             &posting,
@@ -629,6 +804,9 @@ impl Command for Complete {
                 line(*account, Decimal::ZERO, -entry.value, entry.source_line_id)
             })
             .collect();
+        gl.extend(absorbed.iter().map(|(account, amount, source)| {
+            line(*account, Decimal::ZERO, *amount, Some(*source))
+        }));
         // The product's account takes what came from other accounts, less
         // the variance, which is not stock value.
         let moved: Decimal = gl.iter().map(|l| l.credit).sum();
