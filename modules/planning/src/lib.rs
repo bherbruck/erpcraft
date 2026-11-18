@@ -105,6 +105,7 @@ impl Module for PlanningModule {
             command(Availability),
             command(Suggestions),
             command(DraftPurchaseOrders),
+            command(DraftProductionOrders),
         ]
     }
 }
@@ -584,6 +585,84 @@ impl Command for DraftPurchaseOrders {
         Ok(DraftOutput {
             purchase_order_ids: ids,
             without_vendor,
+        })
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DraftProductionInput {
+    /// The company to make for.
+    company_id: Uuid,
+    /// The date of the drafted orders. Today when omitted.
+    doc_date: Option<NaiveDate>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct DraftProductionOutput {
+    /// The production orders drafted, one per item and warehouse.
+    production_order_ids: Vec<Uuid>,
+}
+
+pub struct DraftProductionOrders;
+
+#[async_trait]
+impl Command for DraftProductionOrders {
+    type Input = DraftProductionInput;
+    type Output = DraftProductionOutput;
+
+    fn spec(&self) -> CommandSpec {
+        CommandSpec::action(
+            "planning.draft_production_orders",
+            "Draft a production order for everything planning.suggestions says to make, by the \
+             item's active bill of materials (the first by code when it has several), in the \
+             warehouse that needs it. The orders are drafts: check and release them as any \
+             other. Their components are not planned until they are released.",
+        )
+        .permission("production_order:create")
+    }
+
+    async fn run(
+        &self,
+        ctx: &mut Ctx<'_>,
+        input: DraftProductionInput,
+    ) -> Result<DraftProductionOutput> {
+        let company = input.company_id;
+        ctx.require("production_order:create", company)?;
+        let doc_date = input
+            .doc_date
+            .unwrap_or_else(|| erpcraft_kernel::Utc::now().date_naive());
+        let make: Vec<Suggestion> = suggestions(ctx, company, None, None)
+            .await?
+            .into_iter()
+            .filter(|s| s.source == "make")
+            .collect();
+        if make.is_empty() {
+            ctx.no_change();
+        }
+        let mut ids = vec![];
+        for s in make {
+            let bom: Uuid = sqlx::query_scalar(
+                "SELECT id FROM bom WHERE item_id = $1 AND active ORDER BY code LIMIT 1",
+            )
+            .bind(s.item_id)
+            .fetch_one(&mut *ctx.conn)
+            .await?;
+            let view = document::create(
+                ctx,
+                NewDocument {
+                    doc_type: "production_order".into(),
+                    company_id: company,
+                    doc_date,
+                    memo: Some("Drafted by planning".into()),
+                    body: json!({ "bom_id": bom, "qty": s.qty, "warehouse_id": s.warehouse_id }),
+                },
+            )
+            .await?;
+            ids.push(view.header.id);
+        }
+        Ok(DraftProductionOutput {
+            production_order_ids: ids,
         })
     }
 }

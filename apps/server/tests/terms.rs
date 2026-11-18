@@ -1797,5 +1797,27 @@ async fn planning_suggests_and_drafts_what_to_buy() {
         1,
         "a draft is not on order yet: {out}"
     );
+    // What is to be made is drafted as a production order by its bill.
+    let (status, made) = t
+        .command(
+            &t.admin,
+            "planning.draft_production_orders",
+            json!({ "company_id": f.c.id, "doc_date": "2026-01-06" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{made}");
+    let ids = made["production_order_ids"].as_array().unwrap();
+    assert_eq!(ids.len(), 1, "{made}");
+    let (status, order) = t
+        .get(
+            &t.admin,
+            &format!(
+                "/api/documents/production_order/{}",
+                ids[0].as_str().unwrap()
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{order}");
+    assert_eq!(dec(&order["body"]["qty"]), 3.0);
     t.stop().await;
 }
