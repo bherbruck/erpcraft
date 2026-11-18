@@ -98,3 +98,7 @@ cargo test --workspace
 ```
 
 Each integration test creates and drops its own database.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
