@@ -91,6 +91,11 @@ impl Module for OpenItemsModule {
                 name: "instalments",
                 sql: include_str!("../migrations/0008_instalments.sql"),
             },
+            Migration {
+                version: 9,
+                name: "instalment_locks",
+                sql: include_str!("../migrations/0009_instalment_locks.sql"),
+            },
         ]
     }
 
@@ -538,9 +543,19 @@ pub async fn lock(
     company_id: Uuid,
     ids: &[Uuid],
 ) -> Result<Vec<OpenItem>> {
+    // Locked first, then read in a statement of its own: a statement that
+    // waited for a lock reads the locked row as it is now, but what its
+    // subqueries read (the parts, from the settlements) as it was before
+    // it waited.
+    sqlx::query(
+        "SELECT id FROM open_item WHERE id = ANY($1) AND company_id = $2 ORDER BY id FOR UPDATE",
+    )
+    .bind(ids)
+    .bind(company_id)
+    .execute(&mut *conn)
+    .await?;
     let found: Vec<OpenItem> = sqlx::query_as(&format!(
-        "SELECT {ITEM_COLUMNS} FROM open_item i
-         WHERE i.id = ANY($1) AND i.company_id = $2 ORDER BY i.id FOR UPDATE"
+        "SELECT {ITEM_COLUMNS} FROM open_item i WHERE i.id = ANY($1) AND i.company_id = $2"
     ))
     .bind(ids)
     .bind(company_id)
