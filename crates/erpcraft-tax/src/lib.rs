@@ -94,6 +94,11 @@ impl Module for TaxModule {
                 name: "vat_category",
                 sql: include_str!("../migrations/0010_vat_category.sql"),
             },
+            Migration {
+                version: 11,
+                name: "adjustment_reversal",
+                sql: include_str!("../migrations/0011_adjustment_reversal.sql"),
+            },
         ]
     }
 
@@ -551,7 +556,16 @@ async fn parts(conn: &mut PgConnection, tax_code_id: Uuid) -> Result<(Part, Vec<
     let components = if components.is_empty() {
         vec![code.clone()]
     } else {
+        // A group the buyer accounts for (a reverse charge set up as a
+        // group of the ordinary rates) makes each of its components so:
+        // the flag is what the line's code says, not only its parts'.
         components
+            .into_iter()
+            .map(|mut part| {
+                part.self_assessed |= code.self_assessed;
+                part
+            })
+            .collect()
     };
     Ok((code, components))
 }

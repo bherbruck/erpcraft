@@ -814,11 +814,19 @@ async fn a_year_of_monthly_periods_is_closed_in_one_step() {
     // Once the year's close is reversed, June can be closed on its own:
     // its income moves once.
     let (status, body) = t
-        .command(&t.admin, "fiscal_period.reopen", json!({ "id": months[11] }))
+        .command(
+            &t.admin,
+            "fiscal_period.reopen",
+            json!({ "id": months[11] }),
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let (status, body) = t
-        .command(&t.admin, "year_end_close.reverse", json!({ "id": year_close }))
+        .command(
+            &t.admin,
+            "year_end_close.reverse",
+            json!({ "id": year_close }),
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(at_now(&t, &c, &retained).await, 0.0);
