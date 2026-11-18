@@ -102,6 +102,15 @@ every refused cell with its row, column, text and reason ("read-only", "outside 
 Undo history is kept by row id, so sorting or filtering between an edit and its undo
 does not matter. It holds 100 batches.
 
+### Wide grids
+
+Rows are always virtual. Columns are too when more than 30 of them scroll, or when
+`virtualColumns` says so. Then only the pinned columns and the ones in view are rendered,
+with spacers for the rest. The active cell's column and the selection's far end are always
+rendered, so focus and the keyboard reach every column (End, arrows, Ctrl+arrows). Copying,
+pasting and filling read the data, not the page, so they cover columns that are not rendered.
+Going to a pinned column (Home, End) scrolls the other columns to that side.
+
 ### Line editing (document lines)
 
 Pass `lineEditing={{ onAppend, onInsert(at), onDelete(rowIds, from, to) }}`. The grid asks
@@ -240,6 +249,7 @@ leaves the arrow keys to the text, and F2 switches between the two modes.
 | Tab / Shift+Tab (editing) | Commit and move right / left |
 | Arrow keys (editing, "enter" mode) | Commit and move |
 | Escape (editing) | Cancel |
+| Ctrl+Enter (editing) | Put what was typed into every cell of the selection, as in Excel: select a range (in one column or several), type a value, press Ctrl+Enter. Each cell is parsed and checked for its own column, refused cells are reported, the selection stays, and one Ctrl+Z takes the whole fill back. Typing into a selection keeps it for this. |
 | Delete | Clear the editable cells of the selection |
 | Ctrl+C / Ctrl+X | Copy / cut the selection as TSV (and an HTML table). It pastes into Excel and Sheets cell by cell. |
 | Ctrl+V | Paste TSV from Excel or Sheets into the editable cells, starting at the selection's top left. A single copied cell fills the whole selection. Every refused cell is reported. |
@@ -263,7 +273,7 @@ leaves the arrow keys to the text, and F2 switches between the two modes.
 | ArrowDown on the last row, Enter committing on the last row | Add a row at the end and move into it |
 | Tab past the last column | Go on to the first column of the next row, adding one at the end |
 | Ctrl+Shift+= (Ctrl++) | Insert a row above |
-| Ctrl+Enter | Insert a row below |
+| Ctrl+Enter (not editing) | Insert a row below |
 | Ctrl+- | Delete the selected rows |
 
 The mouse: a click on a header sorts it and Shift+click adds it to the sort. Dragging a

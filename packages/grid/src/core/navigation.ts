@@ -64,6 +64,8 @@ export interface KeyInput {
 
 export type Effect =
   | { type: "commit"; edit: Edit }
+  /** Ctrl+Enter while editing: the text goes into every cell of the selection, as in Excel. */
+  | { type: "fill"; edit: Edit; range: Range }
   | { type: "cancel"; edit: Edit }
   | { type: "beginEdit"; row: number; col: number }
   | { type: "clear"; range: Range }
@@ -210,7 +212,11 @@ export function beginEdit(state: NavState, ctx: NavContext, cell: Cell, typed?: 
     draft: typed ?? original,
     original,
   };
-  return result({ ...moveTo(state, cell), tabColumn: state.tabColumn, editing }, [
+  // Typing into a selection keeps it, so Ctrl+Enter can fill it (Excel); elsewhere it collapses.
+  const range = rangeOf(state);
+  const keep = !isSingleCell(range) && inRange(range, cell.row, cell.col) && cell.row === state.active.row && cell.col === state.active.col;
+  const base = keep ? { ...state, editing: null } : moveTo(state, cell);
+  return result({ ...base, tabColumn: state.tabColumn, editing }, [
     { type: "beginEdit", row: cell.row, col: cell.col },
   ]);
 }
@@ -232,6 +238,10 @@ function handleEditing(state: NavState, edit: Edit, input: KeyInput, ctx: NavCon
       return result({ ...state, editing: null }, [{ type: "cancel", edit }]);
     case "Enter": {
       if (input.alt) return result(state, [], false); // a line break in the text, if the editor allows one
+      if (input.ctrl) {
+        // Into every cell of the selection; the selection stays.
+        return result({ ...state, editing: null }, [{ type: "fill", edit, range: rangeOf(state) }]);
+      }
       if (input.shift) return result({ ...moveTo(state, step(here, "up", ctx)), tabColumn: null }, [commit]);
       const target = { row: edit.row, col: state.tabColumn ?? edit.col };
       return down(state, ctx, target, [commit]);

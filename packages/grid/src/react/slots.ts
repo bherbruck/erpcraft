@@ -406,6 +406,7 @@ export const DEFAULT_GRID_LABELS = {
   filters: "Filters",
   pasted: "Pasted {applied} cells",
   cleared: "Cleared {applied} cells",
+  filled: "Filled {applied} cells",
   undone: "Undone",
   redone: "Redone",
   rejected: "{count} not accepted",

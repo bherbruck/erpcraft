@@ -15,7 +15,7 @@ import {
   useReactTable,
   type VisibilityState,
 } from "@tanstack/react-table";
-import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
+import { defaultRangeExtractor, type Range as Range_, useVirtualizer } from "@tanstack/react-virtual";
 import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -123,6 +123,11 @@ export interface GridProps<Row> {
   labels?: Partial<GridLabels>;
   /** The design system: every visible element. See ./slots.ts and the README's skinning checklist. */
   slots: GridSlots<Row>;
+  /**
+   * Render only the columns in view (and the pinned ones), for wide grids. Default: on when
+   * more than 30 columns scroll. The active cell's column is always rendered.
+   */
+  virtualColumns?: boolean;
   /** Height of the scrolling area. */
   height?: number | string;
   rowHeight?: number;
@@ -548,6 +553,16 @@ export function Grid<Row>(props: GridProps<Row>) {
   }, [rowHeight, headerElement]);
 
   const keepRows = useRef<number[]>([]);
+  const keepRowsKey = keepRows.current.join(",");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the key stands for the rows kept
+  const keepRowsInRange = useCallback(
+    (r: Range_) => {
+      const indexes = new Set(defaultRangeExtractor(r));
+      for (const keep of keepRows.current) indexes.add(keep);
+      return [...indexes].sort((a, b) => a - b);
+    },
+    [keepRowsKey],
+  );
   keepRows.current = [active.row, nav.extent.row].filter((r) => r >= 0 && r < rowCount);
   const virtualizer = useVirtualizer({
     count: rowCount,
@@ -557,12 +572,47 @@ export function Grid<Row>(props: GridProps<Row>) {
     scrollMargin: headerHeight,
     // The active cell and the end of the selection stay rendered, so focus
     // is never on an element that scrolled away and was removed.
-    rangeExtractor: (r) => {
+    rangeExtractor: keepRowsInRange,
+  });
+
+  // Columns in view, for wide grids: the pinned ones always, the ones that scroll as they come
+  // into view, and the active cell's and the selection end's always, like the rows above.
+  const leftColumns = table.getLeftVisibleLeafColumns().length;
+  const centerColumns = table.getCenterVisibleLeafColumns();
+  const virtualColumns = props.virtualColumns ?? centerColumns.length > 30;
+  const keepColumns = useRef<number[]>([]);
+  keepColumns.current = [active.col, nav.extent.col]
+    .map((c) => c - leftColumns)
+    .filter((c) => c >= 0 && c < centerColumns.length);
+  // A new extractor only when the columns to keep change: one each render would make the
+  // virtualizer give new items each render, and every row would render again.
+  const keepColumnsKey = keepColumns.current.join(",");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the key stands for the columns kept
+  const keepColumnsInRange = useCallback(
+    (r: Range_) => {
       const indexes = new Set(defaultRangeExtractor(r));
-      for (const keep of keepRows.current) indexes.add(keep);
+      for (const keep of keepColumns.current) indexes.add(keep);
       return [...indexes].sort((a, b) => a - b);
     },
+    [keepColumnsKey],
+  );
+  const columnSizes = useRef<number[]>([]);
+  columnSizes.current = centerColumns.map((c) => c.getSize());
+  const columnVirtualizer = useVirtualizer({
+    horizontal: true,
+    count: virtualColumns ? centerColumns.length : 0,
+    getScrollElement: () => scrollerRef.current,
+    estimateSize: (index) => columnSizes.current[index] ?? 150,
+    overscan: 3,
+    scrollMargin: table.getLeftTotalSize(),
+    rangeExtractor: keepColumnsInRange,
   });
+  // Widths changed (a resize, a fit, a column moved, pinned or hidden): measure again.
+  const sizesKey = columnSizes.current.join(",");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the key stands for the widths
+  useLayoutEffect(() => {
+    columnVirtualizer.measure();
+  }, [sizesKey, leftColumns]);
 
   // ------------------------------------------------------------ edits
   const announce = useCallback((text: string) => {
@@ -592,6 +642,7 @@ export function Grid<Row>(props: GridProps<Row>) {
       let text = "";
       if (source === "paste") text = interpolate(labels.pasted, { applied: changes.length });
       else if (source === "clear") text = interpolate(labels.cleared, { applied: changes.length });
+      else if (source === "fill") text = interpolate(labels.filled, { applied: changes.length });
       else if (source === "undo") text = labels.undone;
       else if (source === "redo") text = labels.redone;
       if (rejected.length > 0) text = `${text ? `${text}. ` : ""}${describeRejected(rejected)}`;
@@ -643,6 +694,14 @@ export function Grid<Row>(props: GridProps<Row>) {
           case "cancel":
             setEditError(null);
             break;
+          case "fill": {
+            // One typed value into every cell of the selection: a paste of one cell, which
+            // fills the range, each cell parsed and checked for its own column.
+            setEditError(null);
+            const plan = planPaste(sheetRef.current, effect.range, [[effect.edit.draft]]);
+            commitChanges(plan.changes, plan.rejected, "fill");
+            break;
+          }
           case "clear": {
             const plan = planClear(sheetRef.current, effect.range);
             commitChanges(plan.changes, plan.rejected, "clear");
@@ -736,6 +795,11 @@ export function Grid<Row>(props: GridProps<Row>) {
     if (target.row >= 0) virtualizer.scrollToIndex(target.row, { align: "auto" });
     const el = scroller.querySelector<HTMLElement>(`[data-row="${target.row}"][data-col="${target.col}"]`);
     el?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    // A pinned column is always in view: going to one (Home, End) shows the scrolling
+    // columns next to it, as Excel's Home shows the first columns.
+    const pinned = shownColumns[target.col]?.getIsPinned();
+    if (pinned === "left") scroller.scrollLeft = 0;
+    if (pinned === "right") scroller.scrollLeft = scroller.scrollWidth;
   }, [scrollKey]);
 
   const onFocusIn = useCallback(
@@ -1195,6 +1259,33 @@ export function Grid<Row>(props: GridProps<Row>) {
   }, [layout]);
 
   const virtualItems = virtualizer.getVirtualItems();
+  // Which columns to render, in order, with the width of those left out between them.
+  const freshPlan: ColumnPlan = useMemo(() => {
+    const all = shownColumns.map((_, index) => index);
+    if (!virtualColumns) return all;
+    const out: ColumnPlan = all.slice(0, leftColumns);
+    const margin = table.getLeftTotalSize();
+    let cursor = 0;
+    for (const item of columnVirtualizer.getVirtualItems()) {
+      const start = item.start - margin;
+      if (start > cursor) out.push({ spacer: start - cursor, key: `gap-${item.index}` });
+      out.push(leftColumns + item.index);
+      cursor = item.end - margin;
+    }
+    const centerWidth = table.getCenterTotalSize();
+    if (centerWidth > cursor) out.push({ spacer: centerWidth - cursor, key: "gap-end" });
+    for (const index of all.slice(leftColumns + centerColumns.length)) out.push(index);
+    return out;
+    // The virtualizer's items change as it scrolls; it re-renders the grid when they do.
+    // biome-ignore lint/correctness/useExhaustiveDependencies: read on every render that matters
+  }, [shownColumns, virtualColumns, leftColumns, centerColumns.length, columnVirtualizer.getVirtualItems(), table, layout]);
+  // The same plan keeps its identity, so rows (memoised) render again only when it changes.
+  const planRef = useRef<{ key: string; plan: ColumnPlan }>({ key: "", plan: freshPlan });
+  const planKey = JSON.stringify(freshPlan);
+  if (planRef.current.key !== planKey || planRef.current.plan.length !== freshPlan.length) {
+    planRef.current = { key: planKey, plan: freshPlan };
+  }
+  const plan = planRef.current.plan;
   const sortInfo = (column: Column<Row, unknown>): SortInfo | null => {
     const direction = column.getIsSorted();
     if (!direction) return null;
@@ -1475,7 +1566,7 @@ export function Grid<Row>(props: GridProps<Row>) {
             selected={false}
             props={{ role: "row", "aria-rowindex": 1, style: { display: "flex", width: totalWidth } }}
           >
-            {headerCells}
+            {plan.map((entry) => (typeof entry === "number" ? headerCells[entry] : spacer(entry)))}
           </RowSlot>
         </Part>
         <Part
@@ -1502,6 +1593,7 @@ export function Grid<Row>(props: GridProps<Row>) {
                 height={rowHeight}
                 width={totalWidth}
                 shownColumns={shownColumns}
+                plan={plan}
                 shown={shown}
                 cellStyle={cellStyle}
                 selLeft={inRows ? range.left : -1}
@@ -1549,7 +1641,10 @@ export function Grid<Row>(props: GridProps<Row>) {
               selected={false}
               props={{ role: "row", "aria-rowindex": ariaRowCount, style: { display: "flex", width: totalWidth } }}
             >
-              {shownColumns.map((tc, col) => {
+              {plan.map((entry) => {
+                if (typeof entry !== "number") return spacer(entry);
+                const col = entry;
+                const tc = shownColumns[col] as Column<Row, unknown>;
                 const column = shown[col] as GridColumn<Row>;
                 const found = footerTotals.get(column.id);
                 const align = alignOf(column.type);
@@ -1594,6 +1689,14 @@ export function Grid<Row>(props: GridProps<Row>) {
   );
 }
 
+/** Column indexes to render, in order, and the width of the columns left out between them. */
+type ColumnPlan = (number | { spacer: number; key: string })[];
+
+/** The room of columns not rendered: layout only, hidden from assistive technology. */
+function spacer(entry: { spacer: number; key: string }) {
+  return <div key={entry.key} aria-hidden="true" style={{ width: entry.spacer, flex: "none" }} />;
+}
+
 /** Read by screen readers, never seen: not a look, so the grid keeps it. */
 const VISUALLY_HIDDEN: CSSProperties = {
   position: "absolute",
@@ -1635,6 +1738,8 @@ interface GridRowProps<Row> {
   height: number;
   width: number;
   shownColumns: Column<Row, unknown>[];
+  /** The columns to render, with spacers for those left out (wide grids). */
+  plan: ColumnPlan;
   shown: GridColumn<Row>[];
   cellStyle: (column: Column<Row, unknown>) => CSSProperties;
   selLeft: number;
@@ -1686,7 +1791,10 @@ function GridRowInner<Row>(props: GridRowProps<Row>) {
         },
       }}
     >
-      {shownColumns.map((tc, c) => {
+      {props.plan.map((entry) => {
+        if (typeof entry !== "number") return spacer(entry);
+        const c = entry;
+        const tc = shownColumns[c] as Column<Row, unknown>;
         const column = shown[c] as GridColumn<Row>;
         const value = cellValue(column, row);
         const isActive = props.activeCol === c;

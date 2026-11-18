@@ -477,3 +477,65 @@ test("the column menu (Shift+F10) and its Filter… item; focus stays in the gri
   await expect(menu).toHaveCount(0);
   expect(await focused(page)).toBe(`-1,${COL.memo}`);
 });
+
+test("wide grids render the columns in view; the keyboard reaches every one", async ({ page }) => {
+  // Many keys in a row; a loaded machine needs more than the default.
+  test.setTimeout(90_000);
+  await page.goto("/#wide");
+  await expect(page.locator('[role="gridcell"]').first()).toBeVisible();
+  await expect(page.locator('[role="grid"]')).toHaveAttribute("aria-colcount", "60");
+  // Far fewer than 60 cells a row are in the page.
+  const rendered = await page.locator('[role="row"][aria-rowindex="2"] [role="gridcell"]').count();
+  expect(rendered).toBeLessThan(25);
+  await cell(page, 0, 0).click();
+  await page.keyboard.press("End");
+  expect(await focused(page)).toBe("0,59");
+  await expect(cell(page, 0, 59)).toHaveText("r1c59");
+  await expect(cell(page, 0, 59)).toBeInViewport();
+  // The pinned key column stays rendered and in view.
+  await expect(cell(page, 0, 0)).toBeInViewport();
+  await page.keyboard.press("Home");
+  expect(await focused(page)).toBe("0,0");
+  await expect(cell(page, 0, 1)).toBeInViewport();
+  // Arrow keys walk across, one column at a time, past what was rendered.
+  for (let i = 0; i < 30; i += 1) await page.keyboard.press("ArrowRight");
+  expect(await focused(page)).toBe("0,30");
+  await expect(cell(page, 0, 30)).toBeInViewport();
+  // Copying reads the data, not the page: every column of the row comes along.
+  await page.keyboard.press("Home");
+  await page.keyboard.press("Shift+End");
+  await page.keyboard.press("Control+c");
+  const text = await page.evaluate(() => navigator.clipboard.readText());
+  expect(text.split("\t")).toHaveLength(60);
+  // Editing a cell out at the right edge.
+  await page.keyboard.press("End");
+  await page.keyboard.type("edited");
+  await page.keyboard.press("Enter");
+  await expect(cell(page, 0, 59)).toHaveText("edited");
+  expect(await focused(page)).toBe("1,59");
+});
+
+test("Ctrl+Enter puts what was typed into every selected cell; Ctrl+Z takes it back", async ({ page }) => {
+  await open(page);
+  const before = await cell(page, 0, COL.qty).textContent();
+  await cell(page, 0, COL.qty).click();
+  await page.keyboard.press("Shift+ArrowDown");
+  await page.keyboard.press("Shift+ArrowDown");
+  await page.keyboard.press("Shift+ArrowDown");
+  await page.keyboard.type("7");
+  await page.keyboard.press("Control+Enter");
+  for (let r = 0; r < 4; r += 1) await expect(cell(page, r, COL.qty)).toHaveText("7");
+  await expect(cell(page, 4, COL.qty)).not.toHaveText("7");
+  await expect(page.locator("[data-grid-live]")).toContainText("Filled 4 cells");
+  // The selection stays, and the focus with it.
+  expect(await focused(page)).toBe(`0,${COL.qty}`);
+  expect(await page.locator('[role="gridcell"][data-row][aria-selected="true"]').count()).toBe(4);
+  // A value a column refuses is reported, cell by cell.
+  await page.keyboard.type("-1");
+  await page.keyboard.press("Control+Enter");
+  await expect(page.getByTestId("report")).toContainText("fill: 0 applied, 4 rejected");
+  await expect(cell(page, 0, COL.qty)).toHaveText("7");
+  // One undo takes back the whole fill.
+  await page.keyboard.press("Control+z");
+  await expect(cell(page, 0, COL.qty)).toHaveText(before ?? "");
+});

@@ -287,3 +287,38 @@ describe("line editing", () => {
     expect(press(at(9, 1), ["ArrowDown"]).effects).toEqual([]);
   });
 });
+
+describe("bulk fill (Ctrl+Enter)", () => {
+  test("typing into a selection keeps it; Ctrl+Enter fills it and keeps it", () => {
+    const r = press(at(1, 2), [{ key: "ArrowDown", shift: true }, { key: "ArrowDown", shift: true }, "7"]);
+    expect(r.state.editing).toMatchObject({ row: 1, col: 2, draft: "7", mode: "enter" });
+    expect(rangeOf(r.state)).toEqual({ top: 1, bottom: 3, left: 2, right: 2 });
+    const filled = handleKey(r.state, { key: "Enter", ctrl: true }, sheet());
+    expect(filled.handled).toBe(true);
+    expect(filled.state.editing).toBeNull();
+    expect(filled.effects).toEqual([
+      { type: "fill", edit: expect.objectContaining({ draft: "7" }), range: { top: 1, bottom: 3, left: 2, right: 2 } },
+    ]);
+    expect(rangeOf(filled.state)).toEqual({ top: 1, bottom: 3, left: 2, right: 2 });
+    expect(pos(filled.state)).toEqual({ row: 1, col: 2 });
+  });
+
+  test("F2 in a selection edits the active cell and Ctrl+Enter fills with its text", () => {
+    const r = press(at(0, 1), [{ key: "ArrowRight", shift: true }, "F2", { key: "Enter", ctrl: true }]);
+    expect(r.effects.at(-1)).toMatchObject({ type: "fill", edit: { draft: "v01" }, range: { top: 0, bottom: 0, left: 1, right: 2 } });
+  });
+
+  test("typing outside a selection, or with one cell, starts a plain edit", () => {
+    const one = press(at(1, 1), ["x"]);
+    expect(rangeOf(one.state)).toEqual({ top: 1, bottom: 1, left: 1, right: 1 });
+    // Ctrl+Enter on a single cell fills just that cell.
+    expect(handleKey(one.state, { key: "Enter", ctrl: true }, sheet()).effects).toEqual([
+      { type: "fill", edit: expect.objectContaining({ draft: "x" }), range: { top: 1, bottom: 1, left: 1, right: 1 } },
+    ]);
+  });
+
+  test("in line editing, Ctrl+Enter still inserts a line when not editing", () => {
+    const lines = sheet({ lineEditing: true, rowCount: 3 });
+    expect(press(at(1, 1), [{ key: "Enter", ctrl: true }], lines).effects).toEqual([{ type: "insertRow", at: 2 }]);
+  });
+});

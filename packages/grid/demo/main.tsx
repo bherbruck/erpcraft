@@ -264,6 +264,44 @@ function LinesDemo() {
   );
 }
 
+/** 60 columns: the first pinned, the rest scroll and are rendered only in view. */
+interface WideRow {
+  id: string;
+  [column: string]: string;
+}
+const wideColumns: GridColumn<WideRow>[] = [
+  { id: "key", header: "Key", type: "text", pin: "left", width: 90 },
+  ...Array.from({ length: 59 }, (_, i): GridColumn<WideRow> => ({
+    id: `c${i + 1}`,
+    header: `Column ${i + 1}`,
+    type: i % 3 === 0 ? "number" : "text",
+    editable: true,
+    width: 110,
+  })),
+];
+const wideRows: WideRow[] = Array.from({ length: 2000 }, (_, r) => {
+  const row: WideRow = { id: `w${r}`, key: `R${r + 1}` };
+  for (let c = 1; c < 60; c += 1) row[`c${c}`] = c % 3 === 1 ? String(r * c) : `r${r + 1}c${c}`;
+  return row;
+});
+const wideSlots = referenceSlots<WideRow>();
+
+function WideDemo() {
+  const [rows, setRows] = useState(wideRows);
+  return (
+    <Grid<WideRow>
+      id="demo-wide"
+      aria-label="Wide grid"
+      columns={wideColumns}
+      rows={rows}
+      slots={wideSlots}
+      toolbar={false}
+      height={420}
+      onEdit={(changes) => setRows((current) => applyChanges(current, changes, wideColumns))}
+    />
+  );
+}
+
 function App() {
   const [tab, setTab] = useState(() => location.hash.slice(1) || "client");
   useEffect(() => {
@@ -278,11 +316,20 @@ function App() {
         <a href="#client">Client (100k rows)</a>
         <a href="#server">Server</a>
         <a href="#lines">Line editing</a>
+        <a href="#wide">Wide (60 columns)</a>
       </nav>
       <button type="button" data-testid="before-grid">
         Before the grid
       </button>
-      {tab === "server" ? <ServerDemo /> : tab === "lines" ? <LinesDemo /> : <ClientDemo key={tab} />}
+      {tab === "server" ? (
+        <ServerDemo />
+      ) : tab === "lines" ? (
+        <LinesDemo />
+      ) : tab === "wide" ? (
+        <WideDemo />
+      ) : (
+        <ClientDemo key={tab} />
+      )}
       <button type="button" data-testid="after-grid">
         After the grid
       </button>

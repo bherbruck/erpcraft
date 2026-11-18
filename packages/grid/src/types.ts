@@ -114,7 +114,7 @@ export interface CellChange<Row> {
   newValue: unknown;
 }
 
-export type EditSource = "edit" | "paste" | "clear" | "undo" | "redo";
+export type EditSource = "edit" | "paste" | "clear" | "fill" | "undo" | "redo";
 
 export interface RejectedCell {
   rowIndex: number;
