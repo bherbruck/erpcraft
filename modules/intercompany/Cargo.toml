@@ -1,0 +1,16 @@
+[package]
+name = "erpcraft-intercompany"
+description = "erpcraft intercompany module: trading between companies of one database"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+erpcraft-kernel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tracing.workspace = true
+uuid.workspace = true

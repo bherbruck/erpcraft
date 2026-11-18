@@ -86,6 +86,11 @@ impl Module for KernelModule {
                 name: "list_indexes",
                 sql: include_str!("../migrations/0011_list_indexes.sql"),
             },
+            Migration {
+                version: 12,
+                name: "intercompany_link",
+                sql: include_str!("../migrations/0012_intercompany_link.sql"),
+            },
         ]
     }
 

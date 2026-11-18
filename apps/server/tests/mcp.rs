@@ -958,6 +958,7 @@ async fn an_agent_finds_the_tools_it_needs_without_reading_them_all() {
         names(&for_invoices),
         [
             "einvoice_import",
+            "intercompany_mirror",
             "purchase_order_invoice",
             "vendor_invoice_credit",
             "vendor_invoice_post",

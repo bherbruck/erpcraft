@@ -785,7 +785,9 @@ pub async fn set_line_values(
 }
 
 /// Record that document `to_id` follows from document `from_id`. Both must
-/// belong to the same company. Linking twice changes nothing.
+/// belong to the same company, except for the kind `intercompany`: a
+/// document and its mirror in another company. Linking twice changes
+/// nothing.
 pub async fn link(ctx: &mut Ctx<'_>, from_id: Uuid, to_id: Uuid, kind: &str) -> Result<()> {
     sqlx::query(
         "INSERT INTO document_link (from_id, to_id, kind) VALUES ($1, $2, $3)
