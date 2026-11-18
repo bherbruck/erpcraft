@@ -1,0 +1,14 @@
+[package]
+name = "erpcraft-edi"
+description = "erpcraft electronic data interchange: ANSI X12 and UN/EDIFACT, read and written without a middleman"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The spike is the format layer only: no database, no kernel, no network.
+# PLAN.md says what each later phase adds.
+[dependencies]
+chrono.workspace = true
+rust_decimal.workspace = true
+serde.workspace = true

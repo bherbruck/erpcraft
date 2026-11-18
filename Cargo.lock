@@ -865,6 +865,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "erpcraft-edi"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rust_decimal",
+ "serde",
+]
+
+[[package]]
 name = "erpcraft-einvoice"
 version = "0.1.0"
 dependencies = [

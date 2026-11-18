@@ -53,6 +53,7 @@ modules/
   assets            fixed assets: register, depreciation runs, disposals
   einvoice          electronic invoices after EN 16931: XRechnung (UBL, CII), ZUGFeRD / Factur-X XML
   planning          stock availability; reorder rules, suggestions, drafted purchase orders
+  edi               X12 and EDIFACT read and written: the format layer (spike); see Electronic data interchange
 apps/
   server            the `erpcraft` binary
 ```
@@ -464,6 +465,102 @@ The module `einvoice` writes and reads structured electronic invoices after the 
   - XML is read with `quick-xml`. A DTD, any entity but XML's own, more than 5 MiB, 200,000 elements or 64 levels is refused.
   - A PDF is parsed with `lopdf` on a thread of its own, waited for on the blocking pool with a time limit, and a panic is a refusal. Each stream lopdf inflates is limited to 4 MiB and what a load keeps to 200,000 objects and 64 MiB. It is never rendered and is refused if it holds JavaScript. The embedded file is inflated under the XML limit by the module itself.
 
+### Electronic data interchange (EDI)
+
+Decided 2026-11-18. The format layer is **built** as a spike (`modules/edi`: the tokenizer, X12 and EDIFACT envelopes, the 850 as a typed order, the 997); everything else in this section is **planned**, in the order of `modules/edi/PLAN.md`. The module's README names the sources and says which facts were checked against them.
+
+**Why.** A manufacturer that sells to a retailer or supplies an OEM is told to trade by EDI: orders come as X12 850 or EDIFACT ORDERS, and the buyer wants an acknowledgement, a ship notice before the truck and an invoice back the same way. A small supplier cannot read these files, so it rents a value-added network (VAN) or an EDI service that carries and translates them, and pays per document or per kilocharacter, plus a fee to map each new partner. Nothing in this needs a middleman. The files are text, the transports are SFTP and HTTP, and what differs between partners is a document, their implementation guide. erpcraft reads and writes the files itself, connects to the partner directly, and keeps what differs per partner as data. A partner that accepts only a VAN is still reached: through that VAN's mailbox, in the partner's own format, so the VAN carries bytes and translates nothing.
+
+**The module.** `modules/edi`, module `edi`, depends on `sales`, `stock` and `party`. It uses only the public module API: it reads records and documents through the kernel's reads with the caller's rights, and it writes business documents only by drafting them with `document::create`, as a person would. It posts nothing to any ledger and writes no table of another module. Inside, the format layer (`segment`, `x12`, `edifact`, `gs1`) depends on neither the database nor the kernel.
+
+**One tokenizer, typed messages.** X12 and EDIFACT are the same shape: segments, elements, components, repetitions. They differ in which characters separate what and where a file says so, so the separators are data and the tokenizer is one. An X12 file states them in its ISA, the only fixed-width segment (106 characters: the element separator is the 4th, the component separator the 105th, the terminator the 106th, and from version 00402 ISA11 is the repetition separator); an EDIFACT file in its UNA, or else the defaults apply. EDIFACT has a release character and X12 none, which decides a rule of the writer below. Above the tokenizer every message is read into a typed structure (an order, an order response, a ship notice, an invoice) and written from one. Nothing maps segments to rows or documents to segments directly: the typed message is what a partner's guide is applied to, what a proposal shows, and the same for both syntaxes.
+
+**Data model.** All tables are the module's own.
+
+| Record | What |
+|---|---|
+| `edi_partner` | A trading partner of one company: the customer it is, the syntax and version, both sides' interchange identifiers and qualifiers, `test` or `production`, the separators to write with, which acknowledgement it expects and within how many hours, its guide, its transport, and the user automation acts as (`run_as_user_id`). An incoming interchange finds its partner by sender, receiver and usage; one that finds none is kept as `unroutable` and nothing else happens. |
+| `edi_guide`, `edi_guide_message` | The partner's implementation guide as data, per message and direction (below). |
+| `edi_item_xref` | The partner's number for an item, or a GTIN for every partner: kind (`gtin`, `buyer_item`, `seller_item`), value, the partner's unit and how many of the item's own unit one of it is (a case of 6). |
+| `edi_uom_xref`, `edi_location_xref` | The partner's unit codes; the partner's store and warehouse numbers or GLNs as shipping addresses of the customer. |
+| `edi_control` | The next control number per partner and level (interchange, group, set), in a locked row, taken as the last step before a message's bytes are fixed. |
+| `edi_interchange` | The log of raw payloads, in and out: the bytes, their SHA-256, where they came from or went, and what became of them. Written before anything reads the bytes; never changed or deleted (a trigger). |
+| `edi_message` | One row per transaction set or message: its type, control numbers, state, the document it became or was made from, the message it answers, its findings, and the partner's acknowledgement of it. |
+| `edi_document`, `edi_document_line` | What an order said that its sales order does not keep: the partner's order number and line identifiers, its item numbers, unit, quantity and price as sent, and the references to quote back. |
+| `edi_shipment`, `edi_pack`, `edi_pack_line` | How a delivery was packed: carrier, bill of lading, pallets and cartons, each with its SSCC, and which delivery line's goods are in which carton. |
+| `edi_transport`, `edi_transport_secret` | How files travel, and the password or private key, which is not an entity and which no read returns. |
+
+**The guide as data.** Two partners read the same standard differently: which qualifier carries the buyer's item number, whether the ship-to is a store, which optional segments they demand, how the cartons of a ship notice nest. That is what a mapping fee pays for. Here a guide is a record with three closed parts: **options** (choices the standard leaves open, by name: the order in which item numbers are tried, which date is the ship date, the hierarchy of the ship notice); **constraints** (per segment and element: required, not used, lengths, allowed codes); and **extra segments** at named places of an outgoing message, whose values are constants or expressions of `erpcraft-rules` over a fixed set of facts. It is checked when saved, as a policy rule is. It is not a mapping language: there are no loops, no scripts and no templates, so a guide cannot do anything a reviewer cannot read. The built-in guides describe each message as the standard has it, and a partner's guide inherits one. `edi_guide.check` shows how a partner's sample file reads under a guide, so onboarding a partner is something an agent does over MCP from the partner's own documents, and the server checks the result. Guides export and import as one file, so companies that sell to the same buyer can share one. None for a named company is in this repository.
+
+**Inbound.**
+1. **Store.** `edi.receive`, the SFTP poller and the AS2 endpoint all hand bytes to one function. It stores them first, in a transaction of its own. The same bytes from the same partner again are a repeat: the first result is returned and nothing is done twice, because transports redeliver.
+2. **Read.** On a blocking thread, under the limits below. Bytes that cannot be followed are kept as `unreadable` with the reason; there is nobody to answer.
+3. **Route.** By the envelope's sender and receiver. A test interchange (`ISA15` `T`, or the UNB test indicator) is read and acknowledged and never becomes a document.
+4. **Acknowledge.** Each functional group gets one 997 (or 999, or CONTRL, as the partner's profile says) that accepts or rejects each set by the standard's syntax alone, with the segment and element at fault. It is queued at once and does not wait for anyone: a 997 says "this could be read", not "this order is accepted". An interchange-level fault, or `ISA14` asking for it, gets a TA1.
+5. **Propose.** `edi.proposal` is read-only, like `einvoice.read`: the typed order, the customer, the ship-to, and for each line the item, the quantity and the price in the item's own unit, each with how it was found; and the findings. A finding is `blocking` (an item or ship-to nobody knows, a price that does not divide into the unit, something the guide requires and the order lacks, the same order number received before) or a `note` (a segment with no field here, a count that does not agree). Everything is read with the caller's rights.
+6. **Draft.** `edi.draft` creates the sales order as a draft through the normal command, under the caller's permissions and every policy, with the person's choices for whatever blocked (which can be remembered as cross-references). It is approved like any order.
+7. **Answer.** The order response (855, ORDRSP) is an outbound message made from the approved order: what was accepted, changed or refused per line.
+
+**Outbound.** A message is made from a document in a locked state, never from a draft: the 855 from an approved order, the 856 (DESADV) from a posted delivery and its packing, the 810 (INVOIC) from a posted invoice or credit note, the 846 from stock availability. A subscriber on the outbox makes them when the document's order came by EDI and the partner's guide has the message; `edi.generate` makes one by hand, and with `preview` shows it and stores nothing.
+- **Generate** from the document, from what `edi_document` kept of the order, and the guide.
+- **Validate**, three times over: the bytes are read back with the reader an incoming message meets and must say what was meant; the guide's constraints must hold; and the figures must be the books' (the quantities of an 856 are those of the posted delivery, the total of an 810 is the invoice's to the cent). A message that fails is kept as `invalid` with what is missing and where to set it, and raises an event, since nobody is waiting for the refusal.
+- **Number and fix.** The control numbers are taken and the bytes stored; from here they never change.
+- **Send** through the partner's transport, retried from 1 minute doubling to an hour for 24 hours, then `failed` with an event.
+- **Track.** Two receipts are kept apart: the transport's (an AS2 MDN whose integrity check matches, an SFTP rename that succeeded) and the partner's 997, matched by group and set control number. `acknowledged`, `acknowledged_with_errors` and `rejected` come from the 997; a rejection is shown in words with the segment it names. Sent and not acknowledged within the partner's hours is shown as overdue and raises an event. Nothing is resent by itself: `edi_message.resend` sends the same bytes with the same numbers, so the partner's own duplicate check works, and a corrected message is a new one that supersedes the old.
+
+**Ship notices and cartons.** The 856 is where suppliers lose money: buyers charge back, per shipment or as a share of the invoice, for a notice that is late, missing or does not match what the dock scans (the amounts are each buyer's own, and the README says that none was verified). So the notice is not typed, it is derived. Packing is recorded per delivery (`edi_shipment.pack`, or `auto_pack` for goods that ship in their own cases); each pallet and carton gets an SSCC, eighteen digits from the company's GS1 prefix and a serial, with its check digit, never issued twice; the label is printed from the same record (`edi.label`). `edi_shipment.ship` checks that the cartons hold exactly what the delivery delivers, posts the delivery and makes the 856 in one transaction, so the notice exists the moment the goods are posted as gone and says what was posted. `edi.pending` lists deliveries posted with no notice sent.
+
+**Transport.** `manual` works from the first day: files are handed to `edi.receive` and fetched with `edi_interchange.content`, by a person or an agent. `sftp`: the host key is pinned, files are read under the size limit and deleted or renamed only after they are stored, and a file is written under a temporary name and renamed. `as2` (RFC 4130): signed and encrypted S/MIME over https, with a signed receipt (MDN), synchronous or asynchronous; an endpoint `POST /edi/as2` that is not a command. The identity of a sender is bound through every layer: the AS2 identifiers name one transport, the signature must verify against that partner's configured certificate, and the interchange inside must be from a partner of that transport, so no partner can send as another. Certificates are pinned per partner; nothing is fetched to validate one. SFTP hosts and AS2 addresses must be public addresses, by the allow-list webhooks use. Whoever may configure a transport decides where orders and invoices go and whose word is taken for an order, so there is one permission, `edi_transport:manage`, held for all companies, and its commands are sensitive.
+
+**Hostile input.** A file is hostile until read, whoever sent it.
+- The tokenizer works on bytes, in one pass, without recursion, in time and memory linear in the file. At most 4 MiB, 200,000 segments, 500,000 components, 512 components in a segment, 4,096 bytes in one, 100 interchanges in a file; one budget covers the whole file.
+- Refused: separators that are letters, digits, spaces, not ASCII or the same as each other; an ISA whose elements are not at their fixed widths; a segment that is not terminated or a file that ends before its trailer (a file cut off in transit is never read as whole); a control character in data; a tag that is not two or three capital letters or digits; X12 binary segments; EDIFACT functional groups.
+- Text is UTF-8 when the whole file is, else ISO 8859-1, decided once per file; separators are single ASCII bytes, so splitting is right in either.
+- Numbers are digits, one decimal mark and an optional minus, at most 18 characters, read as exact decimals; sums are checked, so no input overflows.
+- Counts and control numbers that do not agree are not refusals: the file is read and the errors go into the acknowledgement, in the standard's codes.
+- AS2: the body is limited before it is read, inflating is limited, signatures use SHA-256 or better and encryption AES unless a partner's transport explicitly allows the older algorithms.
+- A test replaces every byte of the fixtures in turn and cuts them at every length; reading may refuse and must return.
+
+**What is an invariant.** These hold for every company, because without them the record of what was exchanged, or the books, would be wrong:
+- raw payloads are stored before they are read and never change; every message leads back to its bytes;
+- a control number is used once, and a resend is the same bytes;
+- every routed functional group is acknowledged once, the same way if it comes again, and an acknowledgement is never acknowledged;
+- nothing is sent that fails its syntax or its guide;
+- EDI drafts through normal commands and never posts; test traffic never becomes a document;
+- an outgoing message quotes the partner's order number, line identifiers, item numbers and units as they were received, not as the cross-references say today;
+- the quantities of a ship notice and the amounts of an invoice message are those of the posted documents;
+- an SSCC has its check digit and is never reused;
+- the X12 writer never puts a separator inside data. X12 cannot escape one, so an identifier that contains one is refused; only free text (a description, a name) may have it replaced, by what the guide says;
+- a sender is who its transport, its certificate and its envelope together say.
+
+**What is a policy.** Judgements a careful company could make either way:
+
+| Point | Default | Decides |
+|---|---|---|
+| `edi.auto_draft` | refuse | Whether an order with no blocking finding is drafted without a person, as the partner's `run_as_user_id`. Facts: `partner_code`, `message`, `notes`, `lines`, `total_net`. |
+| `edi.auto_approve` | refuse | Whether such a draft is then approved, still subject to every policy of `sales_order.approve`. |
+| `edi_order.duplicate` | refuse | An order number of this partner received before. |
+| `edi.accept_with_errors` | refuse | Whether a set with syntax errors is still proposed (acknowledged `E`) or rejected (`R`). |
+| `edi.send` | allow | Asked for every outgoing business message, so a company can have invoices to a partner approved first. Facts: `partner_code`, `message`, `total`, `test`. |
+| `edi_invoice.before_asn` | allow | Sending an invoice whose ship notice is not acknowledged yet. |
+| `edi_order.change`, `edi_remittance.deduction` | refuse | A change to an approved order; an amount a partner deducted from a payment. Both reach a person. |
+
+Automation runs as a user, with that user's permissions, so it can do less than a person and never more; an administrator is subject to these policies like anyone.
+
+**Commands.** Partners, guides and cross-references are entities, written with the generic commands. Besides: `edi.receive`, `edi.proposal`, `edi.draft`, `edi.dismiss`, `edi.explain` (any message segment by segment in words, for a person or an agent), `edi.generate`, `edi_message.resend`, `edi.pending` (the one report of what waits for somebody), `edi_interchange.content` and `.mark_sent`, `edi_shipment.pack`, `.auto_pack` and `.ship`, `edi.label`, `edi_guide.check`, `.derive`, `.export` and `.import`, `edi_transport.create`, `.update`, `.set_secret`, `.delete` and `.test`, `edi.poll` and `edi.send_pending`. Events for the outbox, and so for webhooks: `edi.unreadable`, `edi.invalid`, `edi.send_failed`, `edi.ack_overdue`, `edi.rejected`.
+
+**Messages.** X12 004010 and 005010: 850, 855, 856, 810, 997 and 999, TA1, then 846, 860 and 820. EDIFACT D.96A, as EANCOM uses it: ORDERS, ORDRSP, DESADV, INVOIC, CONTRL, then INVRPT, ORDCHG and REMADV.
+
+**Deliberately out of scope.**
+- Being a VAN or a translator for others: the module exchanges the company's own documents with its own partners.
+- A mapping language, scripts or templates in guides.
+- Transaction sets of other industries (health care, transport, finance beyond the 820), X12 binary segments, EDIFACT functional groups, security segments and interactive EDI.
+- AS1, AS3, AS4, OFTP2 and Peppol; proprietary VAN interfaces (a VAN is reached over SFTP or AS2).
+- Web portals of buyers that offer no file exchange.
+- Rendering a GS1-128 label as an image or PDF (the label's data and printer text are given).
+- A certified AS2 product. Some buyers ask for software on a certification list; such a partner is reached through SFTP or a VAN's mailbox instead.
+- Buying by EDI (850 out, 855, 856 and 810 in). The readers and writers exist both ways because each writer is checked by its reader; the proposals against purchase orders are not planned yet.
+
 ### Party data
 
 What the company, a customer or a vendor is known by outside the books is kept by the crate `erpcraft-party` (module `party`), one schema for all three.
@@ -727,6 +824,7 @@ Four engines were compared hands-on in November 2026 (CEL, Rhai, Cedar, Monty). 
 - Tax groups: the US example group is a shape, not a jurisdiction; nothing looks up the rates of a place. A component's rate change is a new code, and a group keeps its components as they are; changing a group's components changes what later invoices charge, not what was recorded. Groups are one level deep.
 - Party data: a document keeps one billing and one shipping address; there is no delivery address per line, and a purchase document keeps no ship-to of the company's own (the receiving warehouse is not an address). A delivery keeps the customer's default billing address, not the one its order named. The e-invoice export writes the deliver to address (BG-15) only when the invoice kept a shipping address, or for an intra-Community supply; no deliver to party (BG-13) name or location identifier. Sales and purchasing call the party crate, so the party module must be installed with them. There is no generic list or search over party rows (party data is read per party). Setup templates create no party data.
 - Electronic invoices: no XSD validation and only the rules the README lists (no code lists, no rules for the categories AE, K, G, L and M beyond rate and reason); the official validator is a separate step. Writing a ZUGFeRD / Factur-X PDF (PDF/A-3 with XMP metadata) is not built, nor sending or receiving (Peppol, e-mail, public buyers' portals). Incoming credit notes, document level allowances and charges, attachments, invoicing periods and gross prices are not imported. A tax group cannot be written. Requests are limited by the server's request size (2 MB) before the module's own limits.
+- EDI: only the format layer exists (`modules/edi`), and it is not registered in the server: no partner, log, proposal, outbound message or transport yet; `modules/edi/PLAN.md` has the order. The 850 reader knows the standard's segments, not any partner's guide, and has read no real partner's file. Whether an open-source implementation of X12 needs a licence from X12 is not settled (the module's README quotes X12's own statement).
 - Fixed assets: a vendor invoice capitalises an asset through an account line on its class's cost account (see Lines); a machine bought on a purchase order of stock lines goes through inventory and needs a journal entry to the asset account first. An asset is capitalised from one ledger line, whole: neither several lines nor part of one. Amounts are in the accounting currency only. Declining balance works in calendar years, not the company's fiscal year; "this year's depreciation" in the register is from 1 January too. No impairment, revaluation, partial disposal, transfer between classes or companies, separate tax and book depreciation, or units-of-production method. A disposal books proceeds to an account; it does not draft the sales invoice, and posts no tax. Only the latest depreciation run can be reversed.
 - Banking: one statement per file; no MT940, BAI2 or CODA; no automatic matching (every match is accepted by a person or an agent through `bank_statement.match`); a line pays open items through one payment drafted for them, never part of a payment or several payments; a posted statement cannot be reversed; statements are entered in order and only the latest can be edited; a file in a currency other than the account's is refused, not converted; no direct bank connection.
 - Printing: no PDF on the server, no images or logos other than what a template links to, no letterhead or address of the company or the party (neither is stored yet), and the built-in templates are in English. An image may still be loaded from another site (`img` with an https source is allowed), and a template's own stylesheet is dropped: it styles with the built-in classes and `style` attributes. A template cannot be tried on a document before it is saved. Template records are shared: there is no right to manage only one company's templates.
