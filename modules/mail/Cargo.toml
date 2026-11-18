@@ -10,6 +10,7 @@ license.workspace = true
 base64.workspace = true
 chrono.workspace = true
 erpcraft-kernel.workspace = true
+erpcraft-party.workspace = true
 erpcraft-printing.workspace = true
 lettre.workspace = true
 serde.workspace = true

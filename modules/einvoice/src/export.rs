@@ -24,7 +24,7 @@ pub enum DocType {
 }
 
 impl DocType {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             DocType::SalesInvoice => "sales_invoice",
             DocType::SalesCreditNote => "sales_credit_note",

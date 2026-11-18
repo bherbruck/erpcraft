@@ -31,6 +31,7 @@ mod builtin;
 mod engine;
 mod letterhead;
 pub mod pdf;
+pub mod xmp;
 
 pub struct PrintingModule;
 
@@ -210,7 +211,15 @@ impl Command for RenderPdf {
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: RenderInput) -> Result<RenderedPdf> {
-        pdf_of(ctx, &input.doc_type, input.id, input.template_id, vec![]).await
+        pdf_of(
+            ctx,
+            &input.doc_type,
+            input.id,
+            input.template_id,
+            vec![],
+            None,
+        )
+        .await
     }
 }
 
@@ -222,10 +231,11 @@ pub async fn pdf_of(
     id: Uuid,
     template_id: Option<Uuid>,
     attachments: Vec<pdf::Attachment>,
+    extension: Option<&xmp::XmpExtension>,
 ) -> Result<RenderedPdf> {
     use base64::Engine;
     let rendered = render(ctx, doc_type, id, Source::Stored(template_id)).await?;
-    let bytes = pdf::render(&rendered.html, &rendered.title, attachments)
+    let bytes = pdf::render_with(&rendered.html, &rendered.title, attachments, extension)
         .map_err(|e| Error::validation(format!("the PDF cannot be made: {e}")))?;
     let filename = format!(
         "{}.pdf",

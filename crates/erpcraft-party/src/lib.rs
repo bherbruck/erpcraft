@@ -54,6 +54,11 @@ impl Module for PartyModule {
                 name: "document_party",
                 sql: include_str!("../migrations/0002_document_party.sql"),
             },
+            Migration {
+                version: 3,
+                name: "einvoice_format",
+                sql: include_str!("../migrations/0003_einvoice_format.sql"),
+            },
         ]
     }
 
@@ -664,6 +669,56 @@ fn fill_gaps(mut kept: PartyData, now: PartyData) -> PartyData {
     kept
 }
 
+/// How a customer's invoices are sent by email: what its profile says,
+/// else XRechnung in UBL when it has a Leitweg-ID (an electronic address of
+/// scheme 0204, or an invoice reference shaped like one) or an electronic
+/// address other than an email, else a PDF.
+pub async fn einvoice_format(conn: &mut PgConnection, customer_id: Uuid) -> Result<String> {
+    let (set, reference): (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT einvoice_format, invoice_reference FROM party_profile
+         WHERE party_type = 'customer' AND party_id = $1",
+    )
+    .bind(customer_id)
+    .fetch_optional(&mut *conn)
+    .await?
+    .unwrap_or((None, None));
+    if let Some(set) = set {
+        return Ok(set);
+    }
+    let electronic: Vec<String> = sqlx::query_scalar(
+        "SELECT scheme FROM party_electronic_address
+         WHERE party_type = 'customer' AND party_id = $1",
+    )
+    .bind(customer_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    let leitweg = reference.as_deref().is_some_and(is_leitweg_id);
+    if leitweg || electronic.iter().any(|s| s != "EM") {
+        Ok("xrechnung_ubl".into())
+    } else {
+        Ok("pdf".into())
+    }
+}
+
+/// Whether `text` is shaped like a Leitweg-ID: a coarse address of two to
+/// twelve digits, an optional fine address, and two check digits, joined
+/// by hyphens ("04011000-12345-03").
+pub fn is_leitweg_id(text: &str) -> bool {
+    let parts: Vec<&str> = text.trim().split('-').collect();
+    let coarse = |p: &str| (2..=12).contains(&p.len()) && p.chars().all(|c| c.is_ascii_digit());
+    let check = |p: &str| p.len() == 2 && p.chars().all(|c| c.is_ascii_digit());
+    match parts.as_slice() {
+        [c, k] => coarse(c) && check(k),
+        [c, fine, k] => {
+            coarse(c)
+                && (1..=30).contains(&fine.len())
+                && fine.chars().all(|c| c.is_ascii_alphanumeric())
+                && check(k)
+        }
+        _ => false,
+    }
+}
+
 /// The vendors whose tax identifier of `scheme` is `value`, written with or
 /// without spaces and punctuation, with the row that says so.
 pub async fn vendors_by_tax_id(
@@ -707,6 +762,14 @@ pub struct Profile {
     /// For the company: the bank account customers pay into.
     #[schemars(extend("x-field-type" = { "kind": "link", "entity": "account", "key": "id" }))]
     pub payment_account_id: Option<Uuid>,
+    /// For a customer: how its invoices are sent by email: `pdf`,
+    /// `zugferd` (a ZUGFeRD / Factur-X PDF), `xrechnung_ubl` or
+    /// `xrechnung_cii` (the XML alone). Left out: a Leitweg-ID or an
+    /// electronic address other than an email means XRechnung in UBL,
+    /// anything else a PDF.
+    #[serde(default)]
+    #[sqlx(default)]
+    pub einvoice_format: Option<String>,
 }
 
 /// A postal address of the party.
@@ -810,7 +873,7 @@ async fn records(
         party_id: id,
         profile: sqlx::query_as(
             "SELECT legal_name, trading_name, legal_registration, legal_info, invoice_reference,
-                    payment_account_id
+                    payment_account_id, einvoice_format
              FROM party_profile WHERE party_type = $1 AND party_id = $2",
         )
         .bind(k)
@@ -989,14 +1052,16 @@ impl Command for Set {
         if let Some(p) = input.profile {
             sqlx::query(
                 "INSERT INTO party_profile (id, party_type, party_id, legal_name, trading_name,
-                     legal_registration, legal_info, invoice_reference, payment_account_id)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                     legal_registration, legal_info, invoice_reference, payment_account_id,
+                     einvoice_format)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                  ON CONFLICT (party_type, party_id) DO UPDATE SET
                      legal_name = EXCLUDED.legal_name, trading_name = EXCLUDED.trading_name,
                      legal_registration = EXCLUDED.legal_registration,
                      legal_info = EXCLUDED.legal_info,
                      invoice_reference = EXCLUDED.invoice_reference,
-                     payment_account_id = EXCLUDED.payment_account_id",
+                     payment_account_id = EXCLUDED.payment_account_id,
+                     einvoice_format = EXCLUDED.einvoice_format",
             )
             .bind(new_id())
             .bind(k)
@@ -1007,6 +1072,7 @@ impl Command for Set {
             .bind(clean(p.legal_info))
             .bind(clean(p.invoice_reference))
             .bind(p.payment_account_id)
+            .bind(clean(p.einvoice_format))
             .execute(&mut *conn)
             .await?;
         }

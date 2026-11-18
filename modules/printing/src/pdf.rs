@@ -57,6 +57,17 @@ pub struct Attachment {
 
 /// The PDF of a printed page, as PDF/A-3b, with `attachments` in it.
 pub fn render(html: &str, title: &str, attachments: Vec<Attachment>) -> Result<Vec<u8>, String> {
+    render_with(html, title, attachments, None)
+}
+
+/// [`render`], with an XMP extension schema in the PDF's metadata, such as
+/// Factur-X's.
+pub fn render_with(
+    html: &str,
+    title: &str,
+    attachments: Vec<Attachment>,
+    extension: Option<&crate::xmp::XmpExtension>,
+) -> Result<Vec<u8>, String> {
     let dom = html5ever::parse_document(RcDom::default(), Default::default())
         .from_utf8()
         .read_from(&mut html.as_bytes())
@@ -67,7 +78,11 @@ pub fn render(html: &str, title: &str, attachments: Vec<Attachment>) -> Result<V
     if layout.pages.len() > MAX_PAGES {
         return Err(format!("the document is longer than {MAX_PAGES} pages"));
     }
-    paint(&layout.pages, title, attachments)
+    let pdf = paint(&layout.pages, title, attachments)?;
+    match extension {
+        Some(extension) => crate::xmp::add_extension(&pdf, extension),
+        None => Ok(pdf),
+    }
 }
 
 // ------------------------------------------------------------------ fonts

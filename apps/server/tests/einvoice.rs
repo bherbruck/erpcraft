@@ -2249,7 +2249,7 @@ async fn an_invoice_is_sent_by_email() {
         .command(
             &t.admin,
             "document.send",
-            json!({ "doc_type": "sales_invoice", "id": invoice["id"] }),
+            json!({ "doc_type": "sales_invoice", "id": invoice["id"], "format": "pdf" }),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{message}");
@@ -2314,5 +2314,156 @@ async fn an_invoice_is_sent_by_email() {
     assert_eq!(sent["items"][0]["status"], "queued");
     assert_eq!(sent["items"][0]["attempts"], 1);
     assert!(sent["items"][0]["last_error"].is_string());
+    t.stop().await;
+}
+
+/// A ZUGFeRD / Factur-X invoice: our own PDF/A-3 with the CII inside and
+/// the Factur-X XMP, read back by our own import as the invoice it is.
+#[tokio::test]
+async fn an_invoice_is_written_as_a_zugferd_pdf_and_read_back() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let invoice = f.invoice(&t, &f.customer).await;
+    for (profile, level, specification) in [
+        ("en16931", "EN 16931", "urn:cen.eu:en16931:2017"),
+        (
+            "xrechnung",
+            "XRECHNUNG",
+            "urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0",
+        ),
+    ] {
+        let (status, out) = t
+            .command(
+                &t.admin,
+                "einvoice.export_pdf",
+                json!({ "doc_type": "sales_invoice", "id": invoice["id"], "profile": profile }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        assert_eq!(out["conformance_level"], level);
+        assert_eq!(out["specification"], specification);
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(out["data"].as_str().unwrap())
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("pdfaid:part>3<") || text.contains("pdfaid:part=\"3\""),
+            "PDF/A-3"
+        );
+        assert!(text.contains(&format!(
+            "<fx:ConformanceLevel>{level}</fx:ConformanceLevel>"
+        )));
+        assert!(text.contains("<fx:DocumentFileName>factur-x.xml</fx:DocumentFileName>"));
+        assert!(
+            text.contains("/AFRelationship /Alternative")
+                || text.contains("/AFRelationship/Alternative")
+        );
+        if let Ok(dir) = std::env::var("ERPCRAFT_KEEP_PDF") {
+            std::fs::write(format!("{dir}/zugferd-{profile}.pdf"), &bytes).unwrap();
+        }
+        // Our own import reads it as the invoice it is.
+        let (status, read) = t
+            .command(
+                &t.admin,
+                "einvoice.read",
+                json!({ "company_id": f.company, "content_base64": out["data"] }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{read}");
+        assert_eq!(read["container"], "pdf");
+        assert_eq!(read["syntax"], "cii");
+        // Read as an incoming invoice, it is addressed to someone else:
+        // that is the only thing the import finds wrong with it.
+        let fatal: Vec<&Value> = read["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["fatal"] == true)
+            .collect();
+        assert!(fatal.iter().all(|f| f["rule"] == "buyer"), "{read}");
+        assert_eq!(read["invoice"]["number"], invoice["number"]);
+        assert_eq!(dec(&read["invoice"]["totals"]["payable"]), 330.89);
+        assert_eq!(read["invoice"]["specification"], specification);
+    }
+    t.stop().await;
+}
+
+/// An invoice goes as its customer receives invoices: a Leitweg-ID means
+/// XRechnung, a customer can ask for ZUGFeRD or a plain PDF, and a sender
+/// can choose otherwise for one message.
+#[tokio::test]
+async fn an_invoice_is_sent_in_the_customers_e_invoice_format() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let invoice = f.invoice(&t, &f.customer).await;
+    let (port, kept) = smtp_server().await;
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "smtp_settings.set",
+            json!({ "company_id": f.company, "host": "127.0.0.1", "port": port,
+                    "security": "none", "from_address": "rechnung@muster.example" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let send = |input: Value| {
+        let t = &t;
+        async move {
+            let (status, message) = t.command(&t.admin, "document.send", input).await;
+            assert_eq!(status, StatusCode::OK, "{message}");
+            erpcraft_kernel::outbox::deliver_batch(&t.kernel, 100)
+                .await
+                .unwrap();
+            message
+        }
+    };
+    // The customer quotes a Leitweg-ID: XRechnung, as UBL.
+    let message = send(json!({ "doc_type": "sales_invoice", "id": invoice["id"] })).await;
+    assert_eq!(message["format"], "xrechnung_ubl");
+    assert_eq!(message["attachment_type"], "application/xml");
+    let mail = kept.lock().unwrap().last().cloned().unwrap();
+    assert!(mail.contains("application/xml"), "the XML is attached");
+
+    // Chosen for one message: ZUGFeRD.
+    let message = send(json!({ "doc_type": "sales_invoice", "id": invoice["id"],
+                               "format": "zugferd" }))
+    .await;
+    assert_eq!(message["format"], "zugferd");
+    assert_eq!(message["attachment_type"], "application/pdf");
+
+    // The customer asks for PDFs.
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "party.set",
+            json!({ "party_type": "customer", "party_id": f.customer,
+                    "profile": { "invoice_reference": "04011000-12345-03",
+                                 "einvoice_format": "pdf" } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let message = send(json!({ "doc_type": "sales_invoice", "id": invoice["id"] })).await;
+    assert_eq!(message["format"], "pdf");
+    // Only customers have a format, and only known ones.
+    let (status, _) = t
+        .command(
+            &t.admin,
+            "party.set",
+            json!({ "party_type": "customer", "party_id": f.customer,
+                    "profile": { "einvoice_format": "fax" } }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK);
+    // An order is not sent as an e-invoice.
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "document.send",
+            json!({ "doc_type": "purchase_order", "id": f.order["id"], "to": ["x@y.example"],
+                    "format": "zugferd" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(kept.lock().unwrap().len(), 3);
     t.stop().await;
 }

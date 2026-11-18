@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 pub mod cii;
 pub mod export;
+pub mod facturx;
 pub mod import;
 pub mod model;
 pub mod pdf;
@@ -74,7 +75,12 @@ impl Module for EinvoiceModule {
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
-        vec![command(Export), command(Read), command(Import)]
+        vec![
+            command(Export),
+            command(ExportPdf),
+            command(Read),
+            command(Import),
+        ]
     }
 }
 
@@ -247,6 +253,55 @@ impl Command for Export {
         )
         .await?;
         export::render(&invoice)
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExportPdfInput {
+    /// What to send: `sales_invoice` or `sales_credit_note`.
+    doc_type: export::DocType,
+    /// The posted document.
+    id: Uuid,
+    /// `en16931` (the default: Factur-X's EN 16931 profile) or `xrechnung`
+    /// (for a German public buyer).
+    profile: Option<export::Profile>,
+}
+
+struct ExportPdf;
+
+#[async_trait]
+impl Command for ExportPdf {
+    type Input = ExportPdfInput;
+    type Output = facturx::FacturxOutput;
+
+    fn spec(&self) -> CommandSpec {
+        CommandSpec::query(
+            "einvoice.export_pdf",
+            "Write a posted sales invoice or sales credit note as a ZUGFeRD / Factur-X invoice: \
+             the printed PDF (PDF/A-3b) with the invoice's CII XML inside as factur-x.xml and \
+             the Factur-X XMP metadata, profile EN 16931 by default or XRechnung. Refused, with \
+             what is missing, when the invoice does not hold, as einvoice.export would say. \
+             Takes einvoice:export and the right to read the document.",
+        )
+        .permission("einvoice:export")
+        .label("ZUGFeRD PDF")
+        .resource("einvoice")
+        .target(false)
+    }
+
+    async fn run(
+        &self,
+        ctx: &mut Ctx<'_>,
+        input: ExportPdfInput,
+    ) -> Result<facturx::FacturxOutput> {
+        facturx::facturx(
+            ctx,
+            input.doc_type,
+            input.id,
+            input.profile.unwrap_or(export::Profile::En16931),
+        )
+        .await
     }
 }
 

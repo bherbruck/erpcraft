@@ -46,11 +46,18 @@ impl Module for MailModule {
     }
 
     fn migrations(&self) -> Vec<Migration> {
-        vec![Migration {
-            version: 1,
-            name: "mail",
-            sql: include_str!("../migrations/0001_mail.sql"),
-        }]
+        vec![
+            Migration {
+                version: 1,
+                name: "mail",
+                sql: include_str!("../migrations/0001_mail.sql"),
+            },
+            Migration {
+                version: 2,
+                name: "einvoice",
+                sql: include_str!("../migrations/0002_einvoice.sql"),
+            },
+        ]
     }
 
     fn policies(&self) -> Vec<PolicyPoint> {
@@ -334,6 +341,120 @@ struct SendInput {
     message: Option<String>,
     /// The print template the PDF is made with; the default when omitted.
     template_id: Option<Uuid>,
+    /// For a sales invoice or credit note: `pdf`, `zugferd` (a ZUGFeRD /
+    /// Factur-X PDF), `xrechnung_ubl` or `xrechnung_cii` (the XML alone).
+    /// The customer's choice in its party data when omitted. Other
+    /// documents go as a PDF.
+    format: Option<String>,
+}
+
+/// The document types an e-invoice is made of.
+const INVOICES: &[&str] = &["sales_invoice", "sales_credit_note"];
+
+/// What a message carries: the file, its name and its media type.
+struct Carried {
+    bytes: Vec<u8>,
+    name: String,
+    media_type: String,
+    title: String,
+}
+
+/// Run a command another module answers, as the caller.
+async fn ask(ctx: &mut Ctx<'_>, name: &str, input: Value) -> Result<Value> {
+    let handler = ctx
+        .kernel
+        .registry()
+        .command(name)
+        .map_err(|_| {
+            Error::validation(format!(
+                "e-invoices are not installed here ({name} is missing): send a PDF instead"
+            ))
+        })?
+        .handler
+        .clone();
+    handler.run_json(ctx, input).await
+}
+
+/// The file a document is sent as, in `format`.
+async fn carried(
+    ctx: &mut Ctx<'_>,
+    doc_type: &str,
+    id: Uuid,
+    template_id: Option<Uuid>,
+    format: &str,
+    buyer_reference: bool,
+) -> Result<Carried> {
+    use base64::Engine;
+    let decode = |data: &str| {
+        base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(Error::internal)
+    };
+    // XRechnung needs a buyer reference; without one, the standard alone.
+    let profile = if buyer_reference {
+        "xrechnung"
+    } else {
+        "en16931"
+    };
+    match format {
+        "pdf" => {
+            let pdf =
+                erpcraft_printing::pdf_of(ctx, doc_type, id, template_id, vec![], None).await?;
+            Ok(Carried {
+                bytes: decode(&pdf.data)?,
+                name: pdf.filename,
+                media_type: "application/pdf".into(),
+                title: pdf.title,
+            })
+        }
+        "zugferd" => {
+            let out = ask(
+                ctx,
+                "einvoice.export_pdf",
+                json!({ "doc_type": doc_type, "id": id, "profile": profile }),
+            )
+            .await?;
+            Ok(Carried {
+                bytes: decode(out["data"].as_str().unwrap_or_default())?,
+                name: out["filename"].as_str().unwrap_or("invoice.pdf").to_owned(),
+                media_type: "application/pdf".into(),
+                title: out["title"].as_str().unwrap_or_default().to_owned(),
+            })
+        }
+        "xrechnung_ubl" | "xrechnung_cii" => {
+            let syntax = if format == "xrechnung_ubl" {
+                "ubl"
+            } else {
+                "cii"
+            };
+            let out = ask(
+                ctx,
+                "einvoice.export",
+                json!({ "doc_type": doc_type, "id": id, "syntax": syntax, "profile": profile }),
+            )
+            .await?;
+            if out["valid"] != true {
+                return Err(Error::validation(
+                    "the e-invoice does not hold; see einvoice.export for what it lacks",
+                ));
+            }
+            let number: Option<String> =
+                sqlx::query_scalar("SELECT number FROM document WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(&mut *ctx.conn)
+                    .await?;
+            Ok(Carried {
+                bytes: out["xml"].as_str().unwrap_or_default().as_bytes().to_vec(),
+                name: out["filename"].as_str().unwrap_or("invoice.xml").to_owned(),
+                media_type: "application/xml".into(),
+                title: format!("Invoice {}", number.unwrap_or_default()),
+            })
+        }
+        other => Err(Error::field(
+            "format",
+            format!("{other} is not pdf, zugferd, xrechnung_ubl or xrechnung_cii"),
+        )),
+    }
 }
 
 /// A message a document was sent with, without its PDF.
@@ -347,6 +468,9 @@ pub struct MessageView {
     pub subject: String,
     pub body: String,
     pub attachment_name: String,
+    /// `pdf`, `zugferd`, `xrechnung_ubl` or `xrechnung_cii`.
+    pub format: String,
+    pub attachment_type: String,
     /// `queued`, `sent` or `failed`.
     pub status: String,
     pub attempts: i32,
@@ -360,7 +484,7 @@ pub struct MessageView {
 }
 
 const MESSAGE: &str = "SELECT m.id, m.document_id, m.doc_type, m.to_addresses, m.cc_addresses,
-        m.subject, m.body, m.attachment_name, m.status, m.attempts, m.last_error, m.message_id,
+        m.subject, m.body, m.attachment_name, m.format, m.attachment_type, m.status, m.attempts, m.last_error, m.message_id,
         m.sent_by, u.name AS sent_by_name, m.created_at, m.sent_at
     FROM document_message m LEFT JOIN app_user u ON u.id = m.sent_by";
 
@@ -486,27 +610,61 @@ impl Command for Send {
         )
         .await?;
 
-        let pdf =
-            erpcraft_printing::pdf_of(ctx, &input.doc_type, input.id, input.template_id, vec![])
-                .await?;
-        use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(&pdf.data)
-            .map_err(Error::internal)?;
+        // An invoice goes as its customer wants it; anything else as a PDF.
+        let invoice = INVOICES.contains(&input.doc_type.as_str());
+        let customer = view.header.summary["customer_id"]
+            .as_str()
+            .and_then(|c| Uuid::parse_str(c).ok());
+        let format = match (clean(input.format), invoice, customer) {
+            (Some(format), true, _) => format,
+            (Some(format), false, _) if format == "pdf" => format,
+            (Some(_), false, _) => {
+                return Err(Error::field(
+                    "format",
+                    "only a sales invoice or credit note is sent as an e-invoice",
+                ));
+            }
+            (None, true, Some(customer)) => {
+                erpcraft_party::einvoice_format(&mut *ctx.conn, customer).await?
+            }
+            (None, _, _) => "pdf".into(),
+        };
+        let buyer_reference = match customer {
+            Some(customer) => {
+                sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS (SELECT 1 FROM party_profile WHERE party_type = 'customer'
+                                AND party_id = $1 AND invoice_reference IS NOT NULL)",
+                )
+                .bind(customer)
+                .fetch_one(&mut *ctx.conn)
+                .await?
+            }
+            None => false,
+        };
+        let file = carried(
+            ctx,
+            &input.doc_type,
+            input.id,
+            input.template_id,
+            &format,
+            buyer_reference,
+        )
+        .await?;
         let subject =
-            clean(input.subject).unwrap_or_else(|| format!("{} from {company}", pdf.title));
+            clean(input.subject).unwrap_or_else(|| format!("{} from {company}", file.title));
         let body = clean(input.message).unwrap_or_else(|| {
             format!(
                 "Please find attached {}.\n\nKind regards,\n{company}\n",
-                pdf.title
+                file.title
             )
         });
         let id = new_id();
         let message_id = format!("<{id}@erpcraft>");
         sqlx::query(
             "INSERT INTO document_message (id, company_id, document_id, doc_type, to_addresses,
-                 cc_addresses, subject, body, attachment_name, attachment, message_id, sent_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                 cc_addresses, subject, body, attachment_name, attachment, message_id, sent_by,
+                 format, attachment_type)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(id)
         .bind(company_id)
@@ -516,10 +674,12 @@ impl Command for Send {
         .bind(&cc)
         .bind(&subject)
         .bind(&body)
-        .bind(&pdf.filename)
-        .bind(&bytes)
+        .bind(&file.name)
+        .bind(&file.bytes)
         .bind(&message_id)
         .bind(ctx.actor.user_id)
+        .bind(&format)
+        .bind(&file.media_type)
         .execute(&mut *ctx.conn)
         .await?;
         ctx.touch("document", input.id);
@@ -588,6 +748,7 @@ struct Outgoing {
     body: String,
     attachment_name: String,
     attachment: Vec<u8>,
+    attachment_type: String,
     message_id: String,
     status: String,
     attempts: i32,
@@ -629,7 +790,7 @@ impl Subscriber for Mailer {
         };
         let outgoing: Option<Outgoing> = sqlx::query_as(
             "SELECT company_id, to_addresses, cc_addresses, subject, body, attachment_name,
-                    attachment, message_id, status, attempts
+                    attachment, attachment_type, message_id, status, attempts
              FROM document_message WHERE id = $1",
         )
         .bind(id)
@@ -723,7 +884,7 @@ async fn send(kernel: &Kernel, outgoing: &Outgoing) -> std::result::Result<(), S
     if let Some(bcc) = &server.bcc {
         builder = builder.bcc(mailbox(bcc)?);
     }
-    let pdf = ContentType::parse("application/pdf").map_err(|e| e.to_string())?;
+    let pdf = ContentType::parse(&outgoing.attachment_type).map_err(|e| e.to_string())?;
     let message = builder
         .multipart(
             MultiPart::mixed()
