@@ -46,6 +46,9 @@ export const router = createBrowserRouter([
           { path: "d/:docType/new", lazy: page(() => import("@/pages/document-page")) },
           { path: "d/:docType/:id", lazy: page(() => import("@/pages/document-page")) },
           { path: "d/:docType/:id/print", lazy: page(() => import("@/pages/print-page")) },
+          // The guidance-first rebuild of the sales order page (see COMPARISON.md).
+          { path: "fresh/sales_order/new", lazy: page(() => import("@/pages/fresh/sales-order")) },
+          { path: "fresh/sales_order/:id", lazy: page(() => import("@/pages/fresh/sales-order")) },
           { path: "r/:report", lazy: page(() => import("@/pages/report-page")) },
           { path: "approvals", lazy: async () => ({ Component: (await retry(() => import("@/pages/approvals"))).ApprovalsPage }) },
           { path: "approvals/:id", lazy: async () => ({ Component: (await retry(() => import("@/pages/approvals"))).ApprovalPage }) },

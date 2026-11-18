@@ -103,3 +103,54 @@ The question was whether Astryx looked worse because agents know shadcn and not 
     - a short record (customer) leaves a lot of empty page;
     - Typeahead chips ("C001 · Buyer LLC") read heavier than a plain select value.
 - **Recommendation.** Keep AGENTS.md next to the app whichever UI wins. It costs nothing and removes most of the "agent doesn't know Astryx" penalty. The choice now comes down to the bundle and beta churn listed above, not looks.
+
+## Guidance-first re-test
+The polish pass fixed pages after they were written. This test asks the other question: does Astryx look better if an agent follows its guidance *from the start*? I rebuilt one screen, the sales order, from nothing, in new files only (`src/pages/fresh/`, route `/c/:company/fresh/sales_order/:id` and `/new`). It reuses only the API client, the `lib/` helpers (meta, decimals, dates, link labels, recent choices) and `useAsync`. It does not use `page.tsx`, `field-grid`, `field-input`, `lookup`, `lines-grid` or `data-table`.
+
+### How it was built
+1. Read first, code second: AGENTS.md, `ui/GUIDELINES.md`, `astryx docs layout` and its five sub-guides, `principles` and `is-my-code-good`, then `astryx component <Name> --dense` for every component used (Layout, LayoutHeader, LayoutContent, Section, Grid, FormLayout, Table and its parts, Typeahead, TypeaheadItem, TextInput, DateInput, Selector, MetadataList, StatusDot, Banner, AlertDialog, Button, IconButton, DropdownMenu, Skeleton, Link, Heading, Text, useTableRowStatus).
+2. `astryx build "sales order document page: header fields, customer lookup, editable line items table, totals, workflow actions"` proposed `table-page` first and `detail-page` second. I scaffolded **`detail-page`** (`astryx template detail-page --type page src/pages/fresh`), because it is the one with a status header, line items and a totals block. I kept its header (back link, title, bullet-separated facts, actions that drop to a row of their own at 1024 or less, tabs with `paddingBlockEnd={0}`), its `contentWidth={1000}`, its Sections and its MetadataList totals.
+3. **I dropped the template's side panel**, and the file says why. With a 320px rail, the lines get about 830px and need about 940. `layout/responsive` says "drop a region rather than let it compete". So the order details sit above the lines, on a reflowing `Grid columns={{minWidth: 240, max: 3}}`.
+4. **Lines: Astryx `Table`, not `@erpcraft/grid`.** The guidance says "dense data = rows (Table)" and "compact density with sm controls", and Table's `renderCell` takes any component. So each cell holds a small TextInput or Typeahead. The grid would have been the app convention (AGENTS.md, second half), but the point here was what Astryx's own guidance produces. One Typeahead per line searches items, charges and accounts at once, with results grouped through `auxiliaryData.group`. That replaces the old kind selector plus lookup.
+5. Behaviour as in GUIDELINES:
+   - totals come live from the server preview;
+   - Ctrl+S saves, with one idempotency key per payload;
+   - errors appear at their field or line, and what was typed is kept;
+   - leaving with unsaved changes asks first (an AlertDialog over `useBlocker`);
+   - workflow actions come from the registry and are disabled while there are unsaved changes; Cancel is confirmed in an AlertDialog;
+   - recent choices show first in lookups;
+   - Enter on the last line adds a line and focuses it.
+
+### The same order, three ways
+| Width | shadcn (`ui/`) | Astryx, existing page | Astryx, guidance-first |
+|---|---|---|---|
+| 1440 | [fresh-shadcn-1440](docs/screenshots/fresh-shadcn-1440.png) | [fresh-astryx-1440](docs/screenshots/fresh-astryx-1440.png) | [fresh-fresh-1440](docs/screenshots/fresh-fresh-1440.png) |
+| 820 | [fresh-shadcn-820](docs/screenshots/fresh-shadcn-820.png) | [fresh-astryx-820](docs/screenshots/fresh-astryx-820.png) | [fresh-fresh-820](docs/screenshots/fresh-fresh-820.png) |
+
+(`bun scripts/fresh-screenshots.ts`, draft order `01a1ea99…` in OHIO.)
+
+### Verdict
+**Yes for the page around the table, mostly for the lines. Guidance-first closed most of the gap on this screen, and it beats the existing Astryx page.**
+- **Better than shadcn:**
+  - **The header.** Back link, title, one line of facts ("● Draft · Buyer LLC · Nov 16, 2026 · Created by …") and one primary action, with the rest in "⋯". shadcn shows six buttons in a row, two of them red.
+  - **The details.** Six fields and the memo sit in two calm rows. shadcn's card is twice as tall, because every field carries its help text underneath. Here the help is in an ⓘ tooltip, from the guidance's "demote, don't shout".
+  - **The totals.** Discounts, Charges and a bold Total (USD) as right-aligned rows.
+  - **At 820** the header actions wrap under the facts as the template does, and the details still fit three to a row. shadcn's actions break onto two rows beside the title.
+- **Better than the existing Astryx page:**
+  - The lines are visibly editable: inputs in every cell, as in shadcn. The existing grid reads like a read-only table.
+  - The fields have a heading, and the page has one rhythm: Section, gap and Section.
+- **Still worse, or only even:**
+  - **Line cells are heavier than shadcn's.** A chosen Typeahead value is a token chip with an ×, so every line shows two or three chips ("GADGET · Gadget ×", "MAIN · Mai ×"). That is busier than shadcn's flat combobox text, and a 132px "Ship from" truncates. Astryx has no plain-value mode for Typeahead.
+  - **Right-aligned amounts in inputs need CSS.** Astryx's TextInput has no alignment prop, its input sets `text-align` with high specificity, and `controlStyle` reaches only the box around the input. So the page has one rule in `globals.css` (`.fresh-amount input { text-align: end !important }`), the only departure from "no imported CSS". It is a good candidate for `astryx gap-report TextInput`.
+  - **The template frame costs width.** `contentWidth={1000}` leaves the lines about 940px. At 1440 they fit exactly, after I trimmed columns three times. At 820 the table scrolls sideways, and the hidden scrollbar gives no cue. shadcn scrolls there too.
+  - **No quick-create** ("New customer…") and no links from a chosen value to its record. Both GUIDELINES rules are met by the old components and were left out of this scope.
+  - **A disabled Save is a filled grey button.** It reads as more "off" than shadcn's.
+- **What the guidance did and did not do.**
+  - **It decided the structure:** template, frame, header, Section and Grid, Table for the lines, StatusDot, MetadataList totals, and the AlertDialog confirmations. All of it was right the first time, with no layout rework.
+  - **Every rework was visual and component-level:** column widths, the native input's alignment, and the Typeahead query being "C001 · Buyer LLC" when you edit a chosen value. That last one needed a fix in the search source, so editing starts from recent choices.
+  - The guidance can't help with those. You find them only by rendering and looking.
+- **How long it took.**
+  - The shell clock read 12:46 at the start and about 12:58 at the end, but it jumped backwards once, so I don't trust it for a duration.
+  - By the work itself: reading came first and was about a third of it (about 25 doc and component reads). Writing the four files was one pass. Then came four build-and-screenshot rounds.
+  - It was noticeably less than the polish pass, because nothing had to be undone.
+- **Checks:** `tsc --noEmit` and `bun run build` pass, and `bun scripts/smoke.ts` passes 11/11. The existing routes are unchanged.

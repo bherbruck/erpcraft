@@ -130,3 +130,8 @@
 .ag-cell a, .ag-cell a * { font-size: inherit; }
 /* On the selection's wash, text keeps full contrast in both themes (axe, dark mode). */
 .ag-root:focus-within .ag-cell[data-selected] .ag-text, .ag-root:focus-within .ag-cell[data-selected] a { color: var(--color-text-primary); }
+
+/* The fresh sales order page (src/pages/fresh): amounts typed into a line are right-aligned, as
+   they are everywhere else. Astryx's TextInput has no alignment prop, its input sets
+   text-align itself at high specificity, and controlStyle reaches only the box around it. */
+.fresh-amount input { text-align: end !important; font-variant-numeric: tabular-nums; }

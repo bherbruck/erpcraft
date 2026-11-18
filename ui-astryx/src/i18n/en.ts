@@ -658,6 +658,19 @@ export const en = {
   "filter.on_or_after": "on or after",
   "filter.on_or_before": "on or before",
   "filter.placeholder": "Filter {label}",
+  // The guidance-first sales order page (src/pages/fresh).
+  "fresh.details": "Order details",
+  "fresh.lines": "Lines",
+  "fresh.line_count": "{count} lines",
+  "fresh.not_worked_out": "—",
+  "fresh.line_what_placeholder": "Item, charge or account",
+  "fresh.address_none": "The customer's default",
+  "fresh.address_pick_customer": "Choose the customer first.",
+  "fresh.confirm_title": "{action} {subject}?",
+  "fresh.confirm_description": "{action} cannot be undone from this page.",
+  "fresh.action_failed": "{action} did not run",
+  "fresh.lines_hint": "Enter on the last line adds a line. Ctrl+S saves.",
+  "fresh.working_out": "Working out the totals…",
 } as const;
 
 export type MessageKey = keyof typeof en;
