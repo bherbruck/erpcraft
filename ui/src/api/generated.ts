@@ -4,9 +4,9 @@
 /** Any JSON value. Used where a command's schema leaves a value open. */
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
-export type EntityName = "account" | "account_rule" | "asset" | "asset_class" | "asset_settings" | "bank_account_number" | "bank_csv_mapping" | "bom" | "bom_activity" | "bom_line" | "charge" | "company" | "cost_activity" | "cost_activity_rate" | "currency" | "customer" | "einvoice_import" | "einvoice_tax_category" | "exchange_rate" | "fiscal_period" | "gl_entry" | "item" | "payment_terms" | "payment_terms_instalment" | "payment_terms_step" | "policy_rule" | "print_template" | "purchasing_settings" | "reorder_rule" | "role" | "sales_settings" | "sso_provider" | "stock_entry" | "tax_code" | "tax_code_component" | "tax_rule" | "tax_settings" | "user" | "vendor" | "warehouse" | "webhook";
+export type EntityName = "account" | "account_rule" | "asset" | "asset_class" | "asset_settings" | "bank_account_number" | "bank_csv_mapping" | "bom" | "bom_activity" | "bom_line" | "charge" | "company" | "cost_activity" | "cost_activity_rate" | "currency" | "customer" | "einvoice_import" | "exchange_rate" | "fiscal_period" | "gl_entry" | "item" | "payment_terms" | "payment_terms_instalment" | "payment_terms_step" | "policy_rule" | "print_template" | "purchasing_settings" | "reorder_rule" | "role" | "sales_settings" | "sso_provider" | "stock_entry" | "tax_code" | "tax_code_component" | "tax_rule" | "tax_settings" | "user" | "vendor" | "warehouse" | "webhook";
 
-export type DocTypeName = "asset_disposal" | "bank_statement" | "depreciation_run" | "fx_revaluation" | "journal_entry" | "payment" | "production_order" | "purchase_order" | "purchase_receipt" | "purchase_return" | "sales_credit" | "sales_credit_note" | "sales_delivery" | "sales_invoice" | "sales_order" | "sales_return" | "stock_adjustment" | "stock_transfer" | "vendor_credit_note" | "vendor_invoice" | "year_end_close";
+export type DocTypeName = "asset_disposal" | "bank_statement" | "depreciation_run" | "fx_revaluation" | "journal_entry" | "payment" | "production_order" | "purchase_order" | "purchase_receipt" | "purchase_return" | "sales_credit" | "sales_credit_note" | "sales_delivery" | "sales_invoice" | "sales_order" | "sales_return" | "stock_adjustment" | "stock_transfer" | "vendor_credit" | "vendor_credit_note" | "vendor_invoice" | "year_end_close";
 
 export type ModuleName = "accounting" | "assets" | "auth" | "banking" | "einvoice" | "gl" | "inventory" | "kernel" | "manufacturing" | "open_items" | "party" | "payments" | "planning" | "printing" | "purchasing" | "sales" | "setup" | "stock" | "tax" | "webhooks";
 
@@ -954,6 +954,16 @@ export type PaymentReverseInput = {
 };
 
 /**
+ * Draft a production order for everything planning.suggestions says to make, by the item's active bill of materials (the first by code when it has several), in the warehouse that needs it. The orders are drafts: check and release them as any other. Their components are not planned until they are released.
+ */
+export type PlanningDraftProductionOrdersInput = {
+  /** The company to make for. */
+  company_id: string;
+  /** The date of the drafted orders. Today when omitted. */
+  doc_date?: string | null;
+};
+
+/**
  * Draft a purchase order per vendor for what planning.suggestions says to buy, from the vendor each item's reorder rule names, at the rule's price or else the last price paid. The orders are drafts in the accounting currency: check and approve them as any other. Suggestions without a vendor are returned, not ordered.
  */
 export type PlanningDraftPurchaseOrdersInput = {
@@ -1045,6 +1055,16 @@ export type ProductionOrderReverseInput = {
 export type PurchaseOrderApproveInput = {
   /** Document id. */
   id: string;
+};
+
+/**
+ * Goods sent back to vendors that they had invoiced and have not yet credited, per purchase order line of a company: what a vendor credit note is still to come for, at the order line's price. GRNI holds their value until it comes.
+ */
+export type PurchaseOrderAwaitingCreditInput = {
+  /** The company whose orders are looked at. */
+  company_id: string;
+  /** Only this vendor. */
+  vendor_id?: string | null;
 };
 
 /**
@@ -1241,6 +1261,16 @@ export type SalesInvoiceReverseInput = {
 export type SalesOrderApproveInput = {
   /** Document id. */
   id: string;
+};
+
+/**
+ * Goods customers sent back that they had been invoiced for and have not yet been credited, per sales order line of a company: what a sales credit note is still owed for, at the order line's price.
+ */
+export type SalesOrderAwaitingCreditInput = {
+  /** The company whose orders are looked at. */
+  company_id: string;
+  /** Only this customer. */
+  customer_id?: string | null;
 };
 
 /**
@@ -1683,6 +1713,28 @@ export type VendorCreditNotePostInput = {
  * Cancel a posted vendor credit note entered by mistake. What it credited is owed again, and the returned goods it covered wait for a credit again. Refused once the credit has been settled or applied; reverse that payment first.
  */
 export type VendorCreditNoteReverseInput = {
+  /** Document id. */
+  id: string;
+  /** Memo of the reversing posting. Defaults to "Reversal of" and the
+   * document number. */
+  memo?: string | null;
+  /** Accounting date of the reversal. Defaults to the date of the
+   * original posting, whose period must then still be open. */
+  posting_date?: string | null;
+};
+
+/**
+ * Post a draft vendor credit, a credit from a vendor not tied to an invoice (a volume rebate, goodwill). It takes the amount off each line's account and the tax at its code off the account it was reclaimed on, in this credit's period, and leaves a credit with the vendor: an open item below zero, settled with its invoices by a payment or applied to one with payment.apply_credit. The company's policy vendor_credit.without_invoice is asked first. Posting a credit that is already posted returns it unchanged.
+ */
+export type VendorCreditPostInput = {
+  /** Document id. */
+  id: string;
+};
+
+/**
+ * Cancel a posted vendor credit entered by mistake: costs, tax and what the vendor is owed are as they were. Refused once the credit has been settled or applied; reverse that payment first.
+ */
+export type VendorCreditReverseInput = {
   /** Document id. */
   id: string;
   /** Memo of the reversing posting. Defaults to "Reversal of" and the
@@ -2322,6 +2374,17 @@ export type Party = {
   vat_id: string | null;
 };
 
+export type Address = {
+  additional_street: string | null;
+  /** BT-77, BT-78. */
+  city: string | null;
+  /** BT-80. */
+  country: string;
+  postcode: string | null;
+  /** BT-75, BT-76. */
+  street: string | null;
+};
+
 export type Line = {
   allowances: Array<AllowanceCharge>;
   base_quantity: string | null;
@@ -2399,6 +2462,8 @@ export type Invoice = {
   buyer_reference: string | null;
   /** BT-5, and BT-6 when VAT is accounted in another currency. */
   currency: string;
+  /** BG-15: the address the goods were delivered to. */
+  delivery_address: Address | null;
   /** BT-72. */
   delivery_date: string | null;
   /** BT-9. */
@@ -2415,6 +2480,9 @@ export type Invoice = {
   payment: Payment | null;
   /** BT-20. */
   payment_terms: string | null;
+  period_end: string | null;
+  /** BT-73, BT-74: the invoicing period (BG-14). */
+  period_start: string | null;
   /** BT-25, BT-26: the invoice a credit note credits. */
   preceding_invoice: string | null;
   preceding_invoice_date: string | null;
@@ -3081,6 +3149,42 @@ export type Suggestion = {
   /** Absent for a caller who may not read warehouses. */
   warehouse_code: string | null;
   warehouse_id: string;
+};
+
+export type AwaitingRow = {
+  /** The quantity at the order line's price, before discounts and tax. */
+  amount: string;
+  currency: string;
+  item_code: string | null;
+  item_id: string | null;
+  line_no: number;
+  /** The order the goods were received on. */
+  order_id: string;
+  order_number: string | null;
+  /** Returned and invoiced, and not yet credited. */
+  qty: string;
+  /** The order line's price, in the order's currency. */
+  unit_price: string;
+  vendor_id: string;
+  vendor_name: string;
+};
+
+export type SalesOrderAwaitingCreditAwaitingRow = {
+  /** The quantity at the order line's price, before discounts and tax. */
+  amount: string;
+  currency: string;
+  customer_id: string;
+  customer_name: string;
+  item_code: string | null;
+  item_id: string | null;
+  line_no: number;
+  /** The order the goods were delivered on. */
+  order_id: string;
+  order_number: string | null;
+  /** Returned and invoiced, and not yet credited. */
+  qty: string;
+  /** The order line's price, in the order's currency. */
+  unit_price: string;
 };
 
 export type SearchHit = {
@@ -4280,6 +4384,11 @@ export type PaymentReverseOutput = {
   version: number;
 };
 
+export type PlanningDraftProductionOrdersOutput = {
+  /** The production orders drafted, one per item and warehouse. */
+  production_order_ids: Array<string>;
+};
+
 export type PlanningDraftPurchaseOrdersOutput = {
   /** The purchase orders drafted, one per vendor. */
   purchase_order_ids: Array<string>;
@@ -4449,6 +4558,11 @@ export type PurchaseOrderApproveOutput = {
   summary: Json;
   updated_at: string;
   version: number;
+};
+
+export type PurchaseOrderAwaitingCreditOutput = {
+  company_id: string;
+  rows: Array<AwaitingRow>;
 };
 
 export type PurchaseOrderCancelOutput = {
@@ -4981,6 +5095,11 @@ export type SalesOrderApproveOutput = {
   summary: Json;
   updated_at: string;
   version: number;
+};
+
+export type SalesOrderAwaitingCreditOutput = {
+  company_id: string;
+  rows: Array<SalesOrderAwaitingCreditAwaitingRow>;
 };
 
 export type SalesOrderCancelOutput = {
@@ -5542,6 +5661,62 @@ export type VendorCreditNoteReverseOutput = {
   version: number;
 };
 
+export type VendorCreditPostOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
+};
+
+export type VendorCreditReverseOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
+};
+
 export type VendorInvoiceCreditOutput = {
   /** The content the document's type defines. See the fields and
    * collections of the type in `meta.describe`. */
@@ -5789,6 +5964,7 @@ export interface CommandOutputs {
   "payment.draft": PaymentDraftOutput;
   "payment.post": PaymentPostOutput;
   "payment.reverse": PaymentReverseOutput;
+  "planning.draft_production_orders": PlanningDraftProductionOrdersOutput;
   "planning.draft_purchase_orders": PlanningDraftPurchaseOrdersOutput;
   "planning.suggestions": PlanningSuggestionsOutput;
   "print_template.builtin": PrintTemplateBuiltinOutput;
@@ -5798,6 +5974,7 @@ export interface CommandOutputs {
   "production_order.release": ProductionOrderReleaseOutput;
   "production_order.reverse": ProductionOrderReverseOutput;
   "purchase_order.approve": PurchaseOrderApproveOutput;
+  "purchase_order.awaiting_credit": PurchaseOrderAwaitingCreditOutput;
   "purchase_order.cancel": PurchaseOrderCancelOutput;
   "purchase_order.close": PurchaseOrderCloseOutput;
   "purchase_order.invoice": PurchaseOrderInvoiceOutput;
@@ -5817,6 +5994,7 @@ export interface CommandOutputs {
   "sales_invoice.post": SalesInvoicePostOutput;
   "sales_invoice.reverse": SalesInvoiceReverseOutput;
   "sales_order.approve": SalesOrderApproveOutput;
+  "sales_order.awaiting_credit": SalesOrderAwaitingCreditOutput;
   "sales_order.cancel": SalesOrderCancelOutput;
   "sales_order.close": SalesOrderCloseOutput;
   "sales_order.deliver": SalesOrderDeliverOutput;
@@ -5852,6 +6030,8 @@ export interface CommandOutputs {
   "user.update": UserUpdateOutput;
   "vendor_credit_note.post": VendorCreditNotePostOutput;
   "vendor_credit_note.reverse": VendorCreditNoteReverseOutput;
+  "vendor_credit.post": VendorCreditPostOutput;
+  "vendor_credit.reverse": VendorCreditReverseOutput;
   "vendor_invoice.credit": VendorInvoiceCreditOutput;
   "vendor_invoice.post": VendorInvoicePostOutput;
   "vendor_invoice.reverse": VendorInvoiceReverseOutput;
@@ -5927,6 +6107,7 @@ export interface CommandInputs {
   "payment.draft": PaymentDraftInput;
   "payment.post": PaymentPostInput;
   "payment.reverse": PaymentReverseInput;
+  "planning.draft_production_orders": PlanningDraftProductionOrdersInput;
   "planning.draft_purchase_orders": PlanningDraftPurchaseOrdersInput;
   "planning.suggestions": PlanningSuggestionsInput;
   "print_template.builtin": PrintTemplateBuiltinInput;
@@ -5936,6 +6117,7 @@ export interface CommandInputs {
   "production_order.release": ProductionOrderReleaseInput;
   "production_order.reverse": ProductionOrderReverseInput;
   "purchase_order.approve": PurchaseOrderApproveInput;
+  "purchase_order.awaiting_credit": PurchaseOrderAwaitingCreditInput;
   "purchase_order.cancel": PurchaseOrderCancelInput;
   "purchase_order.close": PurchaseOrderCloseInput;
   "purchase_order.invoice": PurchaseOrderInvoiceInput;
@@ -5955,6 +6137,7 @@ export interface CommandInputs {
   "sales_invoice.post": SalesInvoicePostInput;
   "sales_invoice.reverse": SalesInvoiceReverseInput;
   "sales_order.approve": SalesOrderApproveInput;
+  "sales_order.awaiting_credit": SalesOrderAwaitingCreditInput;
   "sales_order.cancel": SalesOrderCancelInput;
   "sales_order.close": SalesOrderCloseInput;
   "sales_order.deliver": SalesOrderDeliverInput;
@@ -5990,6 +6173,8 @@ export interface CommandInputs {
   "user.update": UserUpdateInput;
   "vendor_credit_note.post": VendorCreditNotePostInput;
   "vendor_credit_note.reverse": VendorCreditNoteReverseInput;
+  "vendor_credit.post": VendorCreditPostInput;
+  "vendor_credit.reverse": VendorCreditReverseInput;
   "vendor_invoice.credit": VendorInvoiceCreditInput;
   "vendor_invoice.post": VendorInvoicePostInput;
   "vendor_invoice.reverse": VendorInvoiceReverseInput;
@@ -6005,4 +6190,4 @@ export interface CommandInputs {
 export type CommandName = keyof CommandInputs;
 
 /** Commands that only read. */
-export type ReadOnlyCommandName = "approval.get" | "approval.list" | "asset.cost_lines" | "asset.register" | "asset.schedule" | "audit.history" | "audit.list" | "auth.events" | "bank_statement.proposals" | "bank.reconciliation" | "document.get" | "document.list" | "document.parties" | "document.render" | "einvoice.export" | "einvoice.read" | "entity.get" | "entity.list" | "gl.account_ledger" | "gl.balance_sheet" | "gl.income_statement" | "gl.trial_balance" | "meta.describe" | "open_item.aging" | "open_item.list" | "outbox.list" | "party.get" | "planning.suggestions" | "print_template.builtin" | "print_template.preview" | "search.records" | "setup.templates" | "sso_identity.list" | "sso_provider.list" | "stock.availability" | "stock.on_hand" | "tax.report" | "user.get" | "user.list" | "webhook.deliveries";
+export type ReadOnlyCommandName = "approval.get" | "approval.list" | "asset.cost_lines" | "asset.register" | "asset.schedule" | "audit.history" | "audit.list" | "auth.events" | "bank_statement.proposals" | "bank.reconciliation" | "document.get" | "document.list" | "document.parties" | "document.render" | "einvoice.export" | "einvoice.read" | "entity.get" | "entity.list" | "gl.account_ledger" | "gl.balance_sheet" | "gl.income_statement" | "gl.trial_balance" | "meta.describe" | "open_item.aging" | "open_item.list" | "outbox.list" | "party.get" | "planning.suggestions" | "print_template.builtin" | "print_template.preview" | "purchase_order.awaiting_credit" | "sales_order.awaiting_credit" | "search.records" | "setup.templates" | "sso_identity.list" | "sso_provider.list" | "stock.availability" | "stock.on_hand" | "tax.report" | "user.get" | "user.list" | "webhook.deliveries";

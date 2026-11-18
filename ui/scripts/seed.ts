@@ -627,6 +627,5 @@ await setParty({
   electronic_addresses: [{ scheme: "EM", value: "billing@parts.example", is_default: true }],
 });
 log("party data of the company, the customer and the vendor", "done");
-await ensure("einvoice_tax_category", { tax_code_id: taxCode }, { category: "S" });
 
 console.log(`\n${created} created, ${found} already there.`);
