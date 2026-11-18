@@ -339,9 +339,25 @@ struct EntityListInput {
     q: Option<String>,
     /// A condition each record must meet, as an expression over `record`:
     /// `record.account_type == 'asset' && !record.is_group`. Supports
-    /// comparisons, `in`, `&&`, `||`, `!` and `user.<attribute>`.
+    /// comparisons, `in`, `&&`, `||`, `!`, `user.<attribute>` and
+    /// `params.<name>`; the text tests `contains`, `startsWith`, `endsWith`
+    /// and, ignoring case, `containsIgnoreCase`, `startsWithIgnoreCase`,
+    /// `endsWithIgnoreCase`, `equalsIgnoreCase` (`record.name.containsIgnoreCase('bolt')`);
+    /// and dates relative to today: `today()`, `addDays(d, n)`,
+    /// `addMonths(d, n)`, `startOfMonth(d)`, `endOfMonth(d)`, and the same
+    /// for `Quarter` and `Year`.
     #[serde(rename = "where")]
     condition: Option<String>,
+    /// Values the condition reads as `params.<name>`, bound as parameters
+    /// so that a long list does not lengthen it: `{"customers": ["…"]}`
+    /// for `record.customer_id in params.customers`.
+    #[serde(default)]
+    params: Map<String, Value>,
+    /// The reader's time zone, such as `Europe/Berlin`: the day `today()`
+    /// is in the condition, and where a day starts when a timestamp field
+    /// is compared with one (`record.created_at >= '2026-11-18'`). The
+    /// database's own zone when omitted.
+    time_zone: Option<String>,
     /// Field names to sort by; prefix one with `-` for descending.
     #[serde(default)]
     sort: Vec<String>,
@@ -381,6 +397,8 @@ impl Command for EntityList {
             offset: input.offset,
             active_only: input.active_only,
             skip_total: false,
+            params: Value::Object(input.params),
+            time_zone: input.time_zone,
         };
         entity::list(ctx, &input.entity, &query).await
     }
@@ -522,9 +540,22 @@ struct DocumentListInput {
     /// A condition over the document header, as an expression over
     /// `record`: `record.doc_date >= '2026-01-01' && record.status == 'draft'`.
     /// The header fields are id, company_id, number, status, locked,
-    /// version, doc_date, memo, created_by, created_at and updated_at.
+    /// version, doc_date, memo, created_by, created_at and updated_at; the
+    /// type's summary fields are `record.summary.<field>`
+    /// (`record.summary.total_net > '1000'`). The language is the one of
+    /// `entity.list`'s `where`, with its text tests and dates.
     #[serde(rename = "where")]
     condition: Option<String>,
+    /// Values the condition reads as `params.<name>`, bound as parameters
+    /// so that a long list does not lengthen it: `{"customers": ["…"]}`
+    /// for `record.customer_id in params.customers`.
+    #[serde(default)]
+    params: Map<String, Value>,
+    /// The reader's time zone, such as `Europe/Berlin`: the day `today()`
+    /// is in the condition, and where a day starts when a timestamp field
+    /// is compared with one (`record.created_at >= '2026-11-18'`). The
+    /// database's own zone when omitted.
+    time_zone: Option<String>,
     /// Sort by `number`, `status`, `doc_date`, `created_at`, `updated_at`
     /// or a field of the type's summary as `summary.<field>`; prefix one
     /// with `-` for descending. Newest first when omitted.
@@ -567,6 +598,8 @@ impl Command for DocumentList {
             offset: input.offset,
             summary: input.summary.into_iter().collect(),
             skip_total: false,
+            params: Value::Object(input.params),
+            time_zone: input.time_zone,
         };
         document::list(ctx, &input.doc_type, &query).await
     }

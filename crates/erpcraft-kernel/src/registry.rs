@@ -131,6 +131,31 @@ pub enum FieldType {
     Posting,
 }
 
+impl FieldType {
+    /// What the database stores the field as, for conditions over it.
+    /// `None` for free-form JSON, which a condition cannot name.
+    pub fn column_type(&self) -> Option<ColumnType> {
+        Some(match self {
+            FieldType::Uuid => ColumnType::Uuid,
+            FieldType::Text | FieldType::Enum { .. } => ColumnType::Text,
+            FieldType::Bool => ColumnType::Bool,
+            FieldType::Int => ColumnType::Int,
+            FieldType::Decimal => ColumnType::Decimal,
+            FieldType::Date => ColumnType::Date,
+            FieldType::Timestamp => ColumnType::Timestamp,
+            FieldType::TextArray => ColumnType::TextArray,
+            FieldType::EntityLink { .. }
+            | FieldType::DocumentLink { .. }
+            | FieldType::LineLink { .. }
+            | FieldType::Lookup(_)
+            | FieldType::Posting => ColumnType::Uuid,
+            FieldType::Link { key, .. } if key == "id" => ColumnType::Uuid,
+            FieldType::Link { .. } => ColumnType::Text,
+            FieldType::Json => return None,
+        })
+    }
+}
+
 /// How to find what a [`FieldType::Lookup`] field refers to.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Lookup {
@@ -788,27 +813,7 @@ impl EntityMeta {
     pub fn rule_columns(&self) -> BTreeMap<String, ColumnType> {
         self.fields
             .iter()
-            .filter_map(|field| {
-                let ty = match &field.ty {
-                    FieldType::Uuid => ColumnType::Uuid,
-                    FieldType::Text | FieldType::Enum { .. } => ColumnType::Text,
-                    FieldType::Bool => ColumnType::Bool,
-                    FieldType::Int => ColumnType::Int,
-                    FieldType::Decimal => ColumnType::Decimal,
-                    FieldType::Date => ColumnType::Date,
-                    FieldType::Timestamp => ColumnType::Timestamp,
-                    FieldType::TextArray => ColumnType::TextArray,
-                    FieldType::EntityLink { .. }
-                    | FieldType::DocumentLink { .. }
-                    | FieldType::LineLink { .. }
-                    | FieldType::Lookup(_)
-                    | FieldType::Posting => ColumnType::Uuid,
-                    FieldType::Link { key, .. } if key == "id" => ColumnType::Uuid,
-                    FieldType::Link { .. } => ColumnType::Text,
-                    FieldType::Json => return None,
-                };
-                Some((field.name.clone(), ty))
-            })
+            .filter_map(|field| Some((field.name.clone(), field.ty.column_type()?)))
             .collect()
     }
 }

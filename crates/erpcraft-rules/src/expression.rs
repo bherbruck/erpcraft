@@ -497,6 +497,23 @@ fn eval(expr: &Expr, variables: &Value) -> Checked<Val> {
                 other => Err(format!("`{}` cannot be used", spelled(other))),
             }
         }
+        Expr::Call(call) => {
+            // A method: the tests on text (see the `text` module).
+            let name = call.func_name.as_str();
+            let test = crate::text::TextTest::named(name)
+                .ok_or_else(|| format!("`{name}` cannot be used"))?;
+            let target = call.target.as_ref().ok_or("a value is missing")?;
+            let [needle] = call.args.as_slice() else {
+                return Err(format!("`{name}` takes one text"));
+            };
+            match (eval(&target.expr, variables)?, eval(&needle.expr, variables)?) {
+                (Val::Text(text), Val::Text(needle)) => Ok(Val::Bool(test.holds(&text, &needle))),
+                (Val::Null, _) | (_, Val::Null) => Err(
+                    "a value that is null cannot be compared; ask `== null` or `!= null` about it first".into(),
+                ),
+                (a, b) => Err(format!("`{name}` needs two texts, not {} and {}", a.kind(), b.kind())),
+            }
+        }
         _ => Err("this kind of expression cannot be used".into()),
     }
 }

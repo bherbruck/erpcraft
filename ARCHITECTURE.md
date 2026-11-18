@@ -111,6 +111,9 @@ Every list of entity records or documents takes the same parameters and returns 
 
 - `q`: text to find in the fields the entity declares as its search fields (a code, a name);
 - `where`: a condition in the rule language, for example `record.debit > 100 && record.account_type == 'asset'`;
+  it can test text (`record.name.containsIgnoreCase('bolt')`; also `contains`, `startsWith`, `endsWith`, the `IgnoreCase` forms of those and `equalsIgnoreCase`, compiled to `LIKE`/`ILIKE` with the wildcards in the value escaped), read dates relative to today (`today()`, `addDays`, `addMonths`, `startOf`/`endOf` `Month`, `Quarter` and `Year`; only in a list's condition, never in a stored rule, which is also decided in memory), and name a document's summary fields as `record.summary.<field>`;
+- `params`: values the condition reads as `params.<name>`, bound as parameters, so a list of 500 ids is `record.customer_id in params.customers` and does not lengthen the condition;
+- `time_zone`: the reader's zone (an IANA name the database knows): what day `today()` is, and where a day begins when a timestamp is compared with one;
 - `sort`: field names, `-` for descending;
 - `limit` and `offset`.
 

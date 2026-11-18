@@ -170,7 +170,8 @@ fn idempotency_key(headers: &HeaderMap) -> Option<String> {
 
 type Fields = Map<String, Value>;
 
-/// Split the parameters every list takes (`limit`, `offset`, `q`, `where`, `sort`)
+/// Split the parameters every list takes (`limit`, `offset`, `q`, `where`,
+/// `params`, `time_zone`, `sort`)
 /// from the rest of a query string. `sort` is a comma-separated list.
 fn paging(query: Vec<(String, String)>) -> Result<(Fields, Fields), Error> {
     let (mut page, mut rest) = (Map::new(), Map::new());
@@ -182,8 +183,18 @@ fn paging(query: Vec<(String, String)>) -> Result<(Fields, Fields), Error> {
                     .map_err(|_| Error::validation(format!("'{key}' must be a whole number")))?;
                 page.insert(key, json!(number));
             }
-            "q" | "where" => {
+            "q" | "where" | "time_zone" => {
                 page.insert(key, json!(value));
+            }
+            // The values a condition reads as `params.<name>`, as a JSON object.
+            "params" => {
+                let params: Value = serde_json::from_str(&value).map_err(|e| {
+                    Error::validation(format!("'params' must be a JSON object: {e}"))
+                })?;
+                if !params.is_object() {
+                    return Err(Error::validation("'params' must be a JSON object"));
+                }
+                page.insert(key, params);
             }
             "active_only" => {
                 page.insert(key, json!(value == "true"));

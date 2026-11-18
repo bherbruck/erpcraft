@@ -27,6 +27,7 @@
 mod cache;
 mod expression;
 mod parse;
+mod text;
 
 pub use expression::Expression;
 
@@ -80,11 +81,51 @@ pub enum Bind {
 pub struct SqlScope<'a> {
     /// Alias of the table the record comes from.
     pub alias: &'a str,
-    /// The fields of `record` a rule may use.
+    /// The fields of `record` a rule may use. A name with a dot, such as
+    /// `summary.total`, is the field `total` of the JSON column `summary`:
+    /// the rule writes `record.summary.total`. Names come from the registry,
+    /// never from the caller.
     pub columns: &'a BTreeMap<String, ColumnType>,
     /// The acting user, as the rule sees it.
     pub user: &'a Value,
+    /// Values sent with the condition, which it reads as `params.<name>`:
+    /// `record.customer_id in params.customers`. Like everything else they
+    /// are bound as parameters; a long list costs the source nothing.
+    /// `Value::Null` when none were sent.
+    pub params: &'a Value,
+    /// The time zone of the reader (an IANA name the caller has checked):
+    /// the day `today()` is, and the zone a day is in when a timestamp is
+    /// compared with it. `None`: the database session's zone.
+    pub time_zone: Option<&'a str>,
 }
+
+impl<'a> SqlScope<'a> {
+    /// A scope with no parameters and the session's time zone.
+    pub fn new(alias: &'a str, columns: &'a BTreeMap<String, ColumnType>, user: &'a Value) -> Self {
+        SqlScope {
+            alias,
+            columns,
+            user,
+            params: &Value::Null,
+            time_zone: None,
+        }
+    }
+}
+
+/// The functions of dates a list's condition can use. They read the clock
+/// or compute, so they are for conditions sent with a request only: a
+/// stored rule is also decided in memory, where they do not exist.
+const DATE_FUNCTIONS: &[&str] = &[
+    "today",
+    "addDays",
+    "addMonths",
+    "startOfMonth",
+    "endOfMonth",
+    "startOfQuarter",
+    "endOfQuarter",
+    "startOfYear",
+    "endOfYear",
+];
 
 /// A parsed rule.
 #[derive(Debug)]
@@ -127,13 +168,36 @@ impl Rule {
         // Length and depth are limited here, before anything recursive
         // sees the rule; see the `parse` module.
         let program = parse::compile(source, origin).map_err(|why| invalid(source, why))?;
-        for variable in program.references().variables() {
-            if variable != "record" && variable != "user" {
-                return Err(invalid(
-                    source,
-                    format!("unknown name `{variable}`; use `record` or `user`"),
-                ));
+        let references = program.references();
+        for variable in references.variables() {
+            match (variable, origin) {
+                ("record" | "user", _) | ("params", Origin::Sent) => {}
+                ("params", Origin::Stored) => {
+                    return Err(invalid(
+                        source,
+                        "`params` are sent with a list's condition; a rule that is kept cannot use them",
+                    ));
+                }
+                _ => {
+                    return Err(invalid(
+                        source,
+                        format!("unknown name `{variable}`; use `record` or `user`"),
+                    ));
+                }
             }
+        }
+        if origin == Origin::Stored
+            && let Some(function) = references
+                .functions()
+                .into_iter()
+                .find(|f| DATE_FUNCTIONS.contains(f))
+        {
+            return Err(invalid(
+                source,
+                format!(
+                    "`{function}()` can be used in a list's condition, not in a rule that is kept"
+                ),
+            ));
         }
         Ok(Rule {
             source: source.to_owned(),
@@ -174,12 +238,8 @@ impl Rule {
 
     /// Check that the rule can be compiled for records with these fields.
     pub fn check(&self, columns: &BTreeMap<String, ColumnType>) -> Result<()> {
-        let scope = SqlScope {
-            alias: "t",
-            columns,
-            user: &Value::Null,
-        };
-        self.to_sql(&scope, &mut vec![]).map(|_| ())
+        self.to_sql(&SqlScope::new("t", columns, &Value::Null), &mut vec![])
+            .map(|_| ())
     }
 }
 
@@ -198,8 +258,17 @@ fn without_nulls(user: &Value) -> Value {
     }
 }
 
+/// A value the database works out: a column, a field of a JSON column, or
+/// a date computed from `today()`. `name` is how the rule wrote it, for
+/// messages.
+struct Sql {
+    sql: String,
+    name: String,
+    ty: ColumnType,
+}
+
 enum Operand {
-    Column(String, ColumnType),
+    Sql(Sql),
     Value(Value),
     /// An attribute the user does not have, or has as null. Nothing can
     /// be decided from it: whatever uses it is neither true nor false, so
@@ -233,15 +302,181 @@ fn value_type(value: &Value) -> &'static str {
     }
 }
 
+/// A plain day, `2026-11-18`, as opposed to a moment with a time.
+fn is_day(text: &str) -> bool {
+    let b = text.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+}
+
+/// A name of the registry that goes into SQL text: letters, digits and `_`.
+fn identifier(name: &str) -> Compiled<&str> {
+    if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        Ok(name)
+    } else {
+        Err(format!("`{name}` is not a field name"))
+    }
+}
+
 impl Compiler<'_, '_> {
     fn bind(&mut self, bind: Bind) -> String {
         self.binds.push(bind);
         format!("${}", self.binds.len())
     }
 
-    fn column(&self, name: &str, ty: ColumnType) -> String {
-        let _ = ty;
-        format!("{}.{}", self.scope.alias, name)
+    /// The SQL for a field of `record`: `t.name`, or for `summary.total`
+    /// the JSON field cast to its type.
+    fn column(&self, name: &str, ty: ColumnType) -> Compiled<String> {
+        let alias = self.scope.alias;
+        match name.split_once('.') {
+            None => Ok(format!("{alias}.{}", identifier(name)?)),
+            Some((column, field)) => Ok(format!(
+                "({alias}.{}->>'{}')::{}",
+                identifier(column)?,
+                identifier(field)?,
+                ty.pg()
+            )),
+        }
+    }
+
+    /// A date argument: a date the database works out, or a day written as text.
+    fn date(&mut self, operand: Operand, function: &str) -> Compiled<String> {
+        match operand {
+            Operand::Sql(Sql {
+                sql,
+                ty: ColumnType::Date,
+                ..
+            }) => Ok(sql),
+            Operand::Sql(Sql {
+                sql,
+                ty: ColumnType::Timestamp,
+                ..
+            }) => Ok(self.day_of(&sql)),
+            Operand::Value(Value::String(day)) if is_day(&day) => {
+                Ok(format!("{}::date", self.bind(Bind::Text(Some(day)))))
+            }
+            _ => Err(format!("`{function}` needs a date")),
+        }
+    }
+
+    /// The day of a timestamp in the reader's time zone.
+    fn day_of(&mut self, sql: &str) -> String {
+        match self.scope.time_zone {
+            Some(zone) => {
+                let zone = self.bind(Bind::Text(Some(zone.to_owned())));
+                format!("({sql} AT TIME ZONE {zone}::text)::date")
+            }
+            None => format!("({sql})::date"),
+        }
+    }
+
+    /// A whole number of days or months, bound.
+    fn count(&mut self, operand: Operand, function: &str) -> Compiled<String> {
+        match operand {
+            Operand::Value(Value::Number(n))
+                if n.as_i64().is_some_and(|n| n.unsigned_abs() <= 100_000) =>
+            {
+                Ok(format!(
+                    "{}::int",
+                    self.bind(Bind::Text(Some(n.to_string())))
+                ))
+            }
+            _ => Err(format!("`{function}` needs a whole number")),
+        }
+    }
+
+    fn date_function(&mut self, name: &str, args: Vec<Operand>) -> Compiled<Operand> {
+        let mut args = args.into_iter();
+        let mut next = || {
+            args.next()
+                .ok_or_else(|| format!("`{name}` is missing a value"))
+        };
+        // date_trunc of a timestamp without zone, so the session's zone never shifts the day.
+        let trunc = |unit: &str, day: &str| format!("date_trunc('{unit}', ({day})::timestamp)");
+        let sql = match name {
+            "today" => match self.scope.time_zone {
+                Some(zone) => {
+                    let zone = self.bind(Bind::Text(Some(zone.to_owned())));
+                    format!("(now() AT TIME ZONE {zone}::text)::date")
+                }
+                None => "current_date".to_owned(),
+            },
+            "addDays" => {
+                let day = self.date(next()?, name)?;
+                let n = self.count(next()?, name)?;
+                format!("(({day}) + {n})")
+            }
+            "addMonths" => {
+                let day = self.date(next()?, name)?;
+                let n = self.count(next()?, name)?;
+                format!("(({day}) + make_interval(months => {n}))::date")
+            }
+            "startOfMonth" | "startOfQuarter" | "startOfYear" => {
+                let unit = &name["startOf".len()..].to_lowercase();
+                let day = self.date(next()?, name)?;
+                format!("{}::date", trunc(unit, &day))
+            }
+            "endOfMonth" | "endOfQuarter" | "endOfYear" => {
+                let unit = name["endOf".len()..].to_lowercase();
+                let day = self.date(next()?, name)?;
+                // Postgres has no interval of a quarter.
+                let span = if unit == "quarter" {
+                    "3 months"
+                } else if unit == "month" {
+                    "1 month"
+                } else {
+                    "1 year"
+                };
+                format!(
+                    "({} + interval '{span}' - interval '1 day')::date",
+                    trunc(&unit, &day)
+                )
+            }
+            _ => return Err(format!("`{name}` cannot be used in a rule")),
+        };
+        if args.next().is_some() {
+            return Err(format!("`{name}` takes fewer values"));
+        }
+        Ok(Operand::Sql(Sql {
+            sql,
+            name: format!("{name}()"),
+            ty: ColumnType::Date,
+        }))
+    }
+
+    fn text_test(&mut self, name: &str, target: Operand, needle: Operand) -> Compiled<Operand> {
+        let Some(test) = text::TextTest::named(name) else {
+            return Err(format!("`{name}` cannot be used in a rule"));
+        };
+        let column = match target {
+            Operand::Sql(column) if column.ty == ColumnType::Text => column,
+            Operand::Sql(column) => {
+                return Err(format!(
+                    "`{name}` needs a text, and `{}` is not one",
+                    column.name
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "`{name}` can be asked of a field of the record only"
+                ));
+            }
+        };
+        let needle = match needle {
+            Operand::Value(Value::String(needle)) => needle,
+            Operand::Unknown => return Ok(Operand::Condition(self.unknown())),
+            _ => return Err(format!("`{name}` needs a text to look for")),
+        };
+        let pattern = self.bind(Bind::Text(Some(test.pattern(&needle))));
+        Ok(Operand::Condition(format!(
+            "({} {} {pattern}::text)",
+            column.sql,
+            test.sql_operator()
+        )))
     }
 
     fn operand(&mut self, expr: &Expr) -> Compiled<Operand> {
@@ -278,20 +513,29 @@ impl Compiler<'_, '_> {
                             path.push(next.field.as_str());
                             inner = &next.operand.expr;
                         }
-                        _ => return Err("only fields of `record` and `user` can be used".into()),
+                        _ => {
+                            return Err(
+                                "only fields of `record`, `user` and `params` can be used".into()
+                            );
+                        }
                     }
                 };
                 path.reverse();
                 match root {
-                    "record" => match path.as_slice() {
-                        [field] => match self.scope.columns.get(*field) {
-                            Some(ty) => Ok(Operand::Column((*field).to_owned(), *ty)),
-                            None => Err(format!(
-                                "the record has no field `{field}` that a rule can use"
+                    "record" => {
+                        let name = path.join(".");
+                        match self.scope.columns.get(&name) {
+                            Some(ty) if path.len() <= 2 => Ok(Operand::Sql(Sql {
+                                sql: self.column(&name, *ty)?,
+                                name: format!("record.{name}"),
+                                ty: *ty,
+                            })),
+                            _ if path.len() == 1 => Err(format!(
+                                "the record has no field `{name}` that a rule can use"
                             )),
-                        },
-                        _ => Err(format!("`record.{}` is not a plain field", path.join("."))),
-                    },
+                            _ => Err(format!("`record.{name}` is not a field a rule can use")),
+                        }
+                    }
                     "user" => {
                         let mut value = self.scope.user;
                         for key in &path {
@@ -302,16 +546,37 @@ impl Compiler<'_, '_> {
                             value => Operand::Value(value.clone()),
                         })
                     }
+                    "params" => {
+                        let mut value = self.scope.params;
+                        for key in &path {
+                            value = value.get(key).unwrap_or(&Value::Null);
+                        }
+                        match value {
+                            Value::Null => Err(format!("`params.{}` was not sent", path.join("."))),
+                            value => Ok(Operand::Value(value.clone())),
+                        }
+                    }
                     other => Err(format!("unknown name `{other}`; use `record` or `user`")),
                 }
             }
-            Expr::Call(call) if call.target.is_none() => {
+            Expr::Call(call) => {
                 let mut args = Vec::with_capacity(call.args.len());
                 for arg in &call.args {
                     args.push(self.operand(&arg.expr)?);
                 }
-                let mut args = args.into_iter();
                 let name = call.func_name.as_str();
+                if let Some(target) = &call.target {
+                    let target = self.operand(&target.expr)?;
+                    let mut args = args.into_iter();
+                    return match (args.next(), args.next()) {
+                        (Some(needle), None) => self.text_test(name, target, needle),
+                        _ => Err(format!("`{name}` takes one text")),
+                    };
+                }
+                if DATE_FUNCTIONS.contains(&name) {
+                    return self.date_function(name, args);
+                }
+                let mut args = args.into_iter();
                 match (name, args.next(), args.next(), args.next()) {
                     (op::LOGICAL_NOT, Some(a), None, None) => {
                         Ok(Operand::Condition(format!("(NOT {})", self.condition(a)?)))
@@ -328,7 +593,10 @@ impl Compiler<'_, '_> {
                     (op::GREATER, Some(a), Some(b), None) => self.compare(a, b, ">"),
                     (op::GREATER_EQUALS, Some(a), Some(b), None) => self.compare(a, b, ">="),
                     (op::IN, Some(a), Some(b), None) => self.member(a, b),
-                    _ => Err(format!("`{name}` cannot be used in a rule")),
+                    _ => Err(format!(
+                        "`{}` cannot be used in a rule",
+                        name.trim_matches('_')
+                    )),
                 }
             }
             Expr::Ident(name) => Err(format!(
@@ -342,8 +610,12 @@ impl Compiler<'_, '_> {
     fn condition(&mut self, operand: Operand) -> Compiled<String> {
         match operand {
             Operand::Condition(sql) => Ok(sql),
-            Operand::Column(name, ColumnType::Bool) => Ok(self.column(&name, ColumnType::Bool)),
-            Operand::Column(name, _) => Err(format!("field `{name}` is not true or false")),
+            Operand::Sql(Sql {
+                sql,
+                ty: ColumnType::Bool,
+                ..
+            }) => Ok(sql),
+            Operand::Sql(Sql { name, .. }) => Err(format!("`{name}` is not true or false")),
             Operand::Value(Value::Bool(b)) => {
                 Ok(format!("{}::boolean", self.bind(Bind::Bool(Some(b)))))
             }
@@ -360,6 +632,38 @@ impl Compiler<'_, '_> {
         format!("{}::boolean", self.bind(Bind::Bool(None)))
     }
 
+    /// A value compared with a database value of type `ty`, bound and cast.
+    /// A day compared with a timestamp is midnight in the reader's zone.
+    fn typed_value(&mut self, value: &Value, ty: ColumnType) -> Compiled<String> {
+        let text = scalar_text(value)?;
+        if ty == ColumnType::Timestamp
+            && is_day(&text)
+            && let Some(zone) = self.scope.time_zone
+        {
+            let param = self.bind(Bind::Text(Some(text)));
+            let zone = self.bind(Bind::Text(Some(zone.to_owned())));
+            return Ok(format!("({param}::timestamp AT TIME ZONE {zone}::text)"));
+        }
+        let param = self.bind(Bind::Text(Some(text)));
+        Ok(format!("{param}::{}", ty.pg()))
+    }
+
+    /// Two database values; a date against a timestamp is the date's midnight in the reader's zone.
+    fn pair(&mut self, a: Sql, b: Sql) -> (String, String) {
+        let midnight = |this: &mut Self, sql: &str| match this.scope.time_zone {
+            Some(zone) => {
+                let zone = this.bind(Bind::Text(Some(zone.to_owned())));
+                format!("(({sql})::timestamp AT TIME ZONE {zone}::text)")
+            }
+            None => sql.to_owned(),
+        };
+        match (a.ty, b.ty) {
+            (ColumnType::Timestamp, ColumnType::Date) => (a.sql, midnight(self, &b.sql)),
+            (ColumnType::Date, ColumnType::Timestamp) => (midnight(self, &a.sql), b.sql),
+            _ => (a.sql, b.sql),
+        }
+    }
+
     fn compare(&mut self, left: Operand, right: Operand, sql_op: &str) -> Compiled<Operand> {
         // Only `null` as it is written tests a field for null. An
         // attribute the user lacks must not: `record.parent_id ==
@@ -369,8 +673,8 @@ impl Compiler<'_, '_> {
             (&left, &right),
             (
                 Operand::Unknown,
-                Operand::Column(..) | Operand::Value(_) | Operand::Unknown
-            ) | (Operand::Column(..) | Operand::Value(_), Operand::Unknown)
+                Operand::Sql(_) | Operand::Value(_) | Operand::Unknown
+            ) | (Operand::Sql(_) | Operand::Value(_), Operand::Unknown)
         ) {
             return Ok(Operand::Condition(self.unknown()));
         }
@@ -385,24 +689,23 @@ impl Compiler<'_, '_> {
                     "a condition cannot be compared; combine conditions with && and ||".into(),
                 );
             }
-            (Operand::Column(a, at), Operand::Column(b, bt)) => {
-                format!("({} {sql_op} {})", self.column(&a, at), self.column(&b, bt))
+            (Operand::Sql(a), Operand::Sql(b)) => {
+                let (a, b) = self.pair(a, b);
+                format!("({a} {sql_op} {b})")
             }
-            (Operand::Column(name, ty), Operand::Value(value)) => {
-                let column = self.column(&name, ty);
+            (Operand::Sql(column), Operand::Value(value)) => {
                 if value.is_null() {
-                    return null_test(column);
+                    return null_test(column.sql);
                 }
-                let param = self.bind(Bind::Text(Some(scalar_text(&value)?)));
-                format!("({column} {sql_op} {param}::{})", ty.pg())
+                let param = self.typed_value(&value, column.ty)?;
+                format!("({} {sql_op} {param})", column.sql)
             }
-            (Operand::Value(value), Operand::Column(name, ty)) => {
-                let column = self.column(&name, ty);
+            (Operand::Value(value), Operand::Sql(column)) => {
                 if value.is_null() {
-                    return null_test(column);
+                    return null_test(column.sql);
                 }
-                let param = self.bind(Bind::Text(Some(scalar_text(&value)?)));
-                format!("({param}::{} {sql_op} {column})", ty.pg())
+                let param = self.typed_value(&value, column.ty)?;
+                format!("({param} {sql_op} {})", column.sql)
             }
             (Operand::Unknown, _) | (_, Operand::Unknown) => unreachable!("handled above"),
             (Operand::Value(a), Operand::Value(b)) => {
@@ -444,31 +747,38 @@ impl Compiler<'_, '_> {
             return Ok(Operand::Condition(self.unknown()));
         }
         let sql = match (item, list) {
-            (Operand::Column(name, ty), Operand::Value(list)) => {
-                if ty == ColumnType::TextArray {
-                    return Err(format!("field `{name}` is itself a list"));
+            (Operand::Sql(column), Operand::Value(list)) => {
+                if column.ty == ColumnType::TextArray {
+                    return Err(format!("`{}` is itself a list", column.name));
                 }
                 let param = self.bind(Bind::Texts(texts(&list)?));
-                format!("({} = ANY({param}::{}[]))", self.column(&name, ty), ty.pg())
+                format!("({} = ANY({param}::{}[]))", column.sql, column.ty.pg())
             }
-            (Operand::Value(item), Operand::Column(name, ColumnType::TextArray)) => {
+            (
+                Operand::Value(item),
+                Operand::Sql(Sql {
+                    sql,
+                    ty: ColumnType::TextArray,
+                    ..
+                }),
+            ) => {
                 let item = if item.is_null() {
                     None
                 } else {
                     Some(scalar_text(&item)?)
                 };
                 let param = self.bind(Bind::Text(item));
-                format!(
-                    "({param}::text = ANY({}))",
-                    self.column(&name, ColumnType::TextArray)
-                )
+                format!("({param}::text = ANY({sql}))")
             }
-            (Operand::Column(a, at), Operand::Column(b, ColumnType::TextArray)) => {
-                format!(
-                    "({}::text = ANY({}))",
-                    self.column(&a, at),
-                    self.column(&b, ColumnType::TextArray)
-                )
+            (
+                Operand::Sql(a),
+                Operand::Sql(Sql {
+                    sql,
+                    ty: ColumnType::TextArray,
+                    ..
+                }),
+            ) => {
+                format!("({}::text = ANY({sql}))", a.sql)
             }
             (Operand::Value(item), Operand::Value(list)) => {
                 let found = !item.is_null() && texts(&list)?.contains(&scalar_text(&item)?);
@@ -495,16 +805,16 @@ mod tests {
             ("parent_id".to_owned(), ColumnType::Uuid),
             ("doc_date".to_owned(), ColumnType::Date),
             ("tags".to_owned(), ColumnType::TextArray),
+            ("name".to_owned(), ColumnType::Text),
+            ("created_at".to_owned(), ColumnType::Timestamp),
+            ("summary.total".to_owned(), ColumnType::Decimal),
+            ("summary.vendor_id".to_owned(), ColumnType::Uuid),
         ])
     }
 
     fn sql(rule: &str, user: Value) -> (String, Vec<Bind>) {
         let columns = columns();
-        let scope = SqlScope {
-            alias: "t",
-            columns: &columns,
-            user: &user,
-        };
+        let scope = SqlScope::new("t", &columns, &user);
         let mut binds = vec![];
         let sql = Rule::parse(rule)
             .unwrap()
@@ -728,11 +1038,11 @@ mod tests {
     fn refuses_what_cannot_filter() {
         assert!(refused("record.nope == 1").contains("no field `nope`"));
         assert!(refused("record.tags.all(t, t != 'x')").contains("cannot be used in a rule"));
-        assert!(refused("record.warehouse.startsWith('W')").contains("cannot be used in a rule"));
+        assert!(refused("record.warehouse.matches('W.*')").contains("cannot be used in a rule"));
         assert!(refused("record.qty + 1 > 2").contains("cannot be used in a rule"));
         assert!(refused("record.warehouse").contains("not true or false"));
         assert!(refused("record.qty > null").contains("null can only be tested"));
-        assert!(refused("record.a.b == 1").contains("not a plain field"));
+        assert!(refused("record.a.b == 1").contains("not a field a rule can use"));
         assert!(
             Rule::parse("company.id == 1")
                 .unwrap_err()
@@ -751,5 +1061,159 @@ mod tests {
         );
         assert_eq!(sql, "(t.warehouse = $1::text)");
         assert_eq!(binds, [text("x'; DROP TABLE account; --")]);
+    }
+
+    fn scoped(rule: &str, params: Value, zone: Option<&str>) -> (String, Vec<Bind>) {
+        let columns = columns();
+        let user = json!({});
+        let scope = SqlScope {
+            params: &params,
+            time_zone: zone,
+            ..SqlScope::new("t", &columns, &user)
+        };
+        let mut binds = vec![];
+        let sql = Rule::parse(rule)
+            .unwrap()
+            .to_sql(&scope, &mut binds)
+            .unwrap();
+        (sql, binds)
+    }
+
+    #[test]
+    fn text_methods_compile_to_like_with_the_wildcards_escaped() {
+        let (contains, binds) = sql("record.name.containsIgnoreCase('50%_off')", json!({}));
+        assert_eq!(contains, "(t.name ILIKE $1::text)");
+        assert_eq!(binds, vec![text("%50\\%\\_off%")]);
+        let (both, binds) = sql(
+            "record.name.startsWith('Ac') && record.name.endsWith('me')",
+            json!({}),
+        );
+        assert_eq!(both, "((t.name LIKE $1::text) AND (t.name LIKE $2::text))");
+        assert_eq!(binds, vec![text("Ac%"), text("%me")]);
+        let (equal, binds) = sql("record.name.equalsIgnoreCase('ACME')", json!({}));
+        assert_eq!(equal, "(t.name ILIKE $1::text)");
+        assert_eq!(binds, vec![text("ACME")]);
+        // In memory as in SQL; a null decides nothing.
+        let rule = Rule::parse("record.name.containsIgnoreCase('CORP')").unwrap();
+        assert!(
+            rule.matches(&json!({"name": "Acme Corp"}), &json!({}))
+                .unwrap()
+        );
+        assert!(
+            !Rule::parse("record.name.contains('corp')")
+                .unwrap()
+                .matches(&json!({"name": "Acme Corp"}), &json!({}))
+                .unwrap()
+        );
+        assert!(rule.matches(&json!({"name": null}), &json!({})).is_err());
+        assert!(refused("record.qty.contains('1')").contains("needs a text"));
+        assert!(
+            refused("record.name.contains(record.warehouse)").contains("needs a text to look for")
+        );
+        assert!(refused("record.name.matches('a.*')").contains("cannot be used"));
+    }
+
+    #[test]
+    fn a_field_of_a_json_column_is_cast_to_its_type() {
+        let (summary, binds) = sql(
+            "record.summary.total >= '100.50' && record.summary.vendor_id == null",
+            json!({}),
+        );
+        assert_eq!(
+            summary,
+            "(((t.summary->>'total')::numeric >= $1::numeric) AND ((t.summary->>'vendor_id')::uuid IS NULL))"
+        );
+        assert_eq!(binds, vec![text("100.50")]);
+        assert!(refused("record.summary.missing == 1").contains("not a field"));
+        assert!(refused("record.summary == 1").contains("no field `summary`"));
+    }
+
+    #[test]
+    fn params_are_bound_however_long() {
+        let ids: Vec<String> = (0..500)
+            .map(|i| format!("00000000-0000-0000-0000-{i:012}"))
+            .collect();
+        let (sql, binds) = scoped(
+            "record.owner_id in params.owners",
+            json!({"owners": ids}),
+            None,
+        );
+        assert_eq!(sql, "(t.owner_id = ANY($1::uuid[]))");
+        assert!(matches!(&binds[0], Bind::Texts(list) if list.len() == 500));
+        let columns = columns();
+        let user = json!({});
+        let scope = SqlScope::new("t", &columns, &user);
+        let err = Rule::parse("record.owner_id in params.owners")
+            .unwrap()
+            .to_sql(&scope, &mut vec![])
+            .unwrap_err();
+        assert!(err.to_string().contains("`params.owners` was not sent"));
+    }
+
+    #[test]
+    fn dates_relative_to_today_in_the_readers_zone() {
+        let (sql, binds) = scoped(
+            "record.doc_date >= startOfMonth(addMonths(today(), -1)) && record.doc_date <= endOfMonth(addMonths(today(), -1))",
+            Value::Null,
+            Some("Europe/Berlin"),
+        );
+        assert_eq!(
+            sql,
+            "((t.doc_date >= date_trunc('month', ((((now() AT TIME ZONE $1::text)::date) + make_interval(months => $2::int))::date)::timestamp)::date) \
+AND (t.doc_date <= (date_trunc('month', ((((now() AT TIME ZONE $3::text)::date) + make_interval(months => $4::int))::date)::timestamp) + interval '1 month' - interval '1 day')::date))"
+        );
+        assert_eq!(
+            binds,
+            vec![
+                text("Europe/Berlin"),
+                text("-1"),
+                text("Europe/Berlin"),
+                text("-1")
+            ]
+        );
+        let (sql, _) = scoped("record.doc_date > addDays(today(), -30)", Value::Null, None);
+        assert_eq!(sql, "(t.doc_date > ((current_date) + $1::int))");
+        assert!(refused("record.doc_date > addDays(today(), 1.5)").contains("whole number"));
+        assert!(refused("record.doc_date > addDays(record.name, 1)").contains("needs a date"));
+    }
+
+    #[test]
+    fn a_day_against_a_timestamp_is_midnight_in_the_readers_zone() {
+        let (sql, binds) = scoped(
+            "record.created_at >= '2026-11-18'",
+            Value::Null,
+            Some("America/New_York"),
+        );
+        assert_eq!(
+            sql,
+            "(t.created_at >= ($1::timestamp AT TIME ZONE $2::text))"
+        );
+        assert_eq!(binds, vec![text("2026-11-18"), text("America/New_York")]);
+        // A moment with its own offset keeps it.
+        let (sql, _) = scoped(
+            "record.created_at >= '2026-11-18T10:00:00Z'",
+            Value::Null,
+            Some("America/New_York"),
+        );
+        assert_eq!(sql, "(t.created_at >= $1::timestamptz)");
+        let (sql, _) = scoped("record.created_at < today()", Value::Null, Some("UTC"));
+        assert_eq!(
+            sql,
+            "(t.created_at < (((now() AT TIME ZONE $1::text)::date)::timestamp AT TIME ZONE $2::text))"
+        );
+        // Without a zone, as before.
+        let (sql, _) = scoped("record.created_at >= '2026-11-18'", Value::Null, None);
+        assert_eq!(sql, "(t.created_at >= $1::timestamptz)");
+    }
+
+    #[test]
+    fn a_kept_rule_cannot_read_the_clock_or_params() {
+        let stored = |s: &str| Rule::parse_stored(s).unwrap_err().to_string();
+        assert!(
+            stored("record.doc_date >= today()")
+                .contains("`today()` can be used in a list's condition")
+        );
+        assert!(stored("record.owner_id in params.x").contains("`params` are sent"));
+        assert!(Rule::parse_stored("record.name.startsWithIgnoreCase('a')").is_ok());
     }
 }

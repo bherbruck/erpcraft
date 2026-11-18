@@ -990,6 +990,10 @@ pub struct DocumentQuery {
     pub summary: Vec<(String, String)>,
     /// Do not count the whole list: `total` is then the size of the page.
     pub skip_total: bool,
+    /// Values the condition reads as `params.<name>`; null when none.
+    pub params: Value,
+    /// The reader's time zone (IANA), for `today()` and days against timestamps.
+    pub time_zone: Option<String>,
 }
 
 /// The header fields a list of documents can be sorted by. A list can
@@ -1053,7 +1057,23 @@ pub async fn list(
         );
     }
     if let Some(source) = &query.condition {
-        let sql = caller_condition(ctx.actor, source, &columns, &mut binds)?;
+        // The summary's fields too, as `record.summary.<field>`, those the
+        // reader may filter by: a copy of a linked record's field only for
+        // one who reads every such record.
+        let mut columns = columns.clone();
+        for field in &meta.summary {
+            if let Some(ty) = field.ty.column_type()
+                && may_query_summary(ctx, meta, field).is_ok()
+            {
+                columns.insert(format!("summary.{}", field.name), ty);
+            }
+        }
+        crate::entity::check_time_zone(&mut *ctx.conn, query.time_zone.as_deref()).await?;
+        let inputs = crate::entity::ConditionInputs {
+            params: &query.params,
+            time_zone: query.time_zone.as_deref(),
+        };
+        let sql = caller_condition(ctx.actor, source, &columns, inputs, &mut binds)?;
         let _ = write!(conditions, " AND ({sql})");
     }
     let permission = format!("{doc_type}:read");

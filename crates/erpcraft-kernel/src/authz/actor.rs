@@ -488,11 +488,7 @@ impl Actor {
             return Ok(None);
         }
         let user = self.rule_user();
-        let sql_scope = SqlScope {
-            alias: scope.alias,
-            columns: scope.columns,
-            user: &user,
-        };
+        let sql_scope = SqlScope::new(scope.alias, scope.columns, &user);
         let target = if global_only {
             Target::Global
         } else {

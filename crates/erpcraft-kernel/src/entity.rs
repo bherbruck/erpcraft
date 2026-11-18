@@ -67,6 +67,12 @@ pub struct ListQuery {
     pub active_only: bool,
     /// Do not count the whole list: `total` is then the size of the page.
     pub skip_total: bool,
+    /// Values the condition reads as `params.<name>`, bound as parameters:
+    /// `record.customer_id in params.customers`. Null when none.
+    pub params: Value,
+    /// The reader's time zone (IANA): what day `today()` is, and where a
+    /// day starts when a timestamp is compared with one.
+    pub time_zone: Option<String>,
 }
 
 /// One page of a list, with the number of records the whole list has.
@@ -90,23 +96,68 @@ pub(crate) fn like_pattern(q: &str) -> String {
     pattern
 }
 
+/// What a caller sends with a condition besides its text.
+#[derive(Clone, Copy)]
+pub(crate) struct ConditionInputs<'a> {
+    pub params: &'a Value,
+    pub time_zone: Option<&'a str>,
+}
+
 /// Compile a condition the caller wrote into SQL over the row aliased `t`.
 /// It can refer only to `columns`; leave out any the caller may not see.
 pub(crate) fn caller_condition(
     actor: &Actor,
     source: &str,
     columns: &BTreeMap<String, ColumnType>,
+    inputs: ConditionInputs<'_>,
     binds: &mut Vec<Bind>,
 ) -> Result<String> {
     let rule = Rule::parse(source)?;
-    rule.check(columns)?;
     let user = actor.rule_user();
     let scope = SqlScope {
-        alias: "t",
-        columns,
-        user: &user,
+        params: inputs.params,
+        time_zone: inputs.time_zone,
+        ..SqlScope::new("t", columns, &user)
     };
     rule.to_sql(&scope, binds)
+}
+
+/// Time zones the database has said it knows, so each is asked once.
+static KNOWN_ZONES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Refuse a time zone the database does not know before a condition uses
+/// it, so a mistake is the caller's error and not a failed query.
+pub(crate) async fn check_time_zone(
+    conn: &mut sqlx::PgConnection,
+    zone: Option<&str>,
+) -> Result<()> {
+    let Some(zone) = zone else {
+        return Ok(());
+    };
+    let known = |zones: &std::collections::HashSet<String>| zones.contains(zone);
+    if KNOWN_ZONES
+        .lock()
+        .map(|zones| known(&zones))
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = $1)")
+            .bind(zone)
+            .fetch_one(&mut *conn)
+            .await?;
+    if !exists {
+        return Err(Error::field(
+            "time_zone",
+            "is not a time zone the database knows; use a name such as Europe/Berlin",
+        ));
+    }
+    if let Ok(mut zones) = KNOWN_ZONES.lock() {
+        zones.insert(zone.to_owned());
+    }
+    Ok(())
 }
 
 /// Split `-name` into the field and whether it sorts descending.
@@ -365,7 +416,12 @@ pub async fn list(ctx: &mut Ctx<'_>, entity: &str, query: &ListQuery) -> Result<
             .filter(|(name, _)| !actor.may_withhold(&permission, name))
             .map(|(name, ty)| (name.clone(), *ty))
             .collect();
-        let sql = caller_condition(actor, source, &visible, &mut binds)?;
+        check_time_zone(&mut *ctx.conn, query.time_zone.as_deref()).await?;
+        let inputs = ConditionInputs {
+            params: &query.params,
+            time_zone: query.time_zone.as_deref(),
+        };
+        let sql = caller_condition(actor, source, &visible, inputs, &mut binds)?;
         let _ = write!(conditions, " AND ({sql})");
     }
     if let Some(filter) =

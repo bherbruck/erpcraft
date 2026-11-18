@@ -336,7 +336,7 @@ async fn a_rule_is_checked_when_its_role_is_saved() {
             "rule `record.code ==`",
         ),
         (
-            json!([{ "allow": "account:read", "where": "record.code.startsWith('1')" }]),
+            json!([{ "allow": "account:read", "where": "record.code.matches('1.*')" }]),
             "cannot be used in a rule",
         ),
         (
