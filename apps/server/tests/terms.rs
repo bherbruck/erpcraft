@@ -1784,7 +1784,7 @@ async fn planning_suggests_and_drafts_what_to_buy() {
     assert_eq!(order["status"], "draft");
     assert_eq!(order["body"]["vendor_id"], f.vendor.as_str());
     assert_eq!(dec(&order["body"]["lines"][0]["qty"]), 36.0);
-    // On order now: nothing more to buy.
+    // Planned now, though not on order yet: nothing more to buy.
     let (_, out) = t
         .command(
             &t.admin,
@@ -1792,10 +1792,9 @@ async fn planning_suggests_and_drafts_what_to_buy() {
             json!({ "company_id": f.c.id, "item_id": f.item }),
         )
         .await;
-    assert_eq!(
-        out["suggestions"].as_array().unwrap().len(),
-        1,
-        "a draft is not on order yet: {out}"
+    assert!(
+        out["suggestions"].as_array().unwrap().is_empty(),
+        "a draft is planned: {out}"
     );
     // What is to be made is drafted as a production order by its bill.
     let (status, made) = t

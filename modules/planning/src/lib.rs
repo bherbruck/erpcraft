@@ -6,10 +6,12 @@
 //! and manufacturing, through their public functions, what their open
 //! documents will still move: [`erpcraft_sales::open_demand`],
 //! [`erpcraft_purchasing::open_supply`] and
-//! [`erpcraft_manufacturing::released`]. Its own records are reorder rules
-//! (`reorder_rule`): the least of an item a company wants in a warehouse,
-//! how far to fill up, in what multiples, and from whom. It suggests; it
-//! orders nothing by itself, but drafts purchase orders when asked.
+//! [`erpcraft_manufacturing::released`]. What draft purchase and production
+//! orders would bring in (`planned`) it reads itself. Its own records are
+//! reorder rules (`reorder_rule`): the least of an item a company wants in
+//! a warehouse, how far to fill up, in what multiples, whether it is bought
+//! or made, and from whom. It suggests; it orders nothing by itself, but
+//! drafts purchase and production orders when asked.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -36,11 +38,18 @@ impl Module for PlanningModule {
     }
 
     fn migrations(&self) -> Vec<Migration> {
-        vec![Migration {
-            version: 1,
-            name: "reorder_rule",
-            sql: include_str!("../migrations/0001_reorder_rule.sql"),
-        }]
+        vec![
+            Migration {
+                version: 1,
+                name: "reorder_rule",
+                sql: include_str!("../migrations/0001_reorder_rule.sql"),
+            },
+            Migration {
+                version: 2,
+                name: "procure",
+                sql: include_str!("../migrations/0002_procure.sql"),
+            },
+        ]
     }
 
     fn entities(&self) -> Vec<EntityMeta> {
@@ -81,6 +90,18 @@ impl Module for PlanningModule {
                         .quantity()
                         .unit_of("item_id", "uom")
                         .help("A pack or batch size: suggestions are rounded up to it."),
+                )
+                .field(
+                    FieldMeta::new(
+                        "procure",
+                        "Bought or made",
+                        FieldType::labelled(&[("buy", "Bought"), ("make", "Made")]),
+                    )
+                    .help(
+                        "Empty: bought when the rule names a vendor, made when the item has \
+                         an active bill of materials and the rule names no vendor, bought \
+                         otherwise.",
+                    ),
                 )
                 .field(
                     FieldMeta::new("vendor_id", "Vendor", FieldType::link("vendor"))
@@ -150,6 +171,10 @@ pub struct AvailabilityRow {
     /// Available plus what is on order and in production: what is left
     /// once every open order is done. Below zero, the item falls short.
     pub projected: Decimal,
+    /// What draft purchase orders and draft production orders would bring
+    /// in: not on order yet, and not in `projected`, but planned, so that
+    /// planning does not suggest it again.
+    pub planned: Decimal,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -172,8 +197,9 @@ impl Command for Availability {
              still have to deliver (committed), what released production orders still have to \
              consume, what can still be promised (available), what open purchase orders and \
              released production orders will bring in, and what is left once every open order \
-             is done (projected; below zero the item falls short). Quantities are in each \
-             item's unit. Takes the right to read stock entries, sales orders, purchase orders \
+             is done (projected; below zero the item falls short); and apart from that, what \
+             draft purchase and production orders would bring in (planned). Quantities are in \
+             each item's unit. Takes the right to read stock entries, sales orders, purchase orders \
              and production orders of the company.",
         )
         .report("Stock availability")
@@ -220,6 +246,7 @@ pub async fn availability(
     let committed = erpcraft_sales::open_demand(&mut *ctx.conn, company).await?;
     let on_order = erpcraft_purchasing::open_supply(&mut *ctx.conn, company).await?;
     let (needed, making) = erpcraft_manufacturing::released(&mut *ctx.conn, company).await?;
+    let planned = drafted(&mut *ctx.conn, company).await?;
 
     let mut rows: BTreeMap<(Uuid, Uuid), AvailabilityRow> = BTreeMap::new();
     let mut add = |list: Vec<(Uuid, Uuid, Decimal)>,
@@ -245,6 +272,7 @@ pub async fn availability(
     add(needed, |r| &mut r.needed_for_production);
     add(on_order, |r| &mut r.on_order);
     add(making, |r| &mut r.in_production);
+    add(planned, |r| &mut r.planned);
 
     let items = ctx.actor.can_any("item:read");
     let warehouses = ctx.actor.can("warehouse:read", company);
@@ -286,6 +314,7 @@ pub async fn availability(
                 &mut row.on_order,
                 &mut row.in_production,
                 &mut row.projected,
+                &mut row.planned,
             ] {
                 *qty = qty.normalize();
             }
@@ -305,6 +334,47 @@ pub async fn availability(
             ))
     });
     Ok(out)
+}
+
+/// What draft purchase orders and draft production orders of `company`
+/// would bring in, per item and warehouse: planned, not ordered. A draft
+/// production order's components are not counted: they are worked out when
+/// it is released.
+async fn drafted(
+    conn: &mut erpcraft_kernel::PgConnection,
+    company: Uuid,
+) -> Result<Vec<(Uuid, Uuid, Decimal)>> {
+    Ok(sqlx::query_as(
+        "SELECT item_id, warehouse_id, sum(qty) FROM (
+             SELECT l.item_id, l.warehouse_id, l.qty
+             FROM purchase_order_line l JOIN document d ON d.id = l.document_id
+             WHERE d.company_id = $1 AND d.status = 'draft' AND l.item_id IS NOT NULL
+               AND l.warehouse_id IS NOT NULL
+             UNION ALL
+             SELECT b.item_id, o.warehouse_id, o.qty
+             FROM production_order o JOIN bom b ON b.id = o.bom_id
+             JOIN document d ON d.id = o.document_id
+             WHERE d.company_id = $1 AND d.status = 'draft'
+         ) drafts
+         GROUP BY item_id, warehouse_id HAVING sum(qty) > 0",
+    )
+    .bind(company)
+    .fetch_all(&mut *conn)
+    .await?)
+}
+
+/// Planning's draft commands of one company run one at a time: each
+/// counts what the other drafted, so two runs at once do not draft the same
+/// need twice. Held until the transaction ends.
+async fn one_draft_at_a_time(
+    conn: &mut erpcraft_kernel::PgConnection,
+    company: Uuid,
+) -> Result<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('planning.draft'), hashtext($1::text))")
+        .bind(company)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
 }
 
 // ------------------------------------------------------------- suggestions
@@ -330,18 +400,29 @@ pub struct Suggestion {
     pub warehouse_code: Option<String>,
     /// What is left once every open order is done.
     pub projected: Decimal,
+    /// What draft orders would bring in, netted off before suggesting.
+    pub planned: Decimal,
     /// The reorder rule's minimum; zero without a rule.
     pub min_qty: Decimal,
     /// What to order or make: up to the rule's fill-up quantity (or its
-    /// minimum, or zero without a rule), rounded up to its multiple.
+    /// minimum, or zero without a rule), less what is planned, rounded up
+    /// to its multiple.
     pub qty: Decimal,
-    /// `make` when the item has an active bill of materials, else `buy`.
+    /// `buy` or `make`: what the rule says; else `buy` when the rule names a
+    /// vendor, `make` when the item has an active bill of materials, else
+    /// `buy`.
     pub source: String,
-    /// The vendor the rule names, for an item bought.
+    /// The vendor the rule names, for an item bought. Absent for a caller
+    /// who may not read reorder rules.
     pub vendor_id: Option<Uuid>,
     /// The price a purchase order would ask: the rule's, else the last
-    /// price paid on a purchase order of the company.
+    /// price paid on an open or closed purchase order of the company.
+    /// Absent when there is none, and for a caller who may not read reorder
+    /// rules.
     pub unit_price: Option<Decimal>,
+    /// Why the suggestion cannot be drafted as it stands, such as an item
+    /// to be made that has no active bill of materials.
+    pub note: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -359,11 +440,32 @@ struct Rule {
     multiple: Option<Decimal>,
     vendor_id: Option<Uuid>,
     unit_price: Option<Decimal>,
+    procure: Option<String>,
 }
 
 /// What to order or make so that every item ends up at least at its
-/// reorder rule's minimum, or not below zero where it has no rule.
+/// reorder rule's minimum, or not below zero where it has no rule. The
+/// rule's vendor and price are shown only to a caller who may read reorder
+/// rules.
 pub async fn suggestions(
+    ctx: &mut Ctx<'_>,
+    company: Uuid,
+    only_item: Option<Uuid>,
+    only_warehouse: Option<Uuid>,
+) -> Result<Vec<Suggestion>> {
+    let mut out = plan(ctx, company, only_item, only_warehouse).await?;
+    if !ctx.actor.can("reorder_rule:read", company) {
+        for s in &mut out {
+            s.vendor_id = None;
+            s.unit_price = None;
+        }
+    }
+    Ok(out)
+}
+
+/// The suggestions in full, with the rules' vendors and prices, for the
+/// draft commands, which require the right to read the rules.
+async fn plan(
     ctx: &mut Ctx<'_>,
     company: Uuid,
     only_item: Option<Uuid>,
@@ -371,7 +473,7 @@ pub async fn suggestions(
 ) -> Result<Vec<Suggestion>> {
     let rows = availability(ctx, company, only_item, only_warehouse).await?;
     let rules: Vec<Rule> = sqlx::query_as(
-        "SELECT item_id, warehouse_id, min_qty, max_qty, multiple, vendor_id, unit_price
+        "SELECT item_id, warehouse_id, min_qty, max_qty, multiple, vendor_id, unit_price, procure
          FROM reorder_rule WHERE company_id = $1",
     )
     .bind(company)
@@ -403,22 +505,30 @@ pub async fn suggestions(
             .iter()
             .find(|r| r.item_id == row.item_id && r.warehouse_id == row.warehouse_id);
         let min = rule.map_or(Decimal::ZERO, |r| r.min_qty);
-        if row.projected >= min {
+        // Drafts count: what they would bring in is not suggested again.
+        let expected = row.projected + row.planned;
+        if expected >= min {
             continue;
         }
         let target = rule.map_or(Decimal::ZERO, |r| r.max_qty.unwrap_or(r.min_qty));
-        let mut qty = target - row.projected;
+        let mut qty = target - expected;
         if let Some(multiple) = rule.and_then(|r| r.multiple) {
             qty = (qty / multiple).ceil() * multiple;
         }
         if qty <= Decimal::ZERO {
             continue;
         }
-        let source = if made.contains(&row.item_id) {
-            "make"
-        } else {
-            "buy"
+        let has_bill = made.contains(&row.item_id);
+        let source = match rule.and_then(|r| r.procure.as_deref()) {
+            Some("make") => "make",
+            Some(_) => "buy",
+            None if rule.is_some_and(|r| r.vendor_id.is_some()) => "buy",
+            None if has_bill => "make",
+            None => "buy",
         };
+        let note = (source == "make" && !has_bill)
+            .then(|| "to be made, but the item has no active bill of materials".to_owned());
+        // The last price paid: on an order placed, not on a draft.
         let unit_price = match rule.and_then(|r| r.unit_price) {
             Some(price) => Some(price),
             None if source == "buy" => {
@@ -427,7 +537,7 @@ pub async fn suggestions(
                      JOIN document d ON d.id = l.document_id
                      JOIN purchase_order o ON o.document_id = l.document_id
                      WHERE d.company_id = $1 AND l.item_id = $2 AND o.currency IS NULL
-                       AND d.status <> 'cancelled'
+                       AND d.status IN ('open', 'closed')
                      ORDER BY d.doc_date DESC, d.created_at DESC LIMIT 1",
                 )
                 .bind(company)
@@ -443,20 +553,36 @@ pub async fn suggestions(
             warehouse_id: row.warehouse_id,
             warehouse_code: row.warehouse_code.clone(),
             projected: row.projected,
+            planned: row.planned,
             min_qty: min.normalize(),
             qty: qty.normalize(),
             source: source.into(),
-            vendor_id: rule.and_then(|r| r.vendor_id),
+            vendor_id: if source == "buy" {
+                rule.and_then(|r| r.vendor_id)
+            } else {
+                None
+            },
             unit_price: unit_price.map(|p: Decimal| p.normalize()),
+            note,
         });
     }
     // Codes for rows that came from rules alone.
-    for s in out.iter_mut().filter(|s| s.item_code.is_none()) {
-        if ctx.actor.can_any("item:read") {
+    let items = ctx.actor.can_any("item:read");
+    let warehouses = ctx.actor.can("warehouse:read", company);
+    for s in out.iter_mut() {
+        if items && s.item_code.is_none() {
             s.item_code = sqlx::query_scalar("SELECT code FROM item WHERE id = $1")
                 .bind(s.item_id)
                 .fetch_optional(&mut *ctx.conn)
                 .await?;
+        }
+        if warehouses && s.warehouse_code.is_none() {
+            s.warehouse_code =
+                sqlx::query_scalar("SELECT code FROM warehouse WHERE id = $1 AND company_id = $2")
+                    .bind(s.warehouse_id)
+                    .bind(company)
+                    .fetch_optional(&mut *ctx.conn)
+                    .await?;
         }
     }
     Ok(out)
@@ -475,10 +601,13 @@ impl Command for Suggestions {
             "What to order or make, per item and warehouse, so that what is left once every \
              open order is done (see stock.availability) is at least the reorder rule's \
              minimum, or not below zero for an item without a rule: the quantity fills up to \
-             the rule's fill-up quantity, rounded up to its multiple. Each suggestion says \
-             whether the item is made (it has an active bill of materials) or bought, and for \
-             one bought the rule's vendor and the price a purchase order would ask. Orders \
-             nothing; planning.draft_purchase_orders drafts the purchase orders.",
+             the rule's fill-up quantity, less what draft orders already plan, rounded up to its \
+             multiple. Each suggestion says whether the item is bought or made (the rule's \
+             choice; else bought from the rule's vendor, made when it has an active bill of \
+             materials, bought otherwise), and for one bought the rule's vendor and the price a \
+             purchase order would ask (shown with the right to read reorder rules). Orders \
+             nothing; planning.draft_purchase_orders and planning.draft_production_orders draft \
+             the orders.",
         )
         .report("Planning suggestions")
         .permission("stock_entry:read")
@@ -511,6 +640,9 @@ pub struct DraftOutput {
     /// Suggestions to buy that name no vendor: no order was drafted for
     /// them.
     without_vendor: Vec<Suggestion>,
+    /// Suggestions to buy with no price: neither the rule's nor one paid
+    /// before. No line is drafted at a price nobody agreed to.
+    without_price: Vec<Suggestion>,
 }
 
 pub struct DraftPurchaseOrders;
@@ -526,7 +658,9 @@ impl Command for DraftPurchaseOrders {
             "Draft a purchase order per vendor for what planning.suggestions says to buy, from \
              the vendor each item's reorder rule names, at the rule's price or else the last \
              price paid. The orders are drafts in the accounting currency: check and approve \
-             them as any other. Suggestions without a vendor are returned, not ordered.",
+             them as any other; until then they count as planned, so running it again drafts \
+             nothing more. Suggestions without a vendor or a price are returned, not ordered. \
+             Takes the right to read reorder rules.",
         )
         .permission("purchase_order:create")
     }
@@ -534,26 +668,33 @@ impl Command for DraftPurchaseOrders {
     async fn run(&self, ctx: &mut Ctx<'_>, input: DraftInput) -> Result<DraftOutput> {
         let company = input.company_id;
         ctx.require("purchase_order:create", company)?;
+        ctx.require("reorder_rule:read", company)?;
         let doc_date = input
             .doc_date
             .unwrap_or_else(|| erpcraft_kernel::Utc::now().date_naive());
-        let buy: Vec<Suggestion> = suggestions(ctx, company, None, None)
+        one_draft_at_a_time(&mut *ctx.conn, company).await?;
+        let buy: Vec<Suggestion> = plan(ctx, company, None, None)
             .await?
             .into_iter()
             .filter(|s| s.source == "buy")
             .collect();
         let mut by_vendor: BTreeMap<Uuid, Vec<&Suggestion>> = BTreeMap::new();
         let mut without_vendor = vec![];
+        let mut without_price = vec![];
         for s in &buy {
             match s.vendor_id {
                 Some(vendor) if input.vendor_id.is_none_or(|v| v == vendor) => {
-                    by_vendor.entry(vendor).or_default().push(s)
+                    if s.unit_price.is_some() {
+                        by_vendor.entry(vendor).or_default().push(s)
+                    } else {
+                        without_price.push(s.clone())
+                    }
                 }
                 Some(_) => {}
                 None => without_vendor.push(s.clone()),
             }
         }
-        if by_vendor.is_empty() && without_vendor.is_empty() {
+        if by_vendor.is_empty() {
             ctx.no_change();
         }
         let mut ids = vec![];
@@ -565,7 +706,7 @@ impl Command for DraftPurchaseOrders {
                         "item_id": s.item_id,
                         "warehouse_id": s.warehouse_id,
                         "qty": s.qty,
-                        "unit_price": s.unit_price.unwrap_or_default(),
+                        "unit_price": s.unit_price,
                     })
                 })
                 .collect();
@@ -585,6 +726,7 @@ impl Command for DraftPurchaseOrders {
         Ok(DraftOutput {
             purchase_order_ids: ids,
             without_vendor,
+            without_price,
         })
     }
 }
@@ -602,6 +744,9 @@ pub struct DraftProductionInput {
 pub struct DraftProductionOutput {
     /// The production orders drafted, one per item and warehouse.
     production_order_ids: Vec<Uuid>,
+    /// Suggestions to make for items without an active bill of materials:
+    /// no order was drafted for them.
+    without_bill: Vec<Suggestion>,
 }
 
 pub struct DraftProductionOrders;
@@ -617,7 +762,10 @@ impl Command for DraftProductionOrders {
             "Draft a production order for everything planning.suggestions says to make, by the \
              item's active bill of materials (the first by code when it has several), in the \
              warehouse that needs it. The orders are drafts: check and release them as any \
-             other. Their components are not planned until they are released.",
+             other; until then what they make counts as planned, so running it again drafts \
+             nothing more. Their components are not planned until they are released. Items to \
+             be made without an active bill are returned, not drafted. Takes the right to read \
+             reorder rules and bills of materials.",
         )
         .permission("production_order:create")
     }
@@ -629,25 +777,38 @@ impl Command for DraftProductionOrders {
     ) -> Result<DraftProductionOutput> {
         let company = input.company_id;
         ctx.require("production_order:create", company)?;
+        ctx.require("reorder_rule:read", company)?;
+        // Bills of materials are shared by all companies.
+        ctx.actor.require_global("bom:read")?;
         let doc_date = input
             .doc_date
             .unwrap_or_else(|| erpcraft_kernel::Utc::now().date_naive());
-        let make: Vec<Suggestion> = suggestions(ctx, company, None, None)
-            .await?
-            .into_iter()
-            .filter(|s| s.source == "make")
-            .collect();
+        one_draft_at_a_time(&mut *ctx.conn, company).await?;
+        let (make, without_bill): (Vec<Suggestion>, Vec<Suggestion>) =
+            plan(ctx, company, None, None)
+                .await?
+                .into_iter()
+                .filter(|s| s.source == "make")
+                .partition(|s| s.note.is_none());
         if make.is_empty() {
             ctx.no_change();
         }
         let mut ids = vec![];
         for s in make {
-            let bom: Uuid = sqlx::query_scalar(
+            let bom: Option<Uuid> = sqlx::query_scalar(
                 "SELECT id FROM bom WHERE item_id = $1 AND active ORDER BY code LIMIT 1",
             )
             .bind(s.item_id)
-            .fetch_one(&mut *ctx.conn)
+            .fetch_optional(&mut *ctx.conn)
             .await?;
+            // Retired since the suggestion was worked out, a moment ago.
+            let Some(bom) = bom else {
+                return Err(erpcraft_kernel::Error::state(format!(
+                    "item {} has no active bill of materials any more; nothing was drafted, \
+                     run planning again",
+                    s.item_code.as_deref().unwrap_or(&s.item_id.to_string())
+                )));
+            };
             let view = document::create(
                 ctx,
                 NewDocument {
@@ -663,6 +824,7 @@ impl Command for DraftProductionOrders {
         }
         Ok(DraftProductionOutput {
             production_order_ids: ids,
+            without_bill,
         })
     }
 }
