@@ -75,7 +75,7 @@ pub fn render_with(
     let body = find(&dom.document, "body").ok_or("the page has no body")?;
     let mut layout = Layout::new();
     layout.block_children(&body, MARGIN_X, PAGE_W - 2.0 * MARGIN_X, Style::default());
-    if layout.pages.len() > MAX_PAGES {
+    if layout.overflow || layout.pages.len() > MAX_PAGES {
         return Err(format!("the document is longer than {MAX_PAGES} pages"));
     }
     let pdf = paint(&layout.pages, title, attachments)?;
@@ -424,11 +424,20 @@ enum Op {
     },
 }
 
+/// How deep elements are followed; what is deeper is not laid out.
+const MAX_DEPTH: usize = 40;
+
 struct Layout {
     pages: Vec<Vec<Op>>,
     y: f32,
     /// Columns are laid out without breaking the page.
     no_break: bool,
+    /// How deep in the page's elements the layout is.
+    depth: usize,
+    /// More pages were needed than [`MAX_PAGES`].
+    overflow: bool,
+    /// Each image once, however often it is drawn.
+    images: std::collections::HashMap<String, std::rc::Rc<(String, Vec<u8>)>>,
 }
 
 impl Layout {
@@ -437,6 +446,9 @@ impl Layout {
             pages: vec![vec![]],
             y: MARGIN_Y,
             no_break: false,
+            depth: 0,
+            overflow: false,
+            images: Default::default(),
         }
     }
 
@@ -449,6 +461,13 @@ impl Layout {
     fn room(&mut self, height: f32) -> bool {
         if self.no_break || self.y + height <= PAGE_H - MARGIN_Y || self.y <= MARGIN_Y + 1.0 {
             return false;
+        }
+        if self.pages.len() >= MAX_PAGES {
+            // Laid out no further: the render is refused.
+            self.overflow = true;
+            self.pages.last_mut().expect("a page").clear();
+            self.y = MARGIN_Y;
+            return true;
         }
         self.pages.push(vec![]);
         self.y = MARGIN_Y;
@@ -520,6 +539,15 @@ impl Layout {
     }
 
     fn element(&mut self, node: &Handle, x: f32, w: f32, outer: Style) {
+        if self.depth >= MAX_DEPTH || self.overflow {
+            return;
+        }
+        self.depth += 1;
+        self.element_inner(node, x, w, outer);
+        self.depth -= 1;
+    }
+
+    fn element_inner(&mut self, node: &Handle, x: f32, w: f32, outer: Style) {
         let name = tag(node).unwrap_or_default();
         let style = styled(node, outer);
         match name.as_str() {
@@ -594,7 +622,34 @@ impl Layout {
         let gap = 8.0 * MM;
         let n = children.len() as f32;
         let cw = (w - gap * (n - 1.0)) / n;
-        self.room(20.0 * MM);
+        // How tall the columns are: laid out on a page of their own first.
+        let mut trial = Layout::new();
+        trial.no_break = true;
+        trial.depth = self.depth;
+        trial.y = 0.0;
+        trial.side_by_side(node, &children, x, cw, gap, style);
+        let height = trial.y;
+        if height > PAGE_H - 2.0 * MARGIN_Y {
+            // Taller than a page: one under the other, breaking where they
+            // must.
+            for child in &children {
+                self.element(child, x, w, style);
+            }
+            return;
+        }
+        self.room(height.max(20.0 * MM));
+        self.side_by_side(node, &children, x, cw, gap, style);
+    }
+
+    fn side_by_side(
+        &mut self,
+        node: &Handle,
+        children: &[Handle],
+        x: f32,
+        cw: f32,
+        gap: f32,
+        style: Style,
+    ) {
         let top = self.y;
         let mut bottom = top;
         let was = self.no_break;
@@ -638,13 +693,12 @@ impl Layout {
         let (w, h) = (iw as f32 * scale, ih as f32 * scale);
         self.room(h);
         let y = self.y;
-        self.ops().push(Op::Image {
-            x,
-            y,
-            w,
-            h,
-            data: std::rc::Rc::new((kind.to_owned(), bytes)),
-        });
+        let data = self
+            .images
+            .entry(src.clone())
+            .or_insert_with(|| std::rc::Rc::new((kind.to_owned(), bytes)))
+            .clone();
+        self.ops().push(Op::Image { x, y, w, h, data });
         self.y += h + 2.0 * MM;
     }
 
@@ -761,7 +815,7 @@ impl Layout {
             (h, wrapped, vpad, new_page)
         };
         let mut i = 0;
-        while i < rows.len() {
+        while i < rows.len() && !self.overflow {
             let row = &rows[i];
             let (h, wrapped, vpad, new_page) = draw_row(self, row);
             if new_page && lines_table && !row.head {
@@ -772,6 +826,57 @@ impl Layout {
                     self.y += hh;
                     self.rule(tx, tx + tw, 0.75, 0.0);
                 }
+            }
+            if h > PAGE_H - 2.0 * MARGIN_Y && !row.head {
+                // Taller than a page: the row goes on, line by line, on the
+                // pages after, each with the table's head.
+                let mut rest = wrapped;
+                loop {
+                    let room = PAGE_H - MARGIN_Y - self.y - 2.0 * vpad;
+                    let mut part = vec![];
+                    let mut left = vec![];
+                    for lines in rest {
+                        let mut used = 0.0;
+                        let mut take = 0;
+                        while take < lines.len() && used + lines[take].height <= room {
+                            used += lines[take].height;
+                            take += 1;
+                        }
+                        let (now, later) = lines.split_at(take);
+                        part.push(now.to_vec());
+                        left.push(later.to_vec());
+                    }
+                    let tallest = part
+                        .iter()
+                        .map(|l| l.iter().map(|l| l.height).sum::<f32>())
+                        .fold(0.0, f32::max);
+                    if tallest > 0.0 {
+                        self.cells(&row.cells, &part, &widths, tx, pad, vpad);
+                        self.y += tallest + 2.0 * vpad;
+                    }
+                    rest = left;
+                    if rest.iter().all(Vec::is_empty) || self.overflow {
+                        break;
+                    }
+                    if !self.room(PAGE_H) && tallest == 0.0 {
+                        // Not even one line fits an empty page: give up on
+                        // the rest rather than loop.
+                        break;
+                    }
+                    if lines_table {
+                        for &hr in &head_rows {
+                            let (hh, hw, hv, _) = draw_row(self, &rows[hr]);
+                            self.cells(&rows[hr].cells, &hw, &widths, tx, pad, hv);
+                            self.y += hh;
+                            self.rule(tx, tx + tw, 0.75, 0.0);
+                        }
+                    }
+                }
+                if lines_table {
+                    self.rule(tx, tx + tw, 0.5, 0.87);
+                }
+                i += 1;
+                continue;
             }
             if row.grand {
                 self.rule(tx, tx + tw, 1.5, 0.0);
@@ -1017,5 +1122,47 @@ mod tests {
             "the file is named in the PDF"
         );
         assert!(text.contains("pdfaid"), "PDF/A metadata is written");
+    }
+
+    #[test]
+    fn deep_and_long_pages_are_bounded() {
+        // Nesting deeper than the layout follows is left out, not a crash.
+        let deep = format!(
+            "<html><body>{}x{}</body></html>",
+            "<div>".repeat(5000),
+            "</div>".repeat(5000)
+        );
+        assert!(render(&deep, "deep", vec![]).is_ok());
+        // More pages than allowed is refused.
+        let rows: String = (0..30_000)
+            .map(|i| format!("<tr><td>Line {i}</td></tr>"))
+            .collect();
+        let long = format!("<html><body><table class=\"lines\">{rows}</table></body></html>");
+        assert!(render(&long, "long", vec![]).is_err());
+    }
+
+    #[test]
+    fn a_cell_taller_than_a_page_runs_on() {
+        let text = "word ".repeat(6000);
+        let html = format!(
+            "<html><body><table class=\"lines\"><thead><tr><th>Item</th></tr></thead>\
+             <tbody><tr><td>{text}</td></tr></tbody></table></body></html>"
+        );
+        let dom = html5ever::parse_document(RcDom::default(), Default::default())
+            .from_utf8()
+            .read_from(&mut html.as_bytes())
+            .unwrap();
+        let body = find(&dom.document, "body").unwrap();
+        let mut layout = Layout::new();
+        layout.block_children(&body, MARGIN_X, PAGE_W - 2.0 * MARGIN_X, Style::default());
+        assert!(layout.pages.len() >= 2, "{} pages", layout.pages.len());
+        // No text is drawn below the bottom margin.
+        for page in &layout.pages {
+            for op in page {
+                if let Op::Text { y, .. } = op {
+                    assert!(*y <= PAGE_H - MARGIN_Y + 1.0, "text at {y}");
+                }
+            }
+        }
     }
 }

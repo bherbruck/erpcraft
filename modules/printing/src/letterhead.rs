@@ -43,16 +43,50 @@ fn image_type(data: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// Put the company's logo where a sanitised page asks for it.
-pub(crate) fn place_logo(html: &str, logo: Option<&(String, Vec<u8>)>) -> String {
+/// How many times one page shows the logo, at most.
+const MAX_LOGOS: usize = 4;
+
+/// Put the company's logo where a sanitised page asks for it: in the `src`
+/// of an `img` element, and nowhere else. Text a template prints, such as
+/// a memo, may hold the same characters, but the sanitised page has no
+/// `<` in text and no `"` in an attribute, so `src="#logo"` within an
+/// `<img ...>` tag is an image's own attribute. At most [`MAX_LOGOS`]
+/// images get it; the page that results is checked against `limit`.
+pub(crate) fn place_logo(
+    html: &str,
+    logo: Option<&(String, Vec<u8>)>,
+    limit: usize,
+) -> Result<String> {
     let Some((content_type, data)) = logo else {
-        return html.to_owned();
+        return Ok(html.to_owned());
     };
     let url = format!(
-        "data:{content_type};base64,{}",
+        "src=\"data:{content_type};base64,{}\"",
         base64::engine::general_purpose::STANDARD.encode(data)
     );
-    html.replace("src=\"#logo\"", &format!("src=\"{url}\""))
+    let mut out = String::with_capacity(html.len() + url.len());
+    let mut rest = html;
+    let mut placed = 0;
+    while let Some(at) = rest.find("<img") {
+        let end = rest[at..].find('>').map_or(rest.len(), |e| at + e + 1);
+        let tag = &rest[at..end];
+        out.push_str(&rest[..at]);
+        if placed < MAX_LOGOS && tag.contains("src=\"#logo\"") {
+            out.push_str(&tag.replacen("src=\"#logo\"", &url, 1));
+            placed += 1;
+        } else {
+            out.push_str(tag);
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    if out.len() > limit {
+        return Err(Error::validation(format!(
+            "the page with its logo is larger than {} MiB",
+            limit / 1024 / 1024
+        )));
+    }
+    Ok(out)
 }
 
 /// The letterhead a template sees as `letterhead`: the company's
@@ -123,6 +157,20 @@ pub(crate) struct LogoOutput {
     data: Option<String>,
     /// Its size in bytes.
     size: Option<usize>,
+    /// Its SHA-256, in hex: what the record of a change keeps, rather than
+    /// the image.
+    sha256: Option<String>,
+}
+
+/// The most pixels a logo has across or down.
+const MAX_PIXELS: u32 = 4096;
+
+fn sha256(data: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn output(company_id: Uuid, logo: Option<(String, Vec<u8>)>) -> LogoOutput {
@@ -131,6 +179,7 @@ fn output(company_id: Uuid, logo: Option<(String, Vec<u8>)>) -> LogoOutput {
             company_id,
             content_type: Some(content_type),
             size: Some(data.len()),
+            sha256: Some(sha256(&data)),
             data: Some(base64::engine::general_purpose::STANDARD.encode(data)),
         },
         None => LogoOutput {
@@ -138,6 +187,7 @@ fn output(company_id: Uuid, logo: Option<(String, Vec<u8>)>) -> LogoOutput {
             content_type: None,
             data: None,
             size: None,
+            sha256: None,
         },
     }
 }
@@ -153,12 +203,15 @@ impl Command for SetLogo {
         CommandSpec::action(
             "company_logo.set",
             "Upload the company's logo, printed on its letterhead: a PNG or JPEG of at most \
-             512 KiB, in base64. It replaces the one before. Takes the right to change the \
-             company.",
+             512 KiB and 4096 pixels across and down, in base64. It replaces the one before. \
+             What it returns, and what the record of the change keeps, is the image's size and \
+             SHA-256, not the image. Takes the right to change the company.",
         )
         .label("Set logo")
         .resource("company")
         .target(false)
+        // The image stays out of the audit log and the outbox.
+        .sensitive()
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: SetInput) -> Result<LogoOutput> {
@@ -171,6 +224,20 @@ impl Command for SetLogo {
         }
         let content_type = image_type(&data)
             .ok_or_else(|| Error::field("data", "a logo is a PNG or a JPEG image"))?;
+        // The image must decode, and be of a size a page can show.
+        let image = if content_type == "image/png" {
+            krilla::image::Image::from_png(data.clone().into(), false)
+        } else {
+            krilla::image::Image::from_jpeg(data.clone().into(), false)
+        }
+        .map_err(|_| Error::field("data", "the image cannot be read"))?;
+        let (w, h) = image.size();
+        if w == 0 || h == 0 || w > MAX_PIXELS || h > MAX_PIXELS {
+            return Err(Error::field(
+                "data",
+                format!("a logo is at most {MAX_PIXELS} pixels across and down, not {w} by {h}"),
+            ));
+        }
         sqlx::query(
             "INSERT INTO company_logo (company_id, content_type, data) VALUES ($1, $2, $3)
              ON CONFLICT (company_id) DO UPDATE SET content_type = EXCLUDED.content_type,
@@ -182,7 +249,9 @@ impl Command for SetLogo {
         .execute(&mut *ctx.conn)
         .await?;
         ctx.touch("company", input.company_id);
-        Ok(output(input.company_id, Some((content_type.into(), data))))
+        let mut out = output(input.company_id, Some((content_type.into(), data)));
+        out.data = None;
+        Ok(out)
     }
 }
 
@@ -261,9 +330,19 @@ mod tests {
     fn the_logo_goes_only_where_the_page_asks() {
         let logo = ("image/png".to_owned(), vec![1, 2, 3]);
         let html = "<img class=\"logo\" src=\"#logo\" alt=\"\"><a href=\"#logo\">x</a>";
-        let placed = place_logo(html, Some(&logo));
+        let placed = place_logo(html, Some(&logo), 1 << 20).unwrap();
         assert!(placed.contains("src=\"data:image/png;base64,AQID\""));
         assert!(placed.contains("href=\"#logo\""));
-        assert_eq!(place_logo(html, None), html);
+        assert_eq!(place_logo(html, None, 1 << 20).unwrap(), html);
+        // Text that reads like the attribute is text.
+        let memo = format!("<div>{}</div>", "src=\"#logo\" ".repeat(50));
+        assert_eq!(place_logo(&memo, Some(&logo), 1 << 20).unwrap(), memo);
+        // However many images ask, only a few get it, and the page is
+        // bounded.
+        let many = "<img src=\"#logo\">".repeat(100);
+        let placed = place_logo(&many, Some(&logo), 1 << 20).unwrap();
+        assert_eq!(placed.matches("data:image").count(), MAX_LOGOS);
+        let big = ("image/png".to_owned(), vec![0; 600_000]);
+        assert!(place_logo(&many, Some(&big), 2 << 20).is_err());
     }
 }

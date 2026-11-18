@@ -31,10 +31,90 @@ use uuid::Uuid;
 pub const SEND: &str = "document.send";
 /// How often a message is tried before it is given up.
 pub const MAX_ATTEMPTS: i32 = 8;
-/// How long the server has to answer.
-const TIMEOUT: Duration = Duration::from_secs(30);
+/// How long the server has to answer. Short: the outbox waits on it.
+const TIMEOUT: Duration = Duration::from_secs(10);
+/// Set to `1` to let a company's SMTP server be on this host or a private
+/// network: a relay on the same machine, in development.
+pub const ALLOW_PRIVATE: &str = "ERPCRAFT_MAIL_ALLOW_PRIVATE";
 
-pub struct MailModule;
+pub struct MailModule {
+    /// Let SMTP servers be on loopback, private and link-local addresses.
+    allow_private: bool,
+}
+
+impl MailModule {
+    /// SMTP servers must be on public addresses, unless the environment
+    /// variable `ERPCRAFT_MAIL_ALLOW_PRIVATE` is `1`, read once here.
+    pub fn from_env() -> Self {
+        MailModule {
+            allow_private: std::env::var(ALLOW_PRIVATE).is_ok_and(|v| v == "1"),
+        }
+    }
+
+    /// Say directly whether private addresses are allowed.
+    pub fn allowing_private(allow_private: bool) -> Self {
+        MailModule { allow_private }
+    }
+}
+
+/// Whether `ip` may be connected to without the server allowing private
+/// addresses: not loopback, private, link-local, shared, unspecified,
+/// broadcast, multicast or unique-local.
+fn is_public(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || a == 0
+                || (a == 100 && (64..128).contains(&b)))
+        }
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => is_public(IpAddr::V4(v4)),
+            None => {
+                !(v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_multicast()
+                    || v6.is_unique_local()
+                    || v6.is_unicast_link_local())
+            }
+        },
+    }
+}
+
+/// Refuse a server whose name leads to an address the server may not
+/// reach: every address it resolves to must be public, unless private ones
+/// are allowed.
+async fn check_server(
+    host: &str,
+    port: u16,
+    allow_private: bool,
+) -> std::result::Result<(), String> {
+    if allow_private {
+        return Ok(());
+    }
+    let addresses: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|_| "the server's name does not resolve".to_owned())?
+        .collect();
+    if addresses.is_empty() {
+        return Err("the server's name does not resolve".into());
+    }
+    if addresses.iter().any(|a| !is_public(a.ip())) {
+        return Err(
+            "the server is on this host or a private network, which this installation does not \
+             send to"
+                .into(),
+        );
+    }
+    Ok(())
+}
 
 impl Module for MailModule {
     fn name(&self) -> &'static str {
@@ -66,9 +146,10 @@ impl Module for MailModule {
                 SEND,
                 "Asked when a document is sent by email: may this person send this document to \
                  these addresses? Unless configured otherwise a document is sent once it is \
-                 posted or approved, and a draft is not. A company can allow only some \
-                 document types, require approval to send outside the party's own addresses \
-                 (`!facts.to_party_only`), or limit who sends by a user attribute.",
+                 posted or approved, and only to the addresses its party has on record. A \
+                 company allows other addresses with an allow rule (for example with approval \
+                 when `!facts.to_party_only`), allows only some document types, or limits who \
+                 sends by a user attribute. Sending also takes the right <doc_type>:send.",
             )
             .text("doc_type", "The document's type, such as sales_invoice")
             .boolean(
@@ -83,14 +164,18 @@ impl Module for MailModule {
                 "to_party_only",
                 "Whether every address is one the document's party has on record",
             )
-            .refuse_when("!facts.locked")
-            .refusal("a draft is not sent; post or approve it first"),
+            .refuse_when("!facts.locked || !facts.to_party_only")
+            .refusal(
+                "a draft is not sent, and a document goes only to the addresses its party has on \
+                 record unless the company allows otherwise",
+            ),
         ]
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
+        let allow_private = self.allow_private;
         vec![
-            command(SetSettings),
+            command(SetSettings { allow_private }),
             command(GetSettings),
             command(Send),
             command(Messages),
@@ -98,7 +183,9 @@ impl Module for MailModule {
     }
 
     fn subscribers(&self) -> Vec<Arc<dyn Subscriber>> {
-        vec![Arc::new(Mailer)]
+        vec![Arc::new(Mailer {
+            allow_private: self.allow_private,
+        })]
     }
 }
 
@@ -119,8 +206,9 @@ struct SettingsInput {
     security: Option<String>,
     /// The user name to sign in with.
     username: Option<String>,
-    /// The password. Kept, never returned. Left out: the one on record
-    /// stays; empty: none.
+    /// The password. Kept as given, never returned. Left out: the one on
+    /// record stays, unless the host, port, user or security changes,
+    /// which clears it; empty: none.
     #[schemars(extend("writeOnly" = true))]
     password: Option<String>,
     /// The address messages come from.
@@ -165,7 +253,9 @@ fn clean(text: Option<String>) -> Option<String> {
     text.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty())
 }
 
-struct SetSettings;
+struct SetSettings {
+    allow_private: bool,
+}
 
 #[async_trait]
 impl Command for SetSettings {
@@ -218,7 +308,32 @@ impl Command for SetSettings {
         if let Some(bcc) = clean(input.bcc.clone()) {
             address(&bcc, "bcc")?;
         }
-        let password = input.password.map(|p| p.trim().to_owned());
+        let port_number = port;
+        check_server(&host, port_number, self.allow_private)
+            .await
+            .map_err(|why| Error::field("host", why))?;
+        let password = input.password;
+        let username = clean(input.username.clone());
+        // A password on record is for the server and user it was given
+        // for: whoever changes where it goes gives it again.
+        let before: Option<(String, i32, String, Option<String>)> = sqlx::query_as(
+            "SELECT host, port, security, username FROM smtp_settings WHERE company_id = $1",
+        )
+        .bind(input.company_id)
+        .fetch_optional(&mut *ctx.conn)
+        .await?;
+        let moved = before.is_some_and(|(h, p, sec, u)| {
+            !h.eq_ignore_ascii_case(&host)
+                || p != i32::from(port)
+                || sec != security
+                || u != username
+        });
+        if moved && password.is_none() {
+            sqlx::query("DELETE FROM smtp_secret WHERE company_id = $1")
+                .bind(input.company_id)
+                .execute(&mut *ctx.conn)
+                .await?;
+        }
         let keeps_password: bool =
             sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM smtp_secret WHERE company_id = $1)")
                 .bind(input.company_id)
@@ -249,7 +364,7 @@ impl Command for SetSettings {
         .bind(&host)
         .bind(i32::from(port))
         .bind(&security)
-        .bind(clean(input.username))
+        .bind(&username)
         .bind(input.from_address.trim())
         .bind(clean(input.from_name))
         .bind(clean(input.reply_to))
@@ -533,7 +648,9 @@ impl Command for Send {
              the company's SMTP server (smtp_settings.set). The message is recorded on the \
              document and leaves once the command commits; the outbox tries again while the \
              server cannot be reached. The company's policy document.send decides who may send \
-             what; by default a draft is not sent. Takes the right to read the document.",
+             what; by default a draft is not sent, and a document goes only to its party's \
+             addresses on record. Takes the right <doc_type>:send, such as sales_invoice:send, \
+             besides the right to read the document.",
         )
         .label("Send by email")
         .resource("document")
@@ -544,6 +661,8 @@ impl Command for Send {
         // The one path by which a document is read: its permissions hold.
         let view = document::get(ctx, &input.doc_type, input.id).await?;
         let company_id = view.header.company_id;
+        // Reading a document is not sending it.
+        ctx.require(&format!("{}:send", input.doc_type), company_id)?;
         let company: String = sqlx::query_scalar("SELECT name FROM company WHERE id = $1")
             .bind(company_id)
             .fetch_one(&mut *ctx.conn)
@@ -717,7 +836,8 @@ impl Command for Messages {
             "document.messages",
             "The emails a document was sent with: to whom, the subject and text, who sent it, \
              when it left, the Message-ID, and whether it is still waiting or was given up. \
-             Takes the right to read the document.",
+             The server's own answer to a failure shows only to someone who may change the \
+             company. Takes the right to read the document.",
         )
         .label("Sent")
         .resource("document")
@@ -725,15 +845,23 @@ impl Command for Messages {
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: MessagesInput) -> Result<MessagesOutput> {
-        document::get(ctx, &input.doc_type, input.id).await?;
-        Ok(MessagesOutput {
-            items: sqlx::query_as(&format!(
-                "{MESSAGE} WHERE m.document_id = $1 ORDER BY m.created_at DESC"
-            ))
-            .bind(input.id)
-            .fetch_all(&mut *ctx.conn)
-            .await?,
-        })
+        let view = document::get(ctx, &input.doc_type, input.id).await?;
+        let mut items: Vec<MessageView> = sqlx::query_as(&format!(
+            "{MESSAGE} WHERE m.document_id = $1 ORDER BY m.created_at DESC"
+        ))
+        .bind(input.id)
+        .fetch_all(&mut *ctx.conn)
+        .await?;
+        // What the server answered can say where it is and how it is set
+        // up: for whoever sets it up, not for every reader of the document.
+        if !ctx.actor.can("company:update", view.header.company_id) {
+            for item in &mut items {
+                if item.last_error.is_some() {
+                    item.last_error = Some("the server did not take it".into());
+                }
+            }
+        }
+        Ok(MessagesOutput { items })
     }
 }
 
@@ -769,7 +897,9 @@ struct Server {
 }
 
 /// Hands the messages `document.send` recorded to their company's server.
-struct Mailer;
+struct Mailer {
+    allow_private: bool,
+}
 
 #[async_trait]
 impl Subscriber for Mailer {
@@ -802,7 +932,7 @@ impl Subscriber for Mailer {
         if outgoing.status != "queued" {
             return Ok(());
         }
-        let outcome = send(kernel, &outgoing).await;
+        let outcome = send(kernel, &outgoing, self.allow_private).await;
         let attempts = outgoing.attempts + 1;
         match outcome {
             Ok(()) => {
@@ -843,7 +973,11 @@ impl Subscriber for Mailer {
 
 /// Send one message through its company's server. The reason as text when
 /// it did not go.
-async fn send(kernel: &Kernel, outgoing: &Outgoing) -> std::result::Result<(), String> {
+async fn send(
+    kernel: &Kernel,
+    outgoing: &Outgoing,
+    allow_private: bool,
+) -> std::result::Result<(), String> {
     let server: Option<Server> = sqlx::query_as(
         "SELECT s.host, s.port, s.security, s.username, x.password, s.from_address,
                 s.from_name, s.reply_to, s.bcc, c.name AS company
@@ -896,6 +1030,8 @@ async fn send(kernel: &Kernel, outgoing: &Outgoing) -> std::result::Result<(), S
         )
         .map_err(|e| e.to_string())?;
     let port = u16::try_from(server.port).map_err(|_| "the port is not valid".to_owned())?;
+    // Checked again now: what a name resolves to can change.
+    check_server(&server.host, port, allow_private).await?;
     let transport = match server.security.as_str() {
         "tls" => AsyncSmtpTransport::<Tokio1Executor>::relay(&server.host),
         "starttls" => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&server.host),
@@ -918,4 +1054,38 @@ async fn send(kernel: &Kernel, outgoing: &Outgoing) -> std::result::Result<(), S
         .await
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_public_addresses_are_public() {
+        for private in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "192.168.0.1",
+            "172.16.0.1",
+            "169.254.1.1",
+            "100.64.0.1",
+            "0.0.0.0",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(!is_public(private.parse().unwrap()), "{private}");
+        }
+        for public in ["203.0.114.1", "8.8.8.8", "2a00:1450::1"] {
+            assert!(is_public(public.parse().unwrap()), "{public}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_server_on_this_host_is_refused_unless_allowed() {
+        assert!(check_server("127.0.0.1", 25, false).await.is_err());
+        assert!(check_server("localhost", 25, false).await.is_err());
+        assert!(check_server("127.0.0.1", 25, true).await.is_ok());
+    }
 }

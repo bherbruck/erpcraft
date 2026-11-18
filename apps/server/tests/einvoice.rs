@@ -2139,6 +2139,19 @@ async fn an_invoice_prints_on_the_letterhead_and_as_a_pdf() {
     t.stop().await;
 }
 
+/// The mail module reads from the environment, when a server starts,
+/// whether SMTP servers may be on this host: one start at a time.
+static MAIL_START: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// A server whose companies may send through an SMTP server on this host.
+async fn start_mailing() -> TestApp {
+    let _one = MAIL_START.lock().await;
+    // SAFETY: set under the lock before the server starts; only the mail
+    // module reads it, once, as the server starts.
+    unsafe { std::env::set_var(erpcraft_mail::ALLOW_PRIVATE, "1") };
+    TestApp::start().await
+}
+
 /// A tiny SMTP server that takes every message and keeps it.
 async fn smtp_server() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -2196,7 +2209,7 @@ async fn smtp_server() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
 /// not sent; an unreachable server leaves it to be tried again.
 #[tokio::test]
 async fn an_invoice_is_sent_by_email() {
-    let t = TestApp::start().await;
+    let t = start_mailing().await;
     let f = setup(&t).await;
     let invoice = f.invoice(&t, &f.customer).await;
     let (port, kept) = smtp_server().await;
@@ -2291,14 +2304,21 @@ async fn an_invoice_is_sent_by_email() {
                 "security": "none", "from_address": "rechnung@muster.example" }),
     )
     .await;
-    let (status, message) = t
-        .command(
+    // Only to the customer's own addresses, unless the company allows more.
+    let input = json!({ "doc_type": "sales_invoice", "id": invoice["id"], "format": "pdf",
+                        "to": ["einkauf@kunde.example"], "cc": ["chef@kunde.example"] });
+    let (status, body) = t.command(&t.admin, "document.send", input.clone()).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (status, rule) = t
+        .post(
             &t.admin,
-            "document.send",
-            json!({ "doc_type": "sales_invoice", "id": invoice["id"],
-                    "to": ["einkauf@kunde.example"], "cc": ["chef@kunde.example"] }),
+            "/api/entities/policy_rule",
+            json!({ "company_id": f.company, "point": "document.send", "effect": "allow",
+                    "condition": "facts.locked", "priority": 10 }),
         )
         .await;
+    assert_eq!(status, StatusCode::CREATED, "{rule}");
+    let (status, message) = t.command(&t.admin, "document.send", input).await;
     assert_eq!(status, StatusCode::OK, "{message}");
     let delivered = erpcraft_kernel::outbox::deliver_batch(&t.kernel, 100)
         .await
@@ -2314,6 +2334,58 @@ async fn an_invoice_is_sent_by_email() {
     assert_eq!(sent["items"][0]["status"], "queued");
     assert_eq!(sent["items"][0]["attempts"], 1);
     assert!(sent["items"][0]["last_error"].is_string());
+    // A reader of the invoice sees that it failed, not what the server said.
+    let (reader, _) = t
+        .user_with_rules(
+            "reader@example.com",
+            json!(["sales_invoice:read"]),
+            Some(&f.company),
+        )
+        .await;
+    let (_, seen) = t
+        .command(
+            &reader,
+            "document.messages",
+            json!({ "doc_type": "sales_invoice", "id": invoice["id"] }),
+        )
+        .await;
+    assert_eq!(seen["items"][0]["last_error"], "the server did not take it");
+    // Reading an invoice is not sending it.
+    let (status, body) = t
+        .command(
+            &reader,
+            "document.send",
+            json!({ "doc_type": "sales_invoice", "id": invoice["id"], "format": "pdf" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    // A password stays only with the server and user it was given for.
+    let set = |port: u16, password: Option<&str>| {
+        let mut input = json!({ "company_id": f.company, "host": "127.0.0.1", "port": port,
+                                "security": "starttls", "username": "mailer",
+                                "from_address": "rechnung@muster.example" });
+        if let Some(p) = password {
+            input["password"] = json!(p);
+        }
+        input
+    };
+    let (_, settings) = t
+        .command(&t.admin, "smtp_settings.set", set(dead, Some(" s3cret ")))
+        .await;
+    assert_eq!(settings["has_password"], true);
+    let (_, settings) = t
+        .command(&t.admin, "smtp_settings.set", set(dead, None))
+        .await;
+    assert_eq!(settings["has_password"], true, "unchanged, it is kept");
+    let (_, settings) = t
+        .command(&t.admin, "smtp_settings.set", set(port, None))
+        .await;
+    assert_eq!(settings["has_password"], false, "moved, it is cleared");
+    let password: Option<String> = sqlx::query_scalar("SELECT password FROM smtp_secret")
+        .fetch_optional(&t.pool)
+        .await
+        .unwrap();
+    assert!(password.is_none());
     t.stop().await;
 }
 
@@ -2393,7 +2465,7 @@ async fn an_invoice_is_written_as_a_zugferd_pdf_and_read_back() {
 /// can choose otherwise for one message.
 #[tokio::test]
 async fn an_invoice_is_sent_in_the_customers_e_invoice_format() {
-    let t = TestApp::start().await;
+    let t = start_mailing().await;
     let f = setup(&t).await;
     let invoice = f.invoice(&t, &f.customer).await;
     let (port, kept) = smtp_server().await;
@@ -2465,5 +2537,124 @@ async fn an_invoice_is_sent_in_the_customers_e_invoice_format() {
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(kept.lock().unwrap().len(), 3);
+    t.stop().await;
+}
+
+/// A PNG of `w` by `h` pixels of noise, stored without compression.
+fn noise_png(w: u32, h: u32) -> Vec<u8> {
+    fn chunk(out: &mut Vec<u8>, kind: &[u8], data: &[u8]) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let mut crc = flate2::Crc::new();
+        crc.update(kind);
+        crc.update(data);
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        out.extend_from_slice(&crc.sum().to_be_bytes());
+    }
+    let mut raw = Vec::with_capacity(((w * 3 + 1) * h) as usize);
+    let mut seed: u32 = 12345;
+    for _ in 0..h {
+        // Each row starts with its filter: none.
+        raw.extend_from_slice(&[0]);
+        for _ in 0..w * 3 {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            raw.push((seed >> 16) as u8);
+        }
+    }
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::none());
+    std::io::Write::write_all(&mut z, &raw).unwrap();
+    let idat = z.finish().unwrap();
+    let mut ihdr = vec![];
+    ihdr.extend_from_slice(&w.to_be_bytes());
+    ihdr.extend_from_slice(&h.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &idat);
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+/// Text that reads like the logo's attribute does not get the logo: a
+/// memo full of it renders a page of its own size, not one per mention.
+#[tokio::test]
+async fn a_memo_cannot_multiply_the_logo() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let png = noise_png(400, 330);
+    assert!(
+        png.len() > 390_000 && png.len() < 512 * 1024,
+        "{}",
+        png.len()
+    );
+    let (status, logo) = t
+        .command(
+            &t.admin,
+            "company_logo.set",
+            json!({ "company_id": f.company,
+                    "data": base64::engine::general_purpose::STANDARD.encode(&png) }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{logo}");
+    assert!(logo["data"].is_null(), "the image is not echoed");
+    assert_eq!(logo["sha256"].as_str().unwrap().len(), 64);
+    // Too many pixels is refused.
+    let wide = noise_png(5000, 1);
+    let (status, _) = t
+        .command(
+            &t.admin,
+            "company_logo.set",
+            json!({ "company_id": f.company,
+                    "data": base64::engine::general_purpose::STANDARD.encode(&wide) }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let memo = "src=\"#logo\" ".repeat(50);
+    let (status, draft) = t
+        .post(
+            &t.admin,
+            "/api/documents/sales_invoice",
+            json!({ "company_id": f.company, "doc_date": "2026-04-10", "memo": memo, "body": {
+                "customer_id": f.customer, "lines": [
+                    { "account_id": f.account["8400"], "qty": "1", "unit_price": "10.00",
+                      "tax_code_id": f.vat19 } ] } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{draft}");
+    let (status, page) = t
+        .command(
+            &t.admin,
+            "document.render",
+            json!({ "doc_type": "sales_invoice", "id": draft["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let html = page["html"].as_str().unwrap();
+    assert!(html.len() < 8 * 1024 * 1024, "{} bytes", html.len());
+    assert_eq!(
+        html.matches("data:image/png").count(),
+        1,
+        "the head's logo only"
+    );
+    // The PDF draws the one image once.
+    let (status, pdf) = t
+        .command(
+            &t.admin,
+            "document.render_pdf",
+            json!({ "doc_type": "sales_invoice", "id": draft["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{pdf}");
+    // Nothing of the image went to the audit log.
+    let logged: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM audit_log WHERE command = 'company_logo.set'
+                   AND input::text LIKE '%iVBOR%')
+              + (SELECT count(*) FROM outbox_event WHERE topic = 'company_logo.set'
+                   AND payload::text LIKE '%iVBOR%')",
+    )
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(logged, 0);
     t.stop().await;
 }

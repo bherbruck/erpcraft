@@ -223,6 +223,9 @@ impl Command for RenderPdf {
     }
 }
 
+/// How long a PDF may take to lay out.
+const PDF_TIME: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// A document as a PDF, with `attachments` carried inside: for a module
 /// that sends it, or makes an e-invoice of it.
 pub async fn pdf_of(
@@ -235,7 +238,25 @@ pub async fn pdf_of(
 ) -> Result<RenderedPdf> {
     use base64::Engine;
     let rendered = render(ctx, doc_type, id, Source::Stored(template_id)).await?;
-    let bytes = pdf::render_with(&rendered.html, &rendered.title, attachments, extension)
+    // Laid out off the request's thread, and given a time it must finish
+    // in: a page is bounded, but its layout is work.
+    let (html, title, extension) = (
+        rendered.html.clone(),
+        rendered.title.clone(),
+        extension.cloned(),
+    );
+    let job = tokio::task::spawn_blocking(move || {
+        pdf::render_with(&html, &title, attachments, extension.as_ref())
+    });
+    let bytes = tokio::time::timeout(PDF_TIME, job)
+        .await
+        .map_err(|_| {
+            Error::validation(format!(
+                "the PDF took longer than {} seconds to lay out",
+                PDF_TIME.as_secs()
+            ))
+        })?
+        .map_err(Error::internal)?
         .map_err(|e| Error::validation(format!("the PDF cannot be made: {e}")))?;
     let filename = format!(
         "{}.pdf",
@@ -291,7 +312,7 @@ async fn render(ctx: &mut Ctx<'_>, doc_type: &str, id: Uuid, source: Source) -> 
     // The logo goes in after the page was sanitised, from bytes checked
     // when it was uploaded.
     let logo = letterhead::logo(&mut *ctx.conn, view.header.company_id).await?;
-    let html = letterhead::place_logo(&html, logo.as_ref());
+    let html = letterhead::place_logo(&html, logo.as_ref(), 2 * engine::MAX_OUTPUT)?;
     Ok(Rendered {
         html,
         template_id,

@@ -435,6 +435,11 @@ fn close(a: f64, b: f64) -> bool {
 
 #[tokio::test]
 async fn a_month_in_the_life_of_ohio_widgets() {
+    // The invoices go out through an SMTP server on this host, which a
+    // server sends to only when it allows private addresses.
+    // SAFETY: set before this test's server starts; only the mail module
+    // reads it, as a server starts.
+    unsafe { std::env::set_var(erpcraft_mail::ALLOW_PRIVATE, "1") };
     let t = TestApp::start().await;
     let o = set_up(&t).await;
     let c = o.c.clone();
