@@ -350,12 +350,14 @@ impl DocumentHandler for VendorCredit {
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
         let (vendor, currency, fx_rate) = header(conn, doc).await?;
-        Ok(json!({
+        let mut body = json!({
             "vendor_id": vendor,
             "currency": currency,
             "fx_rate": fx_rate,
             "lines": lines(conn, doc.id).await?,
-        }))
+        });
+        crate::fill_draft_lines(conn, doc, &mut body, Some(Direction::Paid)).await?;
+        Ok(body)
     }
 }
 

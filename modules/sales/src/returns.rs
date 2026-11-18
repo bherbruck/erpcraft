@@ -1139,13 +1139,42 @@ impl DocumentHandler for SalesCreditNote {
                 Decimal::ONE,
             ),
         };
-        Ok(json!({
+        let mut body = json!({
             "sales_invoice_id": invoice,
             "sales_order_id": order,
             "currency": currency,
             "fx_rate": rate,
             "lines": credit_lines(conn, doc.id).await?,
-        }))
+        });
+        // A draft shows the tax it will take back, as posting works it out.
+        if doc.status == "draft" {
+            let decimals = erpcraft_gl::currency_decimals(conn, &currency).await?;
+            if let Some(lines) = body["lines"].as_array_mut() {
+                for line in lines {
+                    use document::body::uuid;
+                    if !line["tax_amount"].is_null() || uuid(&line["tax_code_id"]).is_none() {
+                        continue;
+                    }
+                    let Some(invoice_line) = uuid(&line["invoice_line_id"]) else {
+                        continue;
+                    };
+                    let credited = erpcraft_tax::lines::body_line_net(line, decimals);
+                    if let Ok(taxes) = erpcraft_tax::credit(
+                        &mut *conn,
+                        doc.company_id,
+                        invoice_line,
+                        credited,
+                        uuid(&line["id"]),
+                        rate,
+                    )
+                    .await
+                    {
+                        line["tax_amount"] = json!(-erpcraft_tax::Tax::total(&taxes));
+                    }
+                }
+            }
+        }
+        Ok(body)
     }
 }
 

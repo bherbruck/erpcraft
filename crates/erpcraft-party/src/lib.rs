@@ -868,6 +868,13 @@ pub struct GetInput {
     /// document offers to choose from.
     #[serde(default)]
     address_kind: Option<String>,
+    /// As a field's lookup: only addresses whose lines, city, post code or
+    /// country contain this text, ignoring case.
+    #[serde(default)]
+    q: Option<String>,
+    /// As a field's lookup: at most this many addresses.
+    #[serde(default)]
+    limit: Option<i64>,
 }
 
 pub struct Get;
@@ -894,13 +901,34 @@ impl Command for Get {
         if owner(ctx, kind, input.party_id).await?.is_none() {
             return Err(Error::not_found(kind));
         }
-        records(
+        let mut found = records(
             &mut *ctx.conn,
             input.party_type,
             input.party_id,
             input.address_kind.as_deref(),
         )
-        .await
+        .await?;
+        if let Some(q) = input.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+            let q = q.to_lowercase();
+            found.addresses.retain(|a| {
+                [
+                    &a.attention,
+                    &a.street,
+                    &a.additional_street,
+                    &a.city,
+                    &a.postcode,
+                    &a.region,
+                    &Some(a.country_code.clone()),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|text| text.to_lowercase().contains(&q))
+            });
+        }
+        if let Some(limit) = input.limit {
+            found.addresses.truncate(limit.clamp(0, 1000) as usize);
+        }
+        Ok(found)
     }
 }
 

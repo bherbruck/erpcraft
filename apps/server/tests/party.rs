@@ -503,3 +503,99 @@ async fn e_invoice_party_rows_move_across() {
     assert_eq!(gone, None);
     t.stop().await;
 }
+
+/// Every command a field looks its choices up with accepts what the
+/// generic lookup sends (`limit`), given the field's params: here filled
+/// from a company, a customer and a vendor that exist.
+#[tokio::test]
+async fn every_lookup_command_takes_the_standard_lookup_inputs() {
+    let t = TestApp::start().await;
+    let c = t.company("ACME", "USD").await;
+    let customer = t
+        .create("customer", json!({ "code": "C1", "name": "Buyer LLC" }))
+        .await;
+    let vendor = t
+        .create("vendor", json!({ "code": "V1", "name": "Parts Inc" }))
+        .await;
+    // An asset, whose capitalisation looks up the lines it can come from.
+    let cost = t
+        .create(
+            "account",
+            json!({ "company_id": c.id, "code": "1500", "name": "Equipment",
+                    "account_type": "asset" }),
+        )
+        .await;
+    let class = t
+        .create(
+            "asset_class",
+            json!({ "company_id": c.id, "code": "EQ", "name": "Equipment",
+                    "method": "straight_line", "useful_life_months": 12 }),
+        )
+        .await;
+    t.create(
+        "account_rule",
+        json!({ "company_id": c.id, "purpose": "asset_cost", "scope_type": "asset_class",
+                "scope_id": class, "account_id": cost }),
+    )
+    .await;
+    let asset = t
+        .create(
+            "asset",
+            json!({ "company_id": c.id, "class_id": class, "code": "A1", "name": "Laptop" }),
+        )
+        .await;
+    let (status, meta) = t.get(&t.admin, "/api/meta").await;
+    assert_eq!(status, StatusCode::OK);
+    // Every lookup anywhere in the description.
+    fn walk(value: &Value, found: &mut Vec<Value>) {
+        match value {
+            Value::Object(map) => {
+                if map.get("command").is_some_and(Value::is_string)
+                    && map.get("rows").is_some_and(Value::is_string)
+                    && map.contains_key("params")
+                {
+                    found.push(value.clone());
+                }
+                map.values().for_each(|v| walk(v, found));
+            }
+            Value::Array(list) => list.iter().for_each(|v| walk(v, found)),
+            _ => {}
+        }
+    }
+    let mut lookups = vec![];
+    walk(&meta, &mut lookups);
+    assert!(
+        lookups.iter().any(|l| l["command"] == "party.get"),
+        "{lookups:?}"
+    );
+    let mut seen = std::collections::BTreeSet::new();
+    for lookup in &lookups {
+        let mut input = json!({ "limit": 100 });
+        for (param, source) in lookup["params"].as_object().unwrap() {
+            input[param] = match source["from"].as_str() {
+                Some("value") => source["value"].clone(),
+                _ => {
+                    let field = source["field"].as_str().unwrap_or_default();
+                    match (source["map"].as_object(), field) {
+                        (Some(map), _) => map.values().next().unwrap().clone(),
+                        (None, "company_id") => json!(c.id),
+                        (None, "customer_id") => json!(customer),
+                        (None, "vendor_id") => json!(vendor),
+                        // The record the field belongs to: here an asset.
+                        (None, "id") => json!(asset),
+                        (None, other) => panic!("no value for lookup field {other}: {lookup}"),
+                    }
+                }
+            };
+        }
+        let command = lookup["command"].as_str().unwrap();
+        if !seen.insert((command.to_owned(), input.to_string())) {
+            continue;
+        }
+        let (status, out) = t.command(&t.admin, command, input.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{command} {input}: {out}");
+        let rows = lookup["rows"].as_str().unwrap();
+        assert!(out[rows].is_array(), "{command}: {out}");
+    }
+    t.stop().await;
+}

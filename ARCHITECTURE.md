@@ -120,6 +120,10 @@ Every list of entity records or documents takes the same parameters and returns 
 
 All of it runs in the database, in the same query as the caller's row permissions. So a total never counts a record the caller may not see, and a field withheld from the caller cannot be searched, sorted by, or named in a condition.
 
+**Line figures of a draft.** A draft's view, and so a preview of creating or changing it, shows each line's figures as posting will work them out: the net amount on the lines of orders, invoices and credits, the tax its code puts on an invoice or credit line, and the tax a credit note takes back. A posted document shows what it posted.
+
+**Lookups.** A command a field looks its choices up with (`FieldType::Lookup`, or `x-field-type` lookup in a command's input) accepts `limit` beside the params the lookup names, as the generic lookup sends it; `party.get` also takes `q` (text in an address). A test calls every lookup in `/api/meta` that way.
+
 ### The MCP endpoint
 
 `POST /mcp` speaks the Model Context Protocol, revision 2026-07-28, in which nothing is kept between requests: every request says which revision it speaks, and `server/discover` says what the server offers. Clients of the four revisions before it, which open with `initialize`, are answered too, each with what its revision knows. The bearer token is the one of the HTTP API.

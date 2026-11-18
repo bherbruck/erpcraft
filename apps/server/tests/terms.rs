@@ -1934,3 +1934,121 @@ async fn returns_awaiting_a_credit_are_reported() {
     assert_eq!(dec(&rows[0]["amount"]), 20.0);
     t.stop().await;
 }
+
+/// A preview of a draft shows each line's figures as posting will work
+/// them out: the net amount on every document type whose lines have one,
+/// and the tax where they have that too.
+#[tokio::test]
+async fn a_preview_fills_every_lines_net_and_tax() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    // Every document type whose lines show a net or a tax is covered here.
+    let (_, meta) = t.get(&t.admin, "/api/meta").await;
+    let mut figured: Vec<String> = meta["doc_types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| {
+            d["collections"].as_array().into_iter().flatten().any(|c| {
+                c["fields"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|f| f["name"] == "net_amount" || f["name"] == "tax_amount")
+            })
+        })
+        .map(|d| d["name"].as_str().unwrap().to_owned())
+        .collect();
+    figured.sort();
+    assert_eq!(
+        figured,
+        [
+            "purchase_order",
+            "sales_credit",
+            "sales_credit_note",
+            "sales_invoice",
+            "sales_order",
+            "vendor_credit",
+            "vendor_credit_note",
+            "vendor_invoice",
+        ],
+        "a new type with line figures needs a case below"
+    );
+
+    let preview = |doc_type: &'static str, body: Value| {
+        let t = &t;
+        let company = f.c.id.clone();
+        async move {
+            let (status, out) = t
+                .post(
+                    &t.admin,
+                    "/api/commands/document.create?preview=true",
+                    json!({ "doc_type": doc_type, "company_id": company,
+                            "doc_date": "2026-03-05", "body": body }),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{doc_type}: {out}");
+            out["result"]["body"]["lines"][0].clone()
+        }
+    };
+    // 3 at 10.00 less 10 %: 27.00, and 19 % of it 5.13.
+    let line = json!({ "account_id": f.account["5200"], "qty": "3", "unit_price": "10.00",
+                       "discount_percent": "10", "tax_code_id": f.vat });
+    for (doc_type, party) in [
+        ("vendor_invoice", json!({ "vendor_id": f.vendor })),
+        ("sales_invoice", json!({ "customer_id": f.customer })),
+    ] {
+        let mut body = party;
+        let mut l = line.clone();
+        if doc_type == "sales_invoice" {
+            l["account_id"] = json!(f.c.revenue);
+        }
+        body["lines"] = json!([l]);
+        let got = preview(doc_type, body).await;
+        assert_eq!(dec(&got["net_amount"]), 27.0, "{doc_type}: {got}");
+        assert_eq!(dec(&got["tax_amount"]), 5.13, "{doc_type}: {got}");
+    }
+    for (doc_type, party) in [
+        ("vendor_credit", json!({ "vendor_id": f.vendor })),
+        ("sales_credit", json!({ "customer_id": f.customer })),
+    ] {
+        let mut body = party;
+        body["lines"] = json!([{ "account_id": f.account["5200"], "qty": "3",
+                                 "unit_price": "9.00", "tax_code_id": f.vat }]);
+        let got = preview(doc_type, body).await;
+        assert_eq!(dec(&got["net_amount"]), 27.0, "{doc_type}: {got}");
+        assert_eq!(dec(&got["tax_amount"]), 5.13, "{doc_type}: {got}");
+    }
+    for doc_type in ["purchase_order", "sales_order"] {
+        let party = if doc_type == "purchase_order" {
+            json!({ "vendor_id": f.vendor })
+        } else {
+            json!({ "customer_id": f.customer })
+        };
+        let mut body = party;
+        body["lines"] = json!([{ "item_id": f.item, "warehouse_id": f.warehouse, "qty": "3",
+                                 "unit_price": "10.00", "discount_percent": "10" }]);
+        let got = preview(doc_type, body).await;
+        assert_eq!(dec(&got["net_amount"]), 27.0, "{doc_type}: {got}");
+    }
+    // Credit notes show the tax they take back.
+    let bought = f.order(&t, "purchase", "10", "10.00", json!({})).await;
+    let vendor_invoice = f.bought(&t, &bought, "2026-03-01", json!({})).await;
+    let got = preview(
+        "vendor_credit_note",
+        json!({ "vendor_invoice_id": vendor_invoice["id"], "lines": [
+            { "invoice_line_id": vendor_invoice["body"]["lines"][0]["id"], "qty": "2" } ] }),
+    )
+    .await;
+    assert_eq!(dec(&got["tax_amount"]), 3.8, "{got}");
+    let sold = f.order(&t, "sales", "4", "10.00", json!({})).await;
+    let sales_invoice = f.sold(&t, &sold, "2026-03-02").await;
+    let got = preview(
+        "sales_credit_note",
+        json!({ "sales_invoice_id": sales_invoice["id"], "lines": [
+            { "invoice_line_id": sales_invoice["body"]["lines"][0]["id"], "qty": "1" } ] }),
+    )
+    .await;
+    assert_eq!(dec(&got["tax_amount"]), 1.9, "{got}");
+    t.stop().await;
+}

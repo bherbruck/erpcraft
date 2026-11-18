@@ -645,6 +645,10 @@ struct CostLinesInput {
     /// Only these lines, whether or not they can still be chosen: to show
     /// the line an asset was capitalised from.
     line_ids: Option<Vec<Uuid>>,
+    /// As a field's lookup: at most this many lines (and never more than
+    /// 200).
+    #[serde(default)]
+    limit: Option<i64>,
 }
 
 #[derive(Serialize, JsonSchema, sqlx::FromRow)]
@@ -704,11 +708,12 @@ impl Command for CostLines {
                                            OR a.opening_entry_id = g.id)
                    ELSE g.source_line_id = ANY($3) END
              ORDER BY g.posting_date DESC, d.number DESC, g.source_line_id
-             LIMIT 200",
+             LIMIT LEAST(GREATEST(COALESCE($4, 200), 0), 200)",
         )
         .bind(asset.company_id)
         .bind(cost_account)
         .bind(&input.line_ids)
+        .bind(input.limit)
         .fetch_all(&mut *ctx.conn)
         .await?;
         Ok(CostLinesOutput { items })

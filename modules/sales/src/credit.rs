@@ -351,12 +351,14 @@ impl DocumentHandler for SalesCredit {
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
         let (customer, currency, fx_rate) = header(conn, doc).await?;
-        Ok(json!({
+        let mut body = json!({
             "customer_id": customer,
             "currency": currency,
             "fx_rate": fx_rate,
             "lines": lines(conn, doc.id).await?,
-        }))
+        });
+        crate::fill_draft_lines(conn, doc, &mut body, Some(Direction::Collected)).await?;
+        Ok(body)
     }
 }
 

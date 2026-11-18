@@ -2258,7 +2258,7 @@ impl DocumentHandler for SalesInvoice {
             .bind(doc.id)
             .fetch_one(&mut *conn)
             .await?;
-        Ok(json!({
+        let mut body = json!({
             "sales_order_id": order,
             "customer_id": customer,
             "currency": currency,
@@ -2267,7 +2267,9 @@ impl DocumentHandler for SalesInvoice {
             "billing_address_id": billing,
             "shipping_address_id": shipping,
             "lines": invoice_lines(conn, doc.id).await?,
-        }))
+        });
+        fill_draft_lines(conn, doc, &mut body, Some(Direction::Collected)).await?;
+        Ok(body)
     }
 }
 
@@ -2717,4 +2719,59 @@ impl Command for ReverseInvoice {
         document::transition(ctx, &mut doc, "reversed").await?;
         document::view(ctx, doc).await
     }
+}
+
+/// A draft's line figures as posting will work them out, for its view and
+/// a preview: each line's net amount where it has none yet, and with
+/// `direction` the tax its code puts on it. A posted document keeps what
+/// it posted.
+pub(crate) async fn fill_draft_lines(
+    conn: &mut PgConnection,
+    doc: &Document,
+    body: &mut Value,
+    direction: Option<Direction>,
+) -> Result<()> {
+    use document::body::{decimal, uuid};
+    if doc.status != "draft" {
+        return Ok(());
+    }
+    let base = company::base_currency(conn, doc.company_id).await?;
+    let currency = body["currency"]
+        .as_str()
+        .map_or(base.clone(), str::to_owned);
+    let decimals = erpcraft_gl::currency_decimals(conn, &currency).await?;
+    let conversion = (currency != base).then(|| erpcraft_tax::Conversion {
+        currency: currency.clone(),
+        rate: decimal(&body["fx_rate"]).unwrap_or(Decimal::ONE),
+    });
+    let Some(lines) = body["lines"].as_array_mut() else {
+        return Ok(());
+    };
+    for line in lines {
+        let net = match decimal(&line["net_amount"]) {
+            Some(net) => net,
+            None => {
+                let net = erpcraft_tax::lines::body_line_net(line, decimals);
+                line["net_amount"] = json!(net);
+                net
+            }
+        };
+        if let Some(direction) = direction
+            && line["tax_amount"].is_null()
+            && let Some(code) = uuid(&line["tax_code_id"])
+            && let Ok(taxes) = erpcraft_tax::estimate(
+                &mut *conn,
+                doc.company_id,
+                code,
+                direction,
+                net,
+                uuid(&line["id"]),
+                conversion.as_ref(),
+            )
+            .await
+        {
+            line["tax_amount"] = json!(erpcraft_tax::Tax::total(&taxes));
+        }
+    }
+    Ok(())
 }
