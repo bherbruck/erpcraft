@@ -98,6 +98,7 @@ pub(crate) struct AgingOutput {
 
 #[derive(sqlx::FromRow)]
 struct Open {
+    id: Uuid,
     party_type: String,
     party_id: Uuid,
     due: NaiveDate,
@@ -169,7 +170,7 @@ impl Command for Aging {
         let kind = input.kind.as_str();
 
         let rows: Vec<Open> = sqlx::query_as(&format!(
-            "SELECT party_type, party_id, due, open FROM ({OPEN_AS_OF}) AS items
+            "SELECT id, party_type, party_id, due, open FROM ({OPEN_AS_OF}) AS items
              WHERE open <> 0
                AND ($4::text IS NULL OR party_type = $4) AND ($5::uuid IS NULL OR party_id = $5)"
         ))
@@ -180,6 +181,8 @@ impl Command for Aging {
         .bind(input.party_id)
         .fetch_all(&mut *ctx.conn)
         .await?;
+        let decimals = company::currency_decimals(&mut *ctx.conn, input.company_id).await?;
+        let rows = by_instalment(&mut *ctx.conn, rows, as_of, decimals).await?;
 
         let buckets = buckets(&bounds);
         let in_7 = as_of.checked_add_days(Days::new(7)).unwrap_or(as_of);
@@ -272,6 +275,59 @@ impl Command for Aging {
             accounts,
         })
     }
+}
+
+/// An item due in parts ages by part: what is open of it on `as_of` is
+/// shared out over its parts still open then, by what is open of each in
+/// the item's currency, each at its own due date. The last part takes what
+/// rounding leaves.
+async fn by_instalment(
+    conn: &mut erpcraft_kernel::PgConnection,
+    rows: Vec<Open>,
+    as_of: NaiveDate,
+    decimals: u32,
+) -> Result<Vec<Open>> {
+    let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    let parts: Vec<(Uuid, NaiveDate, Decimal)> = sqlx::query_as(
+        "SELECT i.id, x.due_date, x.txn_amount - x.txn_settled
+         FROM open_item i, open_item_instalments(i.id, $2) x
+         WHERE i.id = ANY($1) AND x.txn_amount > x.txn_settled
+         ORDER BY i.id, x.seq",
+    )
+    .bind(&ids)
+    .bind(as_of)
+    .fetch_all(&mut *conn)
+    .await?;
+    if parts.is_empty() {
+        return Ok(rows);
+    }
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mine: Vec<&(Uuid, NaiveDate, Decimal)> =
+            parts.iter().filter(|(id, ..)| *id == row.id).collect();
+        let txn_open: Decimal = mine.iter().map(|(.., open)| *open).sum();
+        if mine.is_empty() || txn_open.is_zero() {
+            out.push(row);
+            continue;
+        }
+        let mut left = row.open;
+        for (index, (_, due, open)) in mine.iter().enumerate() {
+            let share = if index + 1 == mine.len() {
+                left
+            } else {
+                (row.open * *open / txn_open).round_dp(decimals)
+            };
+            left -= share;
+            out.push(Open {
+                id: row.id,
+                party_type: row.party_type.clone(),
+                party_id: row.party_id,
+                due: *due,
+                open: share,
+            });
+        }
+    }
+    Ok(out)
 }
 
 fn buckets(bounds: &[i32]) -> Vec<Bucket> {

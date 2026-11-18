@@ -31,6 +31,35 @@ pub(crate) fn step_entity() -> EntityMeta {
         .order_by(&["terms_id", "discount_days"])
 }
 
+pub(crate) fn instalment_entity() -> EntityMeta {
+    EntityMeta::new("payment_terms_instalment", "Payment terms instalment")
+        .field(
+            FieldMeta::new(
+                "terms_id",
+                "Payment terms",
+                FieldType::link("payment_terms"),
+            )
+            .required()
+            .immutable(),
+        )
+        .field(
+            FieldMeta::new("percent", "Part", FieldType::Decimal)
+                .percent(6)
+                .required()
+                .help(
+                    "Percent of the invoice due on this day. The parts leave something for \
+                     the last, which is what is left, due at the terms' net days.",
+                ),
+        )
+        .field(
+            FieldMeta::new("days", "Due after days", FieldType::Int)
+                .required()
+                .help("Counted as the terms' net days are, and fewer than them."),
+        )
+        .field(FieldMeta::new("created_at", "Created", FieldType::Timestamp).readonly())
+        .order_by(&["terms_id", "days"])
+}
+
 pub(crate) fn entity() -> EntityMeta {
     EntityMeta::new("payment_terms", "Payment terms")
         .field(FieldMeta::new("code", "Code", FieldType::Text).required())
@@ -79,6 +108,10 @@ pub struct Terms {
     /// Further early-payment discounts after the first: percent and days.
     #[sqlx(skip)]
     pub steps: Vec<(Decimal, i32)>,
+    /// The parts due before the last: percent and days. The last part is
+    /// what is left, due at the net days.
+    #[sqlx(skip)]
+    pub instalments: Vec<(Decimal, i32)>,
 }
 
 impl Terms {
@@ -94,6 +127,13 @@ impl Terms {
         terms.steps = sqlx::query_as(
             "SELECT discount_percent, discount_days FROM payment_terms_step
              WHERE terms_id = $1 ORDER BY discount_days",
+        )
+        .bind(id)
+        .fetch_all(&mut *conn)
+        .await?;
+        terms.instalments = sqlx::query_as(
+            "SELECT percent, days FROM payment_terms_instalment
+             WHERE terms_id = $1 ORDER BY days",
         )
         .bind(id)
         .fetch_all(&mut *conn)
@@ -177,6 +217,46 @@ pub fn discount_steps(
     steps
 }
 
+/// The parts an item dated `date` is due in under `terms`, earliest
+/// first: each one's due date and amount of `owed`, in the item's currency
+/// rounded to `decimals`, the last taking what is left at the net due
+/// date. Empty when the terms are not in parts, on a credit, or when the
+/// parts come to one. Parts that fall on one day are one part; a part that
+/// would round to nothing is left to the next.
+pub fn instalments(
+    terms: &Terms,
+    date: NaiveDate,
+    owed: Decimal,
+    decimals: u32,
+) -> Vec<(NaiveDate, Decimal)> {
+    if owed <= Decimal::ZERO || terms.instalments.is_empty() {
+        return vec![];
+    }
+    let due = terms.after(date, terms.net_days);
+    let mut parts: Vec<(NaiveDate, Decimal)> = vec![];
+    let mut left = owed;
+    for (percent, days) in &terms.instalments {
+        let amount = round_money(owed * percent / Decimal::ONE_HUNDRED, decimals).min(left);
+        if amount <= Decimal::ZERO {
+            continue;
+        }
+        let on = terms.after(date, *days).min(due);
+        match parts.iter_mut().find(|(day, _)| *day == on) {
+            Some((_, kept)) => *kept += amount,
+            None => parts.push((on, amount)),
+        }
+        left -= amount;
+    }
+    if left > Decimal::ZERO {
+        match parts.iter_mut().find(|(day, _)| *day == due) {
+            Some((_, kept)) => *kept += left,
+            None => parts.push((due, left)),
+        }
+    }
+    parts.sort();
+    if parts.len() < 2 { vec![] } else { parts }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +270,7 @@ mod tests {
             discount_percent: discount.map(|(p, _)| p.parse().unwrap()),
             discount_days: discount.map(|(_, d)| d),
             steps: vec![],
+            instalments: vec![],
         }
     }
 
@@ -246,5 +327,31 @@ mod tests {
             ]
         );
         assert!(discount_steps(&t, day("2026-03-25"), -owed, 2).is_empty());
+    }
+
+    #[test]
+    fn a_third_now_a_third_in_thirty_days_the_rest_in_sixty() {
+        let mut t = terms(60, false, None);
+        t.instalments = vec![
+            ("33.333333".parse().unwrap(), 0),
+            ("33.333333".parse().unwrap(), 30),
+        ];
+        let owed: Decimal = "100".parse().unwrap();
+        let parts = instalments(&t, day("2026-03-01"), owed, 2);
+        assert_eq!(
+            parts,
+            [
+                (day("2026-03-01"), "33.33".parse().unwrap()),
+                (day("2026-03-31"), "33.33".parse().unwrap()),
+                (day("2026-04-30"), "33.34".parse().unwrap()),
+            ]
+        );
+        assert_eq!(parts.iter().map(|(_, a)| *a).sum::<Decimal>(), owed);
+        // Nothing in parts on a credit, or for terms without parts.
+        assert!(instalments(&t, day("2026-03-01"), -owed, 2).is_empty());
+        assert!(instalments(&terms(30, false, None), day("2026-03-01"), owed, 2).is_empty());
+        // A part too small to be anything is left to the last.
+        let tiny = instalments(&t, day("2026-03-01"), "0.01".parse().unwrap(), 2);
+        assert!(tiny.is_empty(), "{tiny:?}");
     }
 }

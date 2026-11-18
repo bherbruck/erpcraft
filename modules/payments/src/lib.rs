@@ -76,6 +76,11 @@ impl Module for PaymentsModule {
                 name: "write_off",
                 sql: include_str!("../migrations/0006_write_off.sql"),
             },
+            Migration {
+                version: 7,
+                name: "instalment",
+                sql: include_str!("../migrations/0007_instalment.sql"),
+            },
         ]
     }
 
@@ -247,6 +252,9 @@ struct AllocationInput {
     /// written off, in the item's currency.
     #[serde(default)]
     write_off: Decimal,
+    /// For an item due in parts: the part paid. The earliest part still
+    /// open first when omitted.
+    instalment: Option<i32>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -257,6 +265,7 @@ struct AllocationLine {
     amount: Decimal,
     discount: Decimal,
     write_off: Decimal,
+    instalment: Option<i32>,
 }
 
 async fn load_allocations(
@@ -264,7 +273,8 @@ async fn load_allocations(
     document_id: Uuid,
 ) -> Result<Vec<AllocationLine>> {
     let lines = sqlx::query_as(
-        "SELECT id, line_no, open_item_id, amount, discount, write_off FROM payment_allocation
+        "SELECT id, line_no, open_item_id, amount, discount, write_off, instalment
+         FROM payment_allocation
          WHERE document_id = $1 ORDER BY line_no",
     )
     .bind(document_id)
@@ -432,6 +442,10 @@ impl DocumentHandler for Payment {
                             "A small difference left of the item, settled without being paid, \
                              as far as the company's policy payment.write_off allows.",
                         ),
+                    FieldMeta::new("instalment", "Part", FieldType::Int).help(
+                        "For an item due in parts: which part this pays (1 is the first). The \
+                         earliest part still open first when left out.",
+                    ),
                 ],
             }],
             states: vec![
@@ -723,13 +737,15 @@ impl DocumentHandler for Payment {
         let amounts: Vec<Decimal> = body.allocations.iter().map(|a| a.amount).collect();
         let discounts: Vec<Decimal> = body.allocations.iter().map(|a| a.discount).collect();
         let write_offs: Vec<Decimal> = body.allocations.iter().map(|a| a.write_off).collect();
+        let parts: Vec<Option<i32>> = body.allocations.iter().map(|a| a.instalment).collect();
         sqlx::query(
             "INSERT INTO payment_allocation (id, document_id, line_no, open_item_id, amount,
-                discount, write_off)
-             SELECT r.id, $1, r.line_no, r.open_item_id, r.amount, r.discount, r.write_off
+                discount, write_off, instalment)
+             SELECT r.id, $1, r.line_no, r.open_item_id, r.amount, r.discount, r.write_off,
+                r.instalment
              FROM unnest($2::uuid[], $3::int4[], $4::uuid[], $5::numeric[], $6::numeric[],
-                         $7::numeric[])
-                AS r(id, line_no, open_item_id, amount, discount, write_off)
+                         $7::numeric[], $8::int4[])
+                AS r(id, line_no, open_item_id, amount, discount, write_off, instalment)
              ORDER BY r.line_no",
         )
         .bind(doc.id)
@@ -739,6 +755,7 @@ impl DocumentHandler for Payment {
         .bind(&amounts)
         .bind(&discounts)
         .bind(&write_offs)
+        .bind(&parts)
         .execute(&mut *ctx.conn)
         .await?;
         Ok(())
@@ -968,6 +985,52 @@ async fn check_discount(
 /// A write-off settles what is left of a debt, as far as the company's
 /// policy accepts: the amount, the discount and the write-off together are
 /// the rest of the item.
+/// An allocation that names a part of its item pays no more than is open
+/// of that part.
+fn check_instalment(
+    line: &AllocationLine,
+    item: &erpcraft_openitems::OpenItem,
+    part: i32,
+) -> Result<()> {
+    let refuse = |why: String| {
+        Error::line(
+            "allocations",
+            line.line_no as usize,
+            Some("instalment"),
+            why,
+        )
+    };
+    let parts = item
+        .instalments
+        .as_ref()
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let Some(found) = parts
+        .iter()
+        .find(|p| p["seq"].as_i64() == Some(i64::from(part)))
+    else {
+        return Err(refuse(if parts.is_empty() {
+            "this item is not due in parts".into()
+        } else {
+            format!("this item is due in {} parts, not {part}", parts.len())
+        }));
+    };
+    let open: Decimal = found["open"]
+        .as_str()
+        .and_then(|o| o.parse().ok())
+        .unwrap_or_default();
+    let paid = line.amount + line.discount + line.write_off;
+    if paid > open {
+        return Err(refuse(format!(
+            "only {} is still open of part {part}, not {}",
+            open.normalize(),
+            paid.normalize()
+        )));
+    }
+    Ok(())
+}
+
 async fn check_write_off(
     ctx: &mut Ctx<'_>,
     doc: &Document,
@@ -1272,6 +1335,9 @@ impl Command for PostPayment {
             if !line.write_off.is_zero() {
                 check_write_off(ctx, &doc, line, item).await?;
             }
+            if let Some(part) = line.instalment {
+                check_instalment(line, item, part)?;
+            }
             if wrong_way
                 || (line.amount + line.discount + line.write_off).abs() > item.txn_open.abs()
             {
@@ -1351,6 +1417,7 @@ impl Command for PostPayment {
                 open_item_id: l.open_item_id,
                 amount: l.amount + l.discount + l.write_off,
                 discount: l.discount,
+                instalment: l.instalment,
             })
             .collect();
         let taken = erpcraft_openitems::settle(&mut *ctx.conn, &posting, &allocations).await?;

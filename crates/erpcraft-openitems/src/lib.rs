@@ -35,7 +35,7 @@ mod aging;
 mod terms;
 
 use serde::{Deserialize, Serialize};
-pub use terms::{Terms, discount_steps, due_dates};
+pub use terms::{Terms, discount_steps, due_dates, instalments};
 use uuid::Uuid;
 
 pub struct OpenItemsModule;
@@ -86,11 +86,20 @@ impl Module for OpenItemsModule {
                 name: "discount_steps",
                 sql: include_str!("../migrations/0007_discount_steps.sql"),
             },
+            Migration {
+                version: 8,
+                name: "instalments",
+                sql: include_str!("../migrations/0008_instalments.sql"),
+            },
         ]
     }
 
     fn entities(&self) -> Vec<EntityMeta> {
-        vec![terms::entity(), terms::step_entity()]
+        vec![
+            terms::entity(),
+            terms::step_entity(),
+            terms::instalment_entity(),
+        ]
     }
 
     fn ledgers(&self) -> Vec<Arc<dyn Ledger>> {
@@ -164,7 +173,7 @@ pub async fn open(conn: &mut PgConnection, posting: &Posting, item: &NewOpenItem
         Some((currency, txn)) => (Some(currency.as_str()), *txn),
         None => (None, item.amount),
     };
-    let (due_date, steps) = match item.terms {
+    let (due_date, steps, parts) = match item.terms {
         Some(terms) => {
             let terms = Terms::load(conn, terms).await?;
             let decimals = match currency {
@@ -186,9 +195,10 @@ pub async fn open(conn: &mut PgConnection, posting: &Posting, item: &NewOpenItem
             };
             let (due, _) = due_dates(&terms, posting.posting_date, txn_amount, decimals);
             let steps = discount_steps(&terms, posting.posting_date, txn_amount, decimals);
-            (Some(due), steps)
+            let parts = instalments(&terms, posting.posting_date, txn_amount, decimals);
+            (Some(due), steps, parts)
         }
-        None => (item.due_date, vec![]),
+        None => (item.due_date, vec![], vec![]),
     };
     // The first step is the item's discount; every step is kept apart.
     let discount = steps.first().copied();
@@ -224,6 +234,21 @@ pub async fn open(conn: &mut PgConnection, posting: &Posting, item: &NewOpenItem
         .bind(id)
         .bind(steps.iter().map(|(until, _)| *until).collect::<Vec<_>>())
         .bind(steps.iter().map(|(_, amount)| *amount).collect::<Vec<_>>())
+        .execute(&mut *conn)
+        .await?;
+    }
+    // The parts it is due in, when the terms make it due in parts.
+    if !parts.is_empty() {
+        let seqs: Vec<i32> = (1..=parts.len() as i32).collect();
+        sqlx::query(
+            "INSERT INTO open_item_instalment (open_item_id, seq, due_date, txn_amount)
+             SELECT $1, p.seq, p.due_date, p.amount
+             FROM unnest($2::int4[], $3::date[], $4::numeric[]) AS p(seq, due_date, amount)",
+        )
+        .bind(id)
+        .bind(&seqs)
+        .bind(parts.iter().map(|(due, _)| *due).collect::<Vec<_>>())
+        .bind(parts.iter().map(|(_, amount)| *amount).collect::<Vec<_>>())
         .execute(&mut *conn)
         .await?;
     }
@@ -437,6 +462,11 @@ pub struct OpenItem {
     /// Every early-payment discount the item offers, earliest first, when
     /// its terms give more than one step: `[{"until", "amount"}]`.
     pub discount_steps: Option<serde_json::Value>,
+    /// The parts the item is due in, when its terms make it due in parts,
+    /// earliest first, in its currency: `[{"seq", "due_date", "amount",
+    /// "open"}]`. A payment that names no part pays the earliest part
+    /// still open first.
+    pub instalments: Option<serde_json::Value>,
 }
 
 impl OpenItem {
@@ -491,7 +521,13 @@ const ITEM_COLUMNS: &str = "i.id, i.company_id, i.posting_id, i.kind, i.party_ty
                                                                  'amount', s.amount::text) \
                                               ORDER BY s.until) \
                              FROM open_item_discount s WHERE s.open_item_id = i.id) \
-                                AS discount_steps";
+                                AS discount_steps, \
+                            (SELECT jsonb_agg(jsonb_build_object('seq', x.seq, \
+                                                                 'due_date', x.due_date, \
+                                                                 'amount', trim_scale(x.txn_amount)::text, \
+                                                                 'open', trim_scale(x.txn_amount - x.txn_settled)::text) \
+                                              ORDER BY x.seq) \
+                             FROM open_item_instalments(i.id, NULL) x) AS instalments";
 
 /// Lock these items until the transaction ends and return them as they
 /// stand, in the order given. Items are locked in a fixed order, so two
@@ -532,6 +568,9 @@ pub struct Allocation {
     /// Of `amount`, what is an early-payment discount kept back rather
     /// than paid. Zero for none.
     pub discount: Decimal,
+    /// The part of the item it pays, for an item due in parts. `None`: the
+    /// earliest part still open first.
+    pub instalment: Option<i32>,
 }
 
 /// Settle items under `posting`. The ledger refuses to settle more than is
@@ -553,8 +592,8 @@ pub async fn settle(
         // The trigger works out the accounting amount.
         let amount: Decimal = sqlx::query_scalar(
             "INSERT INTO settlement (id, company_id, posting_id, open_item_id, amount, txn_amount,
-                discount)
-             VALUES ($1, $2, $3, $4, 0, $5, $6) RETURNING amount",
+                discount, instalment)
+             VALUES ($1, $2, $3, $4, 0, $5, $6, $7) RETURNING amount",
         )
         .bind(new_id())
         .bind(posting.company_id)
@@ -562,6 +601,7 @@ pub async fn settle(
         .bind(allocation.open_item_id)
         .bind(allocation.amount)
         .bind(allocation.discount)
+        .bind(allocation.instalment)
         .fetch_one(&mut *conn)
         .await?;
         taken.push(amount);

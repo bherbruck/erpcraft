@@ -1000,3 +1000,184 @@ async fn terms_with_two_discount_steps_take_the_one_in_force() {
     assert!(close(books["2300"], -(19.0 - 0.19)));
     t.stop().await;
 }
+
+/// The parts of an item, each with its due date and what is open of it.
+fn parts(item: &Value) -> Vec<(String, f64)> {
+    item["instalments"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no parts: {item}"))
+        .iter()
+        .map(|p| (p["due_date"].as_str().unwrap().to_owned(), dec(&p["open"])))
+        .collect()
+}
+
+#[tokio::test]
+async fn an_invoice_due_in_parts_ages_and_is_paid_by_part() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    // 30 % on the invoice's date, 30 % in 30 days, the rest in 60.
+    let thirds = t
+        .create(
+            "payment_terms",
+            json!({ "code": "PARTS", "name": "30/30/40", "net_days": 60 }),
+        )
+        .await;
+    for (percent, days) in [("30", 0), ("30", 30)] {
+        t.create(
+            "payment_terms_instalment",
+            json!({ "terms_id": thirds, "percent": percent, "days": days }),
+        )
+        .await;
+    }
+    // A part is due before the rest, and the parts leave something for it.
+    for (percent, days) in [("10", 60), ("40", 45)] {
+        let (status, body) = t
+            .post(
+                &t.admin,
+                "/api/entities/payment_terms_instalment",
+                json!({ "terms_id": thirds, "percent": percent, "days": days }),
+            )
+            .await;
+        assert_ne!(status, StatusCode::CREATED, "{percent} % at {days}: {body}");
+    }
+    let (status, body) = t
+        .patch(
+            &t.admin,
+            &format!("/api/entities/payment_terms/{thirds}"),
+            json!({ "net_days": 30 }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK, "net days before a part: {body}");
+
+    // 119.00 owed: 35.70 on March 1, 35.70 on March 31, 47.60 on April 30.
+    let order = f
+        .order(
+            &t,
+            "sales",
+            "10",
+            "10.00",
+            json!({ "payment_terms_id": thirds }),
+        )
+        .await;
+    let invoice = f.sold(&t, &order, "2026-03-01").await;
+    let item = f.item_of(&t, "receivable", &invoice).await;
+    assert_eq!(
+        item["due_date"], "2026-04-30",
+        "the item is due when its last part is"
+    );
+    assert_eq!(
+        parts(&item),
+        [
+            ("2026-03-01".to_owned(), 35.7),
+            ("2026-03-31".to_owned(), 35.7),
+            ("2026-04-30".to_owned(), 47.6),
+        ]
+    );
+
+    // Aging by part: on April 10 the first is 40 days late, the second
+    // 10, the last falls due within 30 days.
+    let aging = f.aging(&t, "receivable", "2026-04-10").await;
+    let customer = &aging["parties"][0];
+    assert!(close(dec(&customer["amounts"][0]), 47.6), "{aging}");
+    assert!(close(dec(&customer["amounts"][1]), 35.7), "{aging}");
+    assert!(close(dec(&customer["amounts"][2]), 35.7), "{aging}");
+    assert!(close(dec(&customer["due_next_30"]), 47.6), "{aging}");
+
+    // A payment that names no part pays the earliest first.
+    let first = f
+        .posted(
+            &t,
+            "payment",
+            "2026-04-12",
+            json!({ "direction": "incoming", "bank_account_id": f.c.cash,
+                    "allocations": [{ "open_item_id": item["id"], "amount": "50.00" }] }),
+        )
+        .await;
+    let item = f.item_of(&t, "receivable", &invoice).await;
+    let open: Vec<f64> = parts(&item).into_iter().map(|(_, o)| o).collect();
+    assert_eq!(open, [0.0, 21.4, 47.6]);
+    // One that names a part pays that part, and no more than is open of it.
+    let draft = f
+        .draft(
+            &t,
+            "payment",
+            "2026-04-13",
+            json!({ "direction": "incoming", "bank_account_id": f.c.cash,
+                    "allocations": [{ "open_item_id": item["id"], "amount": "47.61",
+                                      "instalment": 3 }] }),
+        )
+        .await;
+    let (status, body) = f.post(&t, "payment", &draft).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(message(&body).contains("of part 3"), "{body}");
+    let draft = f
+        .draft(
+            &t,
+            "payment",
+            "2026-04-13",
+            json!({ "direction": "incoming", "bank_account_id": f.c.cash,
+                    "allocations": [{ "open_item_id": item["id"], "amount": "47.60",
+                                      "instalment": 3 }] }),
+        )
+        .await;
+    let (status, body) = f.post(&t, "payment", &draft).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let item = f.item_of(&t, "receivable", &invoice).await;
+    let open: Vec<f64> = parts(&item).into_iter().map(|(_, o)| o).collect();
+    assert_eq!(open, [0.0, 21.4, 0.0]);
+    // The ledger refuses it too, whatever the command checks.
+    let paid = t
+        .count(&format!(
+            "SELECT count(*) FROM settlement WHERE open_item_id = '{}' AND instalment = 3",
+            item["id"].as_str().unwrap()
+        ))
+        .await;
+    assert_eq!(paid, 1);
+    // A part the item does not have is refused.
+    let draft = f
+        .draft(
+            &t,
+            "payment",
+            "2026-04-13",
+            json!({ "direction": "incoming", "bank_account_id": f.c.cash,
+                    "allocations": [{ "open_item_id": item["id"], "amount": "1.00",
+                                      "instalment": 4 }] }),
+        )
+        .await;
+    let (status, body) = f.post(&t, "payment", &draft).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(message(&body).contains("due in 3 parts"), "{body}");
+
+    // Taking back the first payment opens the earliest parts again.
+    let (status, body) = t
+        .command(&t.admin, "payment.reverse", json!({ "id": first["id"] }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let item = f.item_of(&t, "receivable", &invoice).await;
+    let open: Vec<f64> = parts(&item).into_iter().map(|(_, o)| o).collect();
+    assert_eq!(open, [35.7, 35.7, 0.0]);
+    // As of April 10 nothing had been paid, and aging says so still.
+    let aging = f.aging(&t, "receivable", "2026-04-10").await;
+    assert!(close(dec(&aging["total"]), 119.0), "{aging}");
+    assert!(
+        close(dec(&aging["parties"][0]["amounts"][2]), 35.7),
+        "{aging}"
+    );
+    // Today: two parts open, both late.
+    let aging = f.aging(&t, "receivable", "2026-05-15").await;
+    assert!(close(dec(&aging["total"]), 71.4), "{aging}");
+    assert!(
+        close(dec(&aging["parties"][0]["amounts"][0]), 0.0),
+        "{aging}"
+    );
+    f.books(&t).await;
+
+    // An invoice on terms without parts has none.
+    let order = f.order(&t, "sales", "1", "10.00", json!({})).await;
+    let invoice = f.sold(&t, &order, "2026-03-01").await;
+    assert_eq!(
+        f.item_of(&t, "receivable", &invoice).await["instalments"],
+        Value::Null
+    );
+    t.stop().await;
+}
