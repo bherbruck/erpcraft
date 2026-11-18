@@ -5,7 +5,9 @@
 use chrono::NaiveDate;
 use erpcraft_kernel::Decimal;
 
-use crate::model::{AllowanceCharge, Invoice, Line, Party, Payment, Syntax, Totals, VatBreakdown};
+use crate::model::{
+    Address, AllowanceCharge, Invoice, Line, Party, Payment, Syntax, Totals, VatBreakdown,
+};
 use crate::xml::{Node, Writer};
 
 pub const INVOICE_NS: &str = "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2";
@@ -225,6 +227,16 @@ pub fn write(inv: &Invoice) -> String {
     w.leaf("cbc:DocumentCurrencyCode", &[], cur);
     w.opt("cbc:TaxCurrencyCode", inv.tax_currency.as_deref());
     w.opt("cbc:BuyerReference", inv.buyer_reference.as_deref());
+    if inv.period_start.is_some() || inv.period_end.is_some() {
+        w.open("cac:InvoicePeriod", &[]);
+        if let Some(d) = inv.period_start {
+            w.leaf("cbc:StartDate", &[], &date(d));
+        }
+        if let Some(d) = inv.period_end {
+            w.leaf("cbc:EndDate", &[], &date(d));
+        }
+        w.close();
+    }
     if let Some(order) = &inv.order_reference {
         w.open("cac:OrderReference", &[]);
         w.leaf("cbc:ID", &[], order);
@@ -246,9 +258,24 @@ pub fn write(inv: &Invoice) -> String {
     w.open("cac:AccountingCustomerParty", &[]);
     party(&mut w, &inv.buyer, false);
     w.close();
-    if let Some(d) = inv.delivery_date {
+    if inv.delivery_date.is_some() || inv.delivery_address.is_some() {
         w.open("cac:Delivery", &[]);
-        w.leaf("cbc:ActualDeliveryDate", &[], &date(d));
+        if let Some(d) = inv.delivery_date {
+            w.leaf("cbc:ActualDeliveryDate", &[], &date(d));
+        }
+        if let Some(a) = &inv.delivery_address {
+            w.open("cac:DeliveryLocation", &[]);
+            w.open("cac:Address", &[]);
+            w.opt("cbc:StreetName", a.street.as_deref());
+            w.opt("cbc:AdditionalStreetName", a.additional_street.as_deref());
+            w.opt("cbc:CityName", a.city.as_deref());
+            w.opt("cbc:PostalZone", a.postcode.as_deref());
+            w.open("cac:Country", &[]);
+            w.leaf("cbc:IdentificationCode", &[], &a.country);
+            w.close();
+            w.close();
+            w.close();
+        }
         w.close();
     }
     if let Some(p) = &inv.payment {
@@ -585,6 +612,25 @@ pub fn read(root: &Node) -> Result<Invoice, String> {
             root.at(&["Delivery", "ActualDeliveryDate"]),
             "the delivery date (BT-72)",
         )?,
+        period_start: read_date(
+            root.at(&["InvoicePeriod", "StartDate"]),
+            "the invoicing period's start (BT-73)",
+        )?,
+        period_end: read_date(
+            root.at(&["InvoicePeriod", "EndDate"]),
+            "the invoicing period's end (BT-74)",
+        )?,
+        delivery_address: root
+            .at(&["Delivery", "DeliveryLocation", "Address"])
+            .map(|a| Address {
+                street: a.text_at(&["StreetName"]),
+                additional_street: a.text_at(&["AdditionalStreetName"]),
+                city: a.text_at(&["CityName"]),
+                postcode: a.text_at(&["PostalZone"]),
+                country: a
+                    .text_at(&["Country", "IdentificationCode"])
+                    .unwrap_or_default(),
+            }),
         seller: root
             .child("AccountingSupplierParty")
             .map(read_party)

@@ -76,6 +76,19 @@ pub struct Party {
     pub contact_email: Option<String>,
 }
 
+/// A postal address: the deliver to address (BG-15).
+#[derive(Debug, Clone, Default, Serialize, schemars::JsonSchema)]
+pub struct Address {
+    /// BT-75, BT-76.
+    pub street: Option<String>,
+    pub additional_street: Option<String>,
+    /// BT-77, BT-78.
+    pub city: Option<String>,
+    pub postcode: Option<String>,
+    /// BT-80.
+    pub country: String,
+}
+
 /// An allowance or a charge on a line (BG-27, BG-28) or on the document
 /// (BG-20, BG-21).
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
@@ -199,6 +212,11 @@ pub struct Invoice {
     pub notes: Vec<String>,
     /// BT-72.
     pub delivery_date: Option<NaiveDate>,
+    /// BT-73, BT-74: the invoicing period (BG-14).
+    pub period_start: Option<NaiveDate>,
+    pub period_end: Option<NaiveDate>,
+    /// BG-15: the address the goods were delivered to.
+    pub delivery_address: Option<Address>,
     pub seller: Party,
     pub buyer: Party,
     pub payment: Option<Payment>,
@@ -619,7 +637,7 @@ pub fn check(invoice: &Invoice) -> Vec<Finding> {
         let expected = by_category.get(&key).copied().unwrap_or_default();
         if (v.taxable - expected).abs() >= Decimal::ONE {
             out.push(finding(
-                &format!("BR-{}-08", v.category),
+                &format!("BR-{}-08", rule_part(&v.category)),
                 format!(
                     "{what}: taxable amount {} but the lines come to {expected}",
                     v.taxable
@@ -646,8 +664,14 @@ pub fn check(invoice: &Invoice) -> Vec<Finding> {
         }
         if matches!(v.category.as_str(), "Z" | "E" | "AE" | "K" | "G" | "O") && !rate.is_zero() {
             out.push(finding(
-                &format!("BR-{}-05", v.category),
+                &format!("BR-{}-05", rule_part(&v.category)),
                 format!("{what}: the rate must be zero"),
+            ));
+        }
+        if matches!(v.category.as_str(), "Z" | "E" | "AE" | "K" | "G" | "O") && !v.tax.is_zero() {
+            out.push(finding(
+                &format!("BR-{}-09", rule_part(&v.category)),
+                format!("{what}: the VAT amount must be zero, not {}", v.tax),
             ));
         }
         if matches!(v.category.as_str(), "E" | "AE" | "K" | "G" | "O")
@@ -655,15 +679,110 @@ pub fn check(invoice: &Invoice) -> Vec<Finding> {
             && v.exemption_reason_code.is_none()
         {
             out.push(finding(
-                &format!("BR-{}-10", v.category),
+                &format!("BR-{}-10", rule_part(&v.category)),
                 format!("{what}: an exemption reason (BT-120 or BT-121) is needed"),
+            ));
+        }
+        if matches!(v.category.as_str(), "S" | "Z")
+            && (v.exemption_reason.is_some() || v.exemption_reason_code.is_some())
+        {
+            out.push(finding(
+                &format!("BR-{}-10", v.category),
+                format!("{what}: has an exemption reason, which this category may not"),
+            ));
+        }
+    }
+
+    // What the categories require of the parties and the delivery
+    // (BR-AE-02 to 04, BR-IC-02 to 04, BR-IC-11, BR-IC-12, BR-G-02 to 04,
+    // BR-O-02 to 04, BR-O-11). The tax representative (BG-11) is not
+    // read, so the seller's own identifiers must be there.
+    let used = |c: &str| {
+        invoice.lines.iter().any(|l| l.vat_category == c)
+            || invoice
+                .allowances
+                .iter()
+                .any(|a| a.vat_category.as_deref() == Some(c))
+            || invoice.vat.iter().any(|v| v.category == c)
+    };
+    let (s, b) = (&invoice.seller, &invoice.buyer);
+    if used("AE") {
+        if !(has(&s.vat_id) || has(&s.tax_number)) {
+            out.push(finding(
+                "BR-AE-02",
+                "a reverse charge (AE) needs the seller's VAT identifier (BT-31) or tax \
+                 registration (BT-32)",
+            ));
+        }
+        if !(has(&b.vat_id) || has(&b.legal_registration)) {
+            out.push(finding(
+                "BR-AE-02",
+                "a reverse charge (AE) needs the buyer's VAT identifier (BT-48) or legal \
+                 registration (BT-47)",
+            ));
+        }
+    }
+    if used("K") {
+        if !has(&s.vat_id) {
+            out.push(finding(
+                "BR-IC-02",
+                "an intra-Community supply (K) needs the seller's VAT identifier (BT-31)",
+            ));
+        }
+        if !has(&b.vat_id) {
+            out.push(finding(
+                "BR-IC-02",
+                "an intra-Community supply (K) needs the buyer's VAT identifier (BT-48)",
+            ));
+        }
+        if invoice.delivery_date.is_none()
+            && invoice.period_start.is_none()
+            && invoice.period_end.is_none()
+        {
+            out.push(finding(
+                "BR-IC-11",
+                "an intra-Community supply (K) needs the delivery date (BT-72) or the \
+                 invoicing period (BG-14)",
+            ));
+        }
+        if invoice
+            .delivery_address
+            .as_ref()
+            .is_none_or(|a| a.country.trim().is_empty())
+        {
+            out.push(finding(
+                "BR-IC-12",
+                "an intra-Community supply (K) needs the country delivered to (BT-80)",
+            ));
+        }
+    }
+    if used("G") && !has(&s.vat_id) {
+        out.push(finding(
+            "BR-G-02",
+            "an export outside the EU (G) needs the seller's VAT identifier (BT-31)",
+        ));
+    }
+    if used("O") {
+        if has(&s.vat_id) || has(&b.vat_id) {
+            out.push(finding(
+                "BR-O-02",
+                "an invoice not subject to VAT (O) may not carry the seller's or the buyer's \
+                 VAT identifier (BT-31, BT-48)",
+            ));
+        }
+        if invoice.vat.iter().any(|v| v.category != "O")
+            || invoice.lines.iter().any(|l| l.vat_category != "O")
+        {
+            out.push(finding(
+                "BR-O-11",
+                "an invoice with VAT category O (not subject to VAT) may have no other category",
             ));
         }
     }
     for key in by_category.keys() {
         if !seen.contains(key) {
             out.push(finding(
-                &format!("BR-{}-01", key.0),
+                &format!("BR-{}-01", rule_part(&key.0)),
                 format!(
                     "lines of VAT category {} at {}% have no VAT breakdown",
                     key.0, key.1
@@ -700,8 +819,31 @@ pub fn check(invoice: &Invoice) -> Vec<Finding> {
         }
     }
 
+    if let Some(a) = &invoice.delivery_address
+        && a.country.trim().is_empty()
+    {
+        out.push(finding(
+            "BR-57",
+            "the deliver to address has no country (BT-80)",
+        ));
+    }
+
     if invoice.is_xrechnung() {
         let s = &invoice.seller;
+        if let Some(a) = &invoice.delivery_address {
+            need_de(
+                &mut out,
+                "BR-DE-10",
+                has(&a.city),
+                "the deliver to city (BT-77)",
+            );
+            need_de(
+                &mut out,
+                "BR-DE-11",
+                has(&a.postcode),
+                "the deliver to post code (BT-78)",
+            );
+        }
         let b = &invoice.buyer;
         if !invoice.specification.starts_with(EN16931) {
             out.push(finding(
@@ -826,6 +968,15 @@ pub fn check(invoice: &Invoice) -> Vec<Finding> {
         }
     }
     out
+}
+
+/// How the rules of a category are named: "IC" for K, as the standard
+/// names them, the category itself otherwise.
+fn rule_part(category: &str) -> &str {
+    match category {
+        "K" => "IC",
+        other => other,
+    }
 }
 
 /// A rate as a key: a missing rate is zero, as for category O.

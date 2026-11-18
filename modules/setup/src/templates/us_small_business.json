@@ -92,6 +92,7 @@
       "collected": "2100",
       "paid": "6130"
     },
+    { "code": "US-EXEMPT", "name": "Exempt sale (no sales tax: resale, exempt buyer or exempt goods)", "rate": "0", "collected": "2100", "paid": "6130", "vat_category": "E", "exemption_reason": "Exempt from sales tax" },
     { "code": "US-EXAMPLE-STATE", "name": "Example state sales tax 4 % (not a real rate)", "rate": "4", "collected": "2100", "paid": "6130", "authority": "Example state department of revenue" },
     { "code": "US-EXAMPLE-COUNTY", "name": "Example county sales tax 1.5 % (not a real rate)", "rate": "1.5", "collected": "2110", "paid": "6130", "authority": "Example county" },
     { "code": "US-EXAMPLE-STATE-COUNTY", "name": "Example state 4 % + county 1.5 % (not real rates)", "rate": "5.5", "components": ["US-EXAMPLE-STATE", "US-EXAMPLE-COUNTY"] }

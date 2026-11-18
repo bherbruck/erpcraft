@@ -1,6 +1,6 @@
 //! A posted sales invoice or sales credit note as an EN 16931 invoice.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::NaiveDate;
 use erpcraft_kernel::document;
@@ -12,7 +12,8 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::model::{
-    self, AllowanceCharge, Finding, Invoice, Line, Party, Payment, Syntax, Totals, VatBreakdown,
+    self, Address, AllowanceCharge, Finding, Invoice, Line, Party, Payment, Syntax, Totals,
+    VatBreakdown,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -338,6 +339,7 @@ pub async fn build(
     }
     let mut lines = Vec::new();
     let mut breakdown: BTreeMap<(String, String), VatBreakdown> = BTreeMap::new();
+    let mut categories: BTreeSet<String> = BTreeSet::new();
     for l in &lines_data {
         let what: Option<(String, Option<String>, Option<String>)> = if credit {
             sqlx::query_as(
@@ -388,9 +390,9 @@ pub async fn build(
         ) = sqlx::query_as(
             "SELECT c.code, c.rate,
                     (SELECT count(*) FROM tax_code_component g WHERE g.group_id = c.id),
-                    t.category, t.exemption_reason, t.exemption_reason_code, c.self_assessed
-             FROM tax_code c LEFT JOIN einvoice_tax_category t ON t.tax_code_id = c.id
-             WHERE c.id = $1",
+                    c.vat_category, c.exemption_reason, c.exemption_reason_code,
+                    c.self_assessed
+             FROM tax_code c WHERE c.id = $1",
         )
         .bind(code_id)
         .fetch_one(&mut *conn)
@@ -403,25 +405,26 @@ pub async fn build(
             ));
             continue;
         }
-        // Tax the buyer accounts for: reverse charge, at 0 % on the invoice,
-        // unless the code is named otherwise.
-        let (rate, reason, reason_code) = if self_assessed {
-            (
-                Decimal::ZERO,
-                reason.or_else(|| Some("Reverse charge".into())),
-                reason_code.or_else(|| Some("VATEX-EU-AE".into())),
-            )
-        } else {
-            (rate, reason, reason_code)
-        };
+        let set_category = format!(
+            "set vat_category of tax code {code}: AE for a domestic reverse charge, K for an \
+             intra-Community supply, G for an export outside the EU, E for an exempt sale, Z \
+             for a zero rated one"
+        );
+        // The code's category; unstated, only a rate the seller charges
+        // is known to be standard rated.
         let category = match category {
             Some(c) => c,
-            None if self_assessed => "AE".to_owned(),
-            None if rate > Decimal::ZERO => "S".to_owned(),
+            None if rate > Decimal::ZERO && !self_assessed => "S".to_owned(),
             None => {
+                let why = if self_assessed {
+                    "is accounted for by the buyer, which may be a domestic reverse charge, an \
+                     intra-Community supply or an export"
+                } else {
+                    "is at 0 %"
+                };
                 missing.0.push(format!(
-                    "line {}: tax code {code} is at 0 %, which EN 16931 must name (zero rated, \
-                     exempt, reverse charge, ...): set it in an einvoice_tax_category for {code}",
+                    "line {}: tax code {code} {why}, and EN 16931 must name which (BT-151): \
+                     {set_category}",
                     l.line_no
                 ));
                 continue;
@@ -430,6 +433,53 @@ pub async fn build(
         let Some(tax) = l.tax else {
             return Err(Error::internal("a posted line without its tax"));
         };
+        // A sale the seller charges no VAT on is at 0 % on the invoice,
+        // whatever rate the buyer accounts for.
+        let untaxed = matches!(category.as_str(), "Z" | "E" | "AE" | "K" | "G" | "O");
+        if untaxed && !tax.is_zero() {
+            missing.0.push(format!(
+                "line {}: tax code {code} is VAT category {category}, which charges no VAT, \
+                 but the line was taxed {tax}: give such a sale a code at 0 % or one the \
+                 buyer accounts for",
+                l.line_no
+            ));
+            continue;
+        }
+        if !untaxed && self_assessed {
+            missing.0.push(format!(
+                "line {}: tax code {code} is accounted for by the buyer, so the invoice \
+                 charges no VAT, but it is VAT category {category}: {set_category}",
+                l.line_no
+            ));
+            continue;
+        }
+        let rate = if untaxed { Decimal::ZERO } else { rate };
+        // The reasons the standard asks for (BR-AE-10, BR-IC-10, BR-G-10,
+        // BR-O-10), from the VATEX list, unless the code gives its own.
+        let standard = match category.as_str() {
+            "AE" => Some(("Reverse charge", "VATEX-EU-AE")),
+            "K" => Some(("Intra-Community supply", "VATEX-EU-IC")),
+            "G" => Some(("Export outside the EU", "VATEX-EU-G")),
+            "O" => Some(("Not subject to VAT", "VATEX-EU-O")),
+            _ => None,
+        };
+        let (reason, reason_code) = match standard {
+            Some((text, vatex)) => (
+                reason.or_else(|| Some(text.into())),
+                reason_code.or_else(|| Some(vatex.into())),
+            ),
+            None => (reason, reason_code),
+        };
+        if category == "E" && reason.is_none() && reason_code.is_none() {
+            missing.0.push(format!(
+                "line {}: tax code {code} is exempt (E), and the invoice must say why \
+                 (BT-120, BT-121): set exemption_reason or exemption_reason_code of tax code \
+                 {code}",
+                l.line_no
+            ));
+            continue;
+        }
+        categories.insert(category.clone());
 
         let gross = round_money(l.qty * l.unit_price, decimals);
         let mut allowances = Vec::new();
@@ -488,9 +538,43 @@ pub async fn build(
             price: l.unit_price,
             base_quantity: None,
             allowances,
+            // Not subject to VAT has no rate (BR-O-05).
+            vat_rate: (category != "O").then(|| rate.normalize()),
             vat_category: category,
-            vat_rate: Some(rate.normalize()),
         });
+    }
+    // What the categories need of the parties (BR-AE-02, BR-IC-02,
+    // BR-G-02): checked here to say where to set it.
+    let vat_id_of = |who: &str| format!("a tax identifier of {who}, scheme eu_vat (party.set)");
+    if categories.contains("AE") {
+        missing.need(
+            has(&buyer.vat_id) || has(&buyer.legal_registration),
+            "the buyer's VAT identifier (BT-48) or legal registration (BT-47), which a \
+             reverse charge (category AE) needs",
+            &vat_id_of(&them),
+        );
+    }
+    if categories.contains("K") {
+        missing.need(
+            has(&seller.vat_id),
+            "the seller's VAT identifier (BT-31), which an intra-Community supply (category \
+             K) needs",
+            &vat_id_of(us),
+        );
+        missing.need(
+            has(&buyer.vat_id),
+            "the buyer's VAT identifier (BT-48), which an intra-Community supply (category K) \
+             needs",
+            &vat_id_of(&them),
+        );
+    }
+    if categories.contains("G") {
+        missing.need(
+            has(&seller.vat_id),
+            "the seller's VAT identifier (BT-31), which an export outside the EU (category G) \
+             needs",
+            &vat_id_of(us),
+        );
     }
     if !missing.0.is_empty() {
         return Err(Error::validation(format!(
@@ -531,19 +615,71 @@ pub async fn build(
     };
 
     // When the goods went out: the last delivery of the order by the
-    // document's date.
-    let order = document::body::uuid(&view.body["sales_order_id"]);
+    // invoice's date; for a credit note, of the invoice it credits.
+    let (order, by) = if credit {
+        let credited: Option<(Option<Uuid>, NaiveDate)> =
+            match document::body::uuid(&view.body["sales_invoice_id"]) {
+                Some(invoice) => {
+                    sqlx::query_as(
+                        "SELECT i.sales_order_id, d.doc_date FROM sales_invoice i
+                         JOIN document d ON d.id = i.document_id WHERE i.document_id = $1",
+                    )
+                    .bind(invoice)
+                    .fetch_optional(&mut *conn)
+                    .await?
+                }
+                None => None,
+            };
+        credited.unwrap_or((None, doc.doc_date))
+    } else {
+        (
+            document::body::uuid(&view.body["sales_order_id"]),
+            doc.doc_date,
+        )
+    };
     let delivery_date: Option<NaiveDate> = match order {
         Some(order) => sqlx::query_scalar(
             "SELECT max(d.doc_date) FROM sales_delivery s JOIN document d ON d.id = s.document_id
              WHERE s.sales_order_id = $1 AND d.status = 'posted' AND d.doc_date <= $2",
         )
         .bind(order)
-        .bind(doc.doc_date)
+        .bind(by)
         .fetch_one(&mut *conn)
         .await?,
         None => None,
     };
+    if categories.contains("K") && delivery_date.is_none() {
+        return Err(Error::validation(format!(
+            "the {} cannot be sent as an e-invoice yet. Missing: the delivery date (BT-72), \
+             which an intra-Community supply (category K) needs: invoice the goods against \
+             the sales order their delivery was posted for, on or after its date",
+            doc_type.as_str().replace('_', " ")
+        )));
+    }
+    // Where the goods went (BG-15): the shipping address the document
+    // kept; for an intra-Community supply, which must name the country
+    // (BR-IC-12), the buyer's address otherwise, which is where a delivery
+    // without a shipping address goes.
+    let ship_to = erpcraft_party::document_data(&mut *conn, doc.id, erpcraft_party::Role::ShipTo)
+        .await?
+        .and_then(|d| d.address)
+        .map(|a| Address {
+            street: a.street,
+            additional_street: a.additional_street,
+            city: a.city,
+            postcode: a.postcode,
+            country: a.country_code,
+        });
+    let delivery_address = ship_to.or_else(|| {
+        let country = buyer.country_code.clone()?;
+        categories.contains("K").then(|| Address {
+            street: buyer.street.clone(),
+            additional_street: buyer.additional_street.clone(),
+            city: buyer.city.clone(),
+            postcode: buyer.postcode.clone(),
+            country,
+        })
+    });
     let preceding: Option<(Option<String>, NaiveDate)> = if credit {
         match document::body::uuid(&view.body["sales_invoice_id"]) {
             Some(invoice) => {
@@ -598,6 +734,9 @@ pub async fn build(
         preceding_invoice_date: preceding.map(|(_, d)| d),
         notes: doc.memo.iter().cloned().collect(),
         delivery_date,
+        period_start: None,
+        period_end: None,
+        delivery_address,
         seller: Party {
             name: seller.legal_name.clone().unwrap_or(company_name),
             trading_name: seller.trading_name.clone(),
@@ -760,6 +899,9 @@ mod tests {
             preceding_invoice_date: None,
             notes: vec![],
             delivery_date: Some("2026-04-02".parse().unwrap()),
+            period_start: None,
+            period_end: None,
+            delivery_address: None,
             seller: party("Muster GmbH"),
             buyer: party("Kunde AG"),
             payment: Some(Payment {

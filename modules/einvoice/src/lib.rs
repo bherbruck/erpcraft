@@ -5,12 +5,12 @@
 //! an EN 16931 invoice, XRechnung 3.0 by default; `einvoice.read` reads an
 //! incoming one (XML, or a ZUGFeRD / Factur-X PDF), checks it and proposes
 //! the vendor, order and lines it belongs to; `einvoice.import` drafts the
-//! vendor invoice. What an invoice needs that the rest of the system does
-//! not keep (the seller's and buyer's addresses, VAT identifiers,
-//! electronic addresses, the buyer reference, the VAT category of a tax
-//! code) is kept in this module's own records; the IBAN of the account paid
-//! into is banking's. See README.md for the sources and for what is and is
-//! not checked.
+//! vendor invoice. The seller's and buyer's addresses, VAT identifiers,
+//! electronic addresses and the buyer reference are party data, the VAT
+//! category of a tax code is the tax code's own, and the IBAN of the
+//! account paid into is banking's; this module keeps the record of the
+//! invoices it imported. See README.md for the sources and for what is and
+//! is not checked.
 
 use std::sync::Arc;
 
@@ -61,11 +61,16 @@ impl Module for EinvoiceModule {
                 name: "party_data_in_party",
                 sql: include_str!("../migrations/0003_party_data_in_party.sql"),
             },
+            Migration {
+                version: 4,
+                name: "vat_category_on_tax_code",
+                sql: include_str!("../migrations/0004_vat_category_on_tax_code.sql"),
+            },
         ]
     }
 
     fn entities(&self) -> Vec<EntityMeta> {
-        vec![tax_category_entity(), import_entity()]
+        vec![import_entity()]
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
@@ -75,54 +80,8 @@ impl Module for EinvoiceModule {
 
 // --------------------------------------------------------------- entities
 
-fn text(name: &str, label: &str, help: &str) -> FieldMeta {
-    FieldMeta::new(name, label, FieldType::Text).help(help)
-}
-
 fn created() -> FieldMeta {
     FieldMeta::new("created_at", "Created", FieldType::Timestamp).readonly()
-}
-
-fn tax_category_entity() -> EntityMeta {
-    EntityMeta::new("einvoice_tax_category", "E-invoice VAT category")
-        .plural("E-invoice VAT categories")
-        .field(
-            FieldMeta::new("tax_code_id", "Tax code", FieldType::link("tax_code"))
-                .required()
-                .immutable(),
-        )
-        .field(
-            FieldMeta::new(
-                "category",
-                "VAT category",
-                FieldType::labelled(&[
-                    ("S", "Standard rate"),
-                    ("Z", "Zero rated goods"),
-                    ("E", "Exempt from VAT"),
-                    ("AE", "Reverse charge"),
-                    ("K", "Intra-community supply"),
-                    ("G", "Export outside the EU"),
-                    ("O", "Not subject to VAT"),
-                    ("L", "Canary Islands (IGIC)"),
-                    ("M", "Ceuta and Melilla (IPSI)"),
-                ]),
-            )
-            .required()
-            .help("BT-151 / BT-118. Without a record a code above 0 % is S."),
-        )
-        .field(text(
-            "exemption_reason",
-            "Exemption reason",
-            "BT-120, required for E, AE, K, G and O.",
-        ))
-        .field(text(
-            "exemption_reason_code",
-            "Exemption reason code",
-            "BT-121, from the VATEX code list, such as VATEX-EU-AE.",
-        ))
-        .field(created())
-        .order_by(&["created_at"])
-        .display(&["tax_code_id", "category"])
 }
 
 fn import_entity() -> EntityMeta {

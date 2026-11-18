@@ -215,6 +215,17 @@ pub struct TaxSpec {
     /// Who the tax is owed to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authority: Option<String>,
+    /// The VAT category of EN 16931 a sale under the code is (`S`, `Z`,
+    /// `E`, `AE`, `K`, `G`, `O`, `L`, `M`), as an e-invoice writes it.
+    /// Unstated, a rate above 0 % is standard rated. Not for a group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vat_category: Option<String>,
+    /// For `E`, `AE`, `K`, `G` and `O`: the reason as a VATEX code, such as
+    /// `VATEX-EU-IC` (BT-121), and in words (BT-120).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exemption_reason_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exemption_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -389,6 +400,39 @@ impl SetupTemplate {
                 .map_err(|_| at(format!("tax code {} has rate '{}'", tax.code, tax.rate)))?;
             if rate < Decimal::ZERO || rate > Decimal::from(100) {
                 return Err(at(format!("tax code {} has rate {rate}", tax.code)));
+            }
+            if let Some(category) = tax.vat_category.as_deref() {
+                if !["S", "Z", "E", "AE", "K", "G", "O", "L", "M"].contains(&category) {
+                    return Err(at(format!(
+                        "tax code {} has VAT category '{category}', which is not one of EN 16931",
+                        tax.code
+                    )));
+                }
+                if !tax.components.is_empty() {
+                    return Err(at(format!(
+                        "tax group {} has a VAT category: a group has none of its own",
+                        tax.code
+                    )));
+                }
+            }
+            let reason = tax.exemption_reason.is_some() || tax.exemption_reason_code.is_some();
+            if reason
+                && !matches!(
+                    tax.vat_category.as_deref(),
+                    Some("E" | "AE" | "K" | "G" | "O")
+                )
+            {
+                return Err(at(format!(
+                    "tax code {} has an exemption reason, which only a code of VAT category E, \
+                     AE, K, G or O has",
+                    tax.code
+                )));
+            }
+            if tax.vat_category.as_deref() == Some("E") && !reason {
+                return Err(at(format!(
+                    "tax code {} is exempt (E) and must say why: give an exemption reason",
+                    tax.code
+                )));
             }
             if tax.components.is_empty() {
                 let missing =
@@ -902,6 +946,22 @@ impl Command for Setup {
                                 == tax.authority.as_deref().map(str::trim)
                             && parts == wanted_parts =>
                     {
+                        // And of the VAT category the template states.
+                        if let Some(wanted) = &tax.vat_category {
+                            let category: Option<String> = sqlx::query_scalar(
+                                "SELECT vat_category FROM tax_code WHERE id = $1",
+                            )
+                            .bind(id)
+                            .fetch_one(&mut *ctx.conn)
+                            .await?;
+                            if category.as_ref().is_some_and(|c| c != wanted) {
+                                return Err(Error::state(format!(
+                                    "the tax code {} exists with another VAT category than \
+                                     the template's {wanted}; change one of them first",
+                                    tax.code
+                                )));
+                            }
+                        }
                         id
                     }
                     Some((_, existing_rate, compound, authority, parts)) => {
@@ -934,6 +994,15 @@ impl Command for Setup {
                         });
                         if let Some(authority) = &tax.authority {
                             code["authority"] = json!(authority);
+                        }
+                        for (field, value) in [
+                            ("vat_category", &tax.vat_category),
+                            ("exemption_reason_code", &tax.exemption_reason_code),
+                            ("exemption_reason", &tax.exemption_reason),
+                        ] {
+                            if let Some(value) = value {
+                                code[field] = json!(value);
+                            }
                         }
                         let id = id_of(&entity::create(ctx, "tax_code", code).await?)?;
                         for (position, component) in tax.components.iter().enumerate() {

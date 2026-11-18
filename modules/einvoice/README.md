@@ -63,12 +63,19 @@ Checked:
   - BR-CO-17: a category's tax is its taxable amount × rate, within one currency unit, the Schematron's tolerance, which lets tax worked out per line stand;
   - the taxable amount of each category equals the lines' (BR-S-08 and the like, within one unit);
   - every category of a line has a breakdown;
-  - BR-S-05, BR-x-05 for zero-rate categories, BR-x-10 exemption reasons.
+  - BR-S-05, BR-x-05 for zero-rate categories, BR-x-09 (no VAT in Z, E, AE, K, G and O), BR-x-10 exemption reasons, and BR-S-10 and BR-Z-10 (none for S and Z).
+- **What the VAT categories need** (EN 16931 validation artefacts, the `BR-AE`, `BR-IC`, `BR-G` and `BR-O` rules; the tax representative, BG-11, is not read, so the seller's own identifiers count):
+  - BR-AE-02 to 04: a reverse charge needs the seller's VAT identifier or tax registration (BT-31, BT-32) and the buyer's VAT identifier or legal registration (BT-48, BT-47);
+  - BR-IC-02 to 04: an intra-Community supply needs the seller's VAT identifier (BT-31) and the buyer's (BT-48); BR-IC-11 the delivery date (BT-72) or the invoicing period (BG-14); BR-IC-12 the country delivered to (BT-80);
+  - BR-G-02 to 04: an export needs the seller's VAT identifier (BT-31);
+  - BR-O-02 to 04: not subject to VAT carries neither VAT identifier; BR-O-11 and 12: and no other category;
+  - BR-57: a deliver to address has a country.
 - **Decimals**: amounts have at most two decimal places (BR-DEC-*).
 - **XRechnung's German rules**:
   - BR-DE-1 payment instructions;
   - BR-DE-3/4/5/6/7 seller address and contact;
   - BR-DE-8/9 buyer city and post code;
+  - BR-DE-10/11 deliver to city and post code;
   - BR-DE-14 VAT rate;
   - BR-DE-15 buyer reference;
   - BR-DE-16 seller VAT identifier or tax number;
@@ -83,7 +90,7 @@ Requests reach the module only within the server's request size limit (axum's de
 
 Not checked here:
 - **Schema validation against the UBL 2.1 and CII D16B XSDs.** The writer emits elements in schema order, but no XSD validator is run.
-- **The many rules not listed above.** Among them: code lists (currencies, units, countries, the EAS and VATEX lists), the rules for the categories AE, K, G, L and M beyond rate and reason, and the rules for invoicing periods, payee and tax representative parties, attachments and direct debit.
+- **The many rules not listed above.** Among them: code lists (currencies, units, countries, the EAS and VATEX lists), the rules for the categories L and M beyond rate, and the rules for invoicing periods, payee and tax representative parties, attachments and direct debit.
 - **The PDF/A-3 conformance of a ZUGFeRD PDF and its XMP metadata.** Only the embedded XML is read.
 
 **The official test cases.** The reader and the checks pass every business case of the KoSIT XRechnung test suite: the 66 files in `src/test/business-cases/standard`, UBL and CII, read on 17 November 2026. To run them, point `EINVOICE_SAMPLES` at a directory of the files and run `cargo test -p erpcraft-einvoice --test samples`. The files are not copied into this repository.
@@ -100,6 +107,8 @@ Not checked here:
 
    It writes an HTML report next to the file, and its result says whether the invoice is acceptable.
 
+   On 18 November 2026 the invoices and credit notes the e-invoice tests write (categories S, E, AE, K and G, UBL and CII) were checked without Java: against the UBL 2.1 and CII D16B XSDs of that configuration with `xmllint`, and with its compiled Schematron (`EN16931-UBL-validation.xsl`, `EN16931-CII-validation.xsl`, `XRechnung-UBL-validation.xsl`, `XRechnung-CII-validation.xsl`) run by Saxon-HE (the `saxonche` Python package). None had a fatal finding; the reverse charge invoice, which has no delivery date, had BR-DE-TMP-32 as information. That run is not part of the tests.
+
 ## Exporting: where the data comes from
 
 | Business term | From |
@@ -109,16 +118,18 @@ Not checked here:
 | Buyer name, address, VAT identifier, electronic address, buyer reference / Leitweg-ID (BG-7, BT-10, BT-49) | the customer's party data, the buyer reference being `invoice_reference` of its `party_profile`; the name from the customer |
 | Invoice number, date, currency, notes (BT-1, BT-2, BT-5, BT-22) | the document; its memo is a note |
 | Due date (BT-9), payment terms and the early-payment discount as `#SKONTO#TAGE=n#PROZENT=n.nn#` (BT-20) | the open item the invoice opened and its payment terms |
-| Delivery date (BT-72) | the last posted delivery of the order by the invoice's date |
+| Delivery date (BT-72) | the last posted delivery of the order by the invoice's date; for a credit note, of the order of the invoice it credits by that invoice's date |
 | Lines: quantity, unit (UN/ECE Rec. 20 from the item's unit; C62 otherwise), price, net, item name and code (BG-25) | the document's lines and the item, charge or account they are |
 | Line discounts (BG-27, reason code 95) | the line's percent and amount discounts, in that order |
-| VAT category and rate (BT-151, BT-152), breakdown (BG-23) | the line's tax code. A code above 0 % is standard rated (S) unless an `einvoice_tax_category` says otherwise; one at 0 % must have one, with the exemption reason. The tax of each category is the tax recorded per line, so the invoice says what was posted |
+| VAT category and rate (BT-151, BT-152), breakdown (BG-23), exemption reason (BT-120, BT-121) | the line's tax code: its `vat_category`, `exemption_reason_code` and `exemption_reason`. A code that states no category is standard rated (S) if the seller charges a rate above 0 %; any other code (at 0 %, or accounted for by the buyer) must state one. Z, E, AE, K, G and O are written at 0 % and refused if the line was taxed; AE, K, G and O get VATEX-EU-AE, -IC, -G or -O and its text unless the code has its own; E must have a reason. The tax of each category is the tax recorded per line, so the invoice says what was posted |
+| Deliver to address (BG-15) | the shipping address the document kept; for an intra-Community supply (K) without one, the buyer's billing address |
 | VAT in the accounting currency (BT-6, BT-111) | for an invoice in another currency: the accounting currency and the tax it posted |
 | Credit note: the invoice credited (BT-25, BT-26) | the sales invoice the credit note credits; type code 381, payment means 97 (clearing between the parties) |
 
 Anything missing is refused at once, with every missing item, its business term and the record and field to set.
 - A tax group (several taxes on one line, as for Canadian GST plus PST) is refused: EN 16931 has one VAT rate per line.
 - A line without a tax code is refused.
+- What a VAT category needs of the parties is refused when it is missing, naming the record to set: for AE the buyer's VAT identifier (or legal registration), for K the seller's and the buyer's VAT identifiers (scheme `eu_vat`; a tax number is not enough) and a delivery date, for G the seller's VAT identifier.
 
 ## Importing
 
@@ -144,7 +155,7 @@ Anything missing is refused at once, with every missing item, its business term 
    - The unit price is the price per base quantity (BT-149), rounded up to six decimals.
    - What that and the line's allowances and charges leave between quantity times price and the invoice's line net is the line's discount.
 8. **Tax, and the draft against the invoice.**
-   - **Tax codes.** A line takes the company's one tax code for its VAT category and rate, or the one chosen in `line_tax_codes` (by the line's identifier). A line the invoice charges VAT on without a code is a problem that stops the import, listed with the candidate codes.
+   - **Tax codes.** A line takes the company's one tax code for its VAT category (the code's `vat_category`) and rate, or the one chosen in `line_tax_codes` (by the line's identifier). A line under the reverse charge (AE) or an intra-Community supply (K), at 0 % from the vendor, takes a code of that category the company accounts for itself (`self_assessed`), at whatever rate it assesses; never a 0 % code of the company's own sales. A line the invoice charges VAT on without a code is a problem that stops the import, listed with the candidate codes.
    - **Totals.** What the draft will come to is worked out as posting works it out (tax per line). It is set against the invoice's VAT (BT-110), total with VAT (BT-112) and amount due (BT-115), to the cent.
    - **Paid already.** An amount the invoice says was paid already (BT-113) is a difference too: the draft owes the full amount, and the payment is recorded against it.
    - **Differences.** `einvoice.read` lists every difference. `einvoice.import` refuses to draft unless `accept_differences` is given, and then writes them into the draft's memo.
@@ -157,7 +168,7 @@ Anything missing is refused at once, with every missing item, its business term 
 
 ## Where the party data comes from
 
-Addresses, VAT identifiers, register entries, contacts, electronic addresses and the buyer reference are party data. The party module keeps them for the company, customers and vendors alike, and printing and tax reports read them there too. This module reads them with `erpcraft_party::load` and keeps only what is e-invoicing's own: the VAT category of a tax code and the record of imported invoices.
+Addresses, VAT identifiers, register entries, contacts, electronic addresses and the buyer reference are party data. The party module keeps them for the company, customers and vendors alike, and printing and tax reports read them there too. This module reads them with `erpcraft_party::load` and keeps only the record of imported invoices. The VAT category of a tax code was this module's `einvoice_tax_category` until it became the tax code's own (`tax_code.vat_category`, tax migration 10); migration 4 copied the rows onto the codes and dropped the table.
 
 Until the party module existed they were in this module's `einvoice_profile` and `einvoice_party`. Migration 3 moved them across and dropped those tables; the commands' outputs did not change.
 

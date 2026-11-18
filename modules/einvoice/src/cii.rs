@@ -5,7 +5,9 @@
 use chrono::NaiveDate;
 use erpcraft_kernel::Decimal;
 
-use crate::model::{AllowanceCharge, Invoice, Line, Party, Payment, Syntax, Totals, VatBreakdown};
+use crate::model::{
+    Address, AllowanceCharge, Invoice, Line, Party, Payment, Syntax, Totals, VatBreakdown,
+};
 use crate::ubl::{amount, number};
 use crate::xml::{Node, Writer};
 
@@ -209,6 +211,17 @@ pub fn write(inv: &Invoice) -> String {
     }
     w.close();
     w.open("ram:ApplicableHeaderTradeDelivery", &[]);
+    if let Some(a) = &inv.delivery_address {
+        w.open("ram:ShipToTradeParty", &[]);
+        w.open("ram:PostalTradeAddress", &[]);
+        w.opt("ram:PostcodeCode", a.postcode.as_deref());
+        w.opt("ram:LineOne", a.street.as_deref());
+        w.opt("ram:LineTwo", a.additional_street.as_deref());
+        w.opt("ram:CityName", a.city.as_deref());
+        w.leaf("ram:CountryID", &[], &a.country);
+        w.close();
+        w.close();
+    }
     if let Some(d) = inv.delivery_date {
         w.open("ram:ActualDeliverySupplyChainEvent", &[]);
         date_time(&mut w, "ram:OccurrenceDateTime", d);
@@ -250,6 +263,16 @@ pub fn write(inv: &Invoice) -> String {
         );
         if let Some(rate) = v.rate {
             w.leaf("ram:RateApplicablePercent", &[], &number(rate));
+        }
+        w.close();
+    }
+    if inv.period_start.is_some() || inv.period_end.is_some() {
+        w.open("ram:BillingSpecifiedPeriod", &[]);
+        if let Some(d) = inv.period_start {
+            date_time(&mut w, "ram:StartDateTime", d);
+        }
+        if let Some(d) = inv.period_end {
+            date_time(&mut w, "ram:EndDateTime", d);
         }
         w.close();
     }
@@ -572,6 +595,27 @@ pub fn read(root: &Node) -> Result<Invoice, String> {
             ]),
             "the delivery date (BT-72)",
         )?,
+        period_start: read_date(
+            settlement.at(&["BillingSpecifiedPeriod", "StartDateTime"]),
+            "the invoicing period's start (BT-73)",
+        )?,
+        period_end: read_date(
+            settlement.at(&["BillingSpecifiedPeriod", "EndDateTime"]),
+            "the invoicing period's end (BT-74)",
+        )?,
+        delivery_address: tx
+            .at(&[
+                "ApplicableHeaderTradeDelivery",
+                "ShipToTradeParty",
+                "PostalTradeAddress",
+            ])
+            .map(|a| Address {
+                street: a.text_at(&["LineOne"]),
+                additional_street: a.text_at(&["LineTwo"]),
+                city: a.text_at(&["CityName"]),
+                postcode: a.text_at(&["PostcodeCode"]),
+                country: a.text_at(&["CountryID"]).unwrap_or_default(),
+            }),
         seller: agreement
             .and_then(|a| a.child("SellerTradeParty"))
             .map(read_party)

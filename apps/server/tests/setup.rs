@@ -407,13 +407,43 @@ async fn templates_are_listed_and_the_skr03_chart_is_as_datev_numbers_it() {
     assert_eq!(name("1571"), "Abziehbare Vorsteuer 7 %");
     assert_eq!(name("1776"), "Umsatzsteuer 19 %");
     assert_eq!(name("1771"), "Umsatzsteuer 7 %");
+    assert_eq!(
+        name("8125"),
+        "Steuerfreie innergemeinschaftliche Lieferungen nach § 4 Nr. 1b UStG"
+    );
+    assert!(name("8120").starts_with("Steuerfreie Umsätze nach § 4 Nr. 1a UStG"));
     let settings = run(
         &t,
         "entity.list",
         json!({ "entity": "tax_settings", "filters": { "company_id": c } }),
     )
     .await;
-    assert_eq!(settings["total"], 2);
+    assert_eq!(settings["total"], 4);
+    // The tax-free sales say what they are on an e-invoice.
+    let categories: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT code, vat_category, exemption_reason_code FROM tax_code
+         WHERE code LIKE 'DE-%' ORDER BY code",
+    )
+    .fetch_all(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        categories,
+        vec![
+            (
+                "DE-AUSFUHR".into(),
+                Some("G".into()),
+                Some("VATEX-EU-G".into())
+            ),
+            (
+                "DE-IGL".into(),
+                Some("K".into()),
+                Some("VATEX-EU-IC".into())
+            ),
+            ("DE-USt19".into(), Some("S".into()), None),
+            ("DE-USt7".into(), Some("S".into()), None),
+        ]
+    );
 
     // A bank account of one's own, and a fiscal year from July.
     let (status, body) = setup(

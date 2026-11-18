@@ -89,6 +89,11 @@ impl Module for TaxModule {
                 name: "adjustment",
                 sql: include_str!("../migrations/0009_adjustment.sql"),
             },
+            Migration {
+                version: 10,
+                name: "vat_category",
+                sql: include_str!("../migrations/0010_vat_category.sql"),
+            },
         ]
     }
 
@@ -151,6 +156,46 @@ impl Module for TaxModule {
                              the collected account and reclaims it on the paid account (an \
                              expense where it cannot). On a sale nothing is charged and the \
                              base is recorded.",
+                    ),
+                )
+                .field(
+                    FieldMeta::new(
+                        "vat_category",
+                        "VAT category (EN 16931)",
+                        FieldType::labelled(&[
+                            ("S", "Standard rate"),
+                            ("Z", "Zero rated"),
+                            ("E", "Exempt from VAT"),
+                            ("AE", "Reverse charge"),
+                            ("K", "Intra-Community supply"),
+                            ("G", "Export outside the EU"),
+                            ("O", "Not subject to VAT"),
+                            ("L", "Canary Islands (IGIC)"),
+                            ("M", "Ceuta and Melilla (IPSI)"),
+                        ]),
+                    )
+                    .help(
+                        "What a sale under the code is, as an e-invoice says it (BT-151). \
+                         Empty: standard rated for a rate above 0 % the seller charges; any \
+                         other code must say.",
+                    ),
+                )
+                .field(
+                    FieldMeta::new(
+                        "exemption_reason_code",
+                        "Exemption reason code",
+                        FieldType::Text,
+                    )
+                    .help(
+                        "BT-121, from the VATEX list: VATEX-EU-AE, VATEX-EU-IC, VATEX-EU-G, \
+                         VATEX-EU-O, or an exemption's own. Only for E, AE, K, G and O.",
+                    ),
+                )
+                .field(
+                    FieldMeta::new("exemption_reason", "Exemption reason", FieldType::Text).help(
+                        "BT-120, the reason in words, such as \"Steuerfreie \
+                         innergemeinschaftliche Lieferung (§ 4 Nr. 1b UStG)\". Only for E, AE, \
+                         K, G and O.",
                     ),
                 )
                 .field(created())

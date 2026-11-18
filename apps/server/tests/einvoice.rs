@@ -635,15 +635,35 @@ async fn what_an_invoice_needs_is_named_with_where_to_set_it() {
         body["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("einvoice_tax_category for DE-0"),
+            .contains("set vat_category of tax code DE-0"),
         "{body}"
     );
-    t.create(
-        "einvoice_tax_category",
-        json!({ "tax_code_id": zero, "category": "E",
-                "exemption_reason": "Steuerfrei nach § 4 Nr. 8 UStG" }),
-    )
-    .await;
+    // Exempt, it must say why.
+    let (status, body) = t
+        .patch(
+            &t.admin,
+            &format!("/api/entities/tax_code/{zero}"),
+            json!({ "vat_category": "E" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = export(&t, "sales_invoice", &exempt, "ubl").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("set exemption_reason or exemption_reason_code of tax code DE-0"),
+        "{body}"
+    );
+    let (status, body) = t
+        .patch(
+            &t.admin,
+            &format!("/api/entities/tax_code/{zero}"),
+            json!({ "exemption_reason": "Steuerfrei nach § 4 Nr. 8 UStG" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let (status, out) = export(&t, "sales_invoice", &exempt, "ubl").await;
     assert_eq!(status, StatusCode::OK, "{out}");
     assert!(
@@ -1624,19 +1644,9 @@ async fn a_posted_invoice_keeps_the_address_it_was_posted_with() {
     t.stop().await;
 }
 
-/// A sale under the reverse charge is written as category AE at 0 %, with
-/// the exemption reason, and the buyer's VAT identifier.
-#[tokio::test]
-async fn a_reverse_charge_sale_is_category_ae() {
-    let t = TestApp::start().await;
-    let f = setup(&t).await;
-    let reverse = t
-        .create(
-            "tax_code",
-            json!({ "code": "DE-RC", "name": "Steuerschuldnerschaft des Leistungsempfängers",
-                    "rate": "19", "self_assessed": true }),
-        )
-        .await;
+/// A tax code the company posts, with the 19 % code's accounts.
+async fn code(t: &TestApp, f: &Fixture, data: Value) -> String {
+    let id = t.create("tax_code", data).await;
     let accounts: (String, String) = sqlx::query_as(
         "SELECT collected_account_id::text, paid_account_id::text FROM tax_settings
          WHERE tax_code_id = $1::uuid",
@@ -1647,8 +1657,66 @@ async fn a_reverse_charge_sale_is_category_ae() {
     .unwrap();
     t.create(
         "tax_settings",
-        json!({ "company_id": f.company, "tax_code_id": reverse,
+        json!({ "company_id": f.company, "tax_code_id": id,
                 "collected_account_id": accounts.0, "paid_account_id": accounts.1 }),
+    )
+    .await;
+    id
+}
+
+/// Two widgets delivered to `customer` and invoiced under `tax_code`.
+async fn goods_invoice(t: &TestApp, f: &Fixture, customer: &str, tax_code: &str) -> Value {
+    let (status, draft) = t
+        .post(
+            &t.admin,
+            "/api/documents/sales_order",
+            json!({ "company_id": f.company, "doc_date": "2026-04-01", "body": {
+                "customer_id": customer,
+                "lines": [{ "item_id": f.widget, "warehouse_id": f.warehouse, "qty": "2",
+                            "unit_price": "100.00" }] } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{draft}");
+    let (status, order) = t
+        .command(
+            &t.admin,
+            "sales_order.approve",
+            json!({ "id": draft["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{order}");
+    let line = order["body"]["lines"][0]["id"].clone();
+    f.posted(
+        t,
+        "sales_delivery",
+        "2026-04-02",
+        json!({ "sales_order_id": order["id"], "lines": [{ "order_line_id": line, "qty": "2" }] }),
+    )
+    .await;
+    f.posted(
+        t,
+        "sales_invoice",
+        "2026-04-03",
+        json!({ "sales_order_id": order["id"], "lines": [
+            { "order_line_id": line, "qty": "2", "unit_price": "100.00",
+              "tax_code_id": tax_code }] }),
+    )
+    .await
+}
+
+/// A sale under the domestic reverse charge (§ 13b UStG) is written as
+/// category AE at 0 %, with the exemption reason, and the buyer's VAT
+/// identifier. A code the buyer accounts for must say which category it
+/// is: it could as well be an intra-Community supply or an export.
+#[tokio::test]
+async fn a_reverse_charge_sale_is_category_ae() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let reverse = code(
+        &t,
+        &f,
+        json!({ "code": "DE-RC", "name": "Steuerschuldnerschaft des Leistungsempfängers",
+                "rate": "19", "self_assessed": true }),
     )
     .await;
     let invoice = f
@@ -1662,16 +1730,318 @@ async fn a_reverse_charge_sale_is_category_ae() {
         )
         .await;
     assert_eq!(dec(&invoice["summary"]["total_gross"]), 500.0, "{invoice}");
-    let (status, out) = export(&t, "sales_invoice", &invoice, "ubl").await;
-    assert_eq!(status, StatusCode::OK, "{out}");
-    let parsed = read(out["xml"].as_str().unwrap());
-    assert_eq!(parsed.vat.len(), 1);
-    assert_eq!(parsed.vat[0].category, "AE");
-    assert_eq!(amount(parsed.vat[0].tax), 0.0);
-    assert_eq!(amount(parsed.totals.payable), 500.0);
-    assert_eq!(
-        parsed.vat[0].exemption_reason_code.as_deref(),
-        Some("VATEX-EU-AE")
+    let (status, body) = export(&t, "sales_invoice", &invoice, "ubl").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("tax code DE-RC is accounted for by the buyer")
+            && message.contains("set vat_category of tax code DE-RC"),
+        "{message}"
     );
+    let (status, body) = t
+        .patch(
+            &t.admin,
+            &format!("/api/entities/tax_code/{reverse}"),
+            json!({ "vat_category": "AE" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for syntax in ["ubl", "cii"] {
+        let (status, out) = export(&t, "sales_invoice", &invoice, syntax).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        let parsed = read(out["xml"].as_str().unwrap());
+        assert_eq!(parsed.vat.len(), 1);
+        assert_eq!(parsed.vat[0].category, "AE");
+        assert_eq!(parsed.lines[0].vat_category, "AE");
+        assert_eq!(amount(parsed.lines[0].vat_rate.unwrap()), 0.0);
+        assert_eq!(amount(parsed.vat[0].tax), 0.0);
+        assert_eq!(amount(parsed.totals.payable), 500.0);
+        assert_eq!(
+            parsed.vat[0].exemption_reason_code.as_deref(),
+            Some("VATEX-EU-AE")
+        );
+        assert_eq!(parsed.buyer.vat_id.as_deref(), Some("DE987654321"));
+        assert!(check(&parsed).iter().all(|f| !f.fatal));
+    }
+
+    // Without the buyer's VAT identifier or legal registration (BR-AE-02)
+    // it is refused, saying where to set it.
+    let bare = t
+        .create("customer", json!({ "code": "C3", "name": "Bau KG" }))
+        .await;
+    party(
+        &t,
+        "customer",
+        &bare,
+        json!({
+            "profile": { "invoice_reference": "991-12345-67" },
+            "address": { "city": "Bonn", "postcode": "53111", "country_code": "DE" },
+            "electronic_address": "post@bau.example",
+        }),
+    )
+    .await;
+    let invoice = f
+        .posted(
+            &t,
+            "sales_invoice",
+            "2026-04-03",
+            json!({ "customer_id": bare, "lines": [
+                { "account_id": f.account["8400"], "description": "Montage", "qty": "1",
+                  "unit_price": "500.00", "tax_code_id": reverse } ] }),
+        )
+        .await;
+    let (status, body) = export(&t, "sales_invoice", &invoice, "ubl").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("the buyer's VAT identifier (BT-48) or legal registration (BT-47)")
+            && message.contains("a tax identifier of customer C3, scheme eu_vat (party.set)"),
+        "{message}"
+    );
+    t.stop().await;
+}
+
+/// A German company's sale of goods to a French business is an
+/// intra-Community supply: category K at 0 %, VATEX-EU-IC, with both VAT
+/// identifiers, the delivery date and the country delivered to. Without
+/// the buyer's VAT identifier it is refused, never written.
+#[tokio::test]
+async fn an_intra_community_supply_is_category_k() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    // The template's code, at 0 % on revenue account 8125.
+    let igl = scalar(&t, "SELECT id::text FROM tax_code WHERE code = 'DE-IGL'").await;
+    let category: (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT vat_category, exemption_reason_code FROM tax_code WHERE id = $1::uuid",
+    )
+    .bind(&igl)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(category, (Some("K".into()), Some("VATEX-EU-IC".into())));
+    let french = t
+        .create("customer", json!({ "code": "FR1", "name": "Client SARL" }))
+        .await;
+    party(
+        &t,
+        "customer",
+        &french,
+        json!({
+            "profile": { "invoice_reference": "PO-4711" },
+            "address": { "street": "1 rue de la Paix", "city": "Paris", "postcode": "75002",
+                         "country_code": "FR" },
+            "electronic_address": "factures@client.example",
+        }),
+    )
+    .await;
+    let invoice = goods_invoice(&t, &f, &french, &igl).await;
+    assert_eq!(dec(&invoice["summary"]["total_tax"]), 0.0, "{invoice}");
+
+    // No VAT identifier of the buyer: refused, naming what and where.
+    for syntax in ["ubl", "cii"] {
+        let (status, body) = export(&t, "sales_invoice", &invoice, syntax).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("the buyer's VAT identifier (BT-48), which an intra-Community supply")
+                && message.contains("a tax identifier of customer FR1, scheme eu_vat (party.set)"),
+            "{message}"
+        );
+        assert!(!message.contains("seller's VAT"), "{message}");
+    }
+    // With it, the invoice is written; the check that reads it back
+    // holds every invoice to BR-IC-02 too.
+    party(
+        &t,
+        "customer",
+        &french,
+        json!({ "tax_ids": [["eu_vat", "FR12345678901"]] }),
+    )
+    .await;
+
+    for syntax in ["ubl", "cii"] {
+        let (status, out) = export(&t, "sales_invoice", &invoice, syntax).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        let xml = out["xml"].as_str().unwrap();
+        let parsed = read(xml);
+        assert_eq!(parsed.lines[0].vat_category, "K");
+        assert_eq!(amount(parsed.lines[0].vat_rate.unwrap()), 0.0);
+        assert_eq!(parsed.vat.len(), 1);
+        assert_eq!(parsed.vat[0].category, "K");
+        assert_eq!(amount(parsed.vat[0].rate.unwrap()), 0.0);
+        assert_eq!(amount(parsed.vat[0].taxable), 200.0);
+        assert_eq!(amount(parsed.vat[0].tax), 0.0);
+        assert_eq!(
+            parsed.vat[0].exemption_reason_code.as_deref(),
+            Some("VATEX-EU-IC")
+        );
+        assert!(parsed.vat[0].exemption_reason.is_some());
+        assert_eq!(parsed.seller.vat_id.as_deref(), Some("DE123456789"));
+        assert_eq!(parsed.buyer.vat_id.as_deref(), Some("FR12345678901"));
+        assert_eq!(parsed.delivery_date.unwrap().to_string(), "2026-04-02");
+        let delivered = parsed.delivery_address.as_ref().unwrap();
+        assert_eq!(delivered.country, "FR");
+        assert_eq!(delivered.city.as_deref(), Some("Paris"));
+        assert_eq!(delivered.postcode.as_deref(), Some("75002"));
+        assert_eq!(amount(parsed.totals.payable), 200.0);
+        let fatal: Vec<_> = check(&parsed).into_iter().filter(|f| f.fatal).collect();
+        assert!(fatal.is_empty(), "{fatal:?}");
+        let mut stripped = parsed.clone();
+        stripped.buyer.vat_id = None;
+        stripped.delivery_address = None;
+        let rules: Vec<_> = check(&stripped).into_iter().map(|f| f.rule).collect();
+        assert!(rules.contains(&"BR-IC-02".to_owned()), "{rules:?}");
+        assert!(rules.contains(&"BR-IC-12".to_owned()), "{rules:?}");
+        if syntax == "ubl" {
+            assert!(
+                xml.contains(
+                    "<cbc:TaxExemptionReasonCode>VATEX-EU-IC</cbc:TaxExemptionReasonCode>"
+                )
+            );
+        } else {
+            assert!(xml.contains("<ram:ExemptionReasonCode>VATEX-EU-IC</ram:ExemptionReasonCode>"));
+        }
+    }
+
+    // Without the company's VAT identifier (a tax number is not enough
+    // for K) it is refused too.
+    sqlx::query("DELETE FROM party_tax_id WHERE party_type = 'company' AND scheme = 'eu_vat'")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let invoice = goods_invoice(&t, &f, &french, &igl).await;
+    let (status, body) = export(&t, "sales_invoice", &invoice, "ubl").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("the seller's VAT identifier (BT-31), which an intra-Community supply"),
+        "{body}"
+    );
+    t.stop().await;
+}
+
+/// A sale to a business outside the EU is an export: category G at 0 %,
+/// VATEX-EU-G. The buyer needs no VAT identifier.
+#[tokio::test]
+async fn an_export_outside_the_eu_is_category_g() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let export_code = scalar(
+        &t,
+        "SELECT id::text FROM tax_code WHERE code = 'DE-AUSFUHR'",
+    )
+    .await;
+    let swiss = t
+        .create(
+            "customer",
+            json!({ "code": "CH1", "name": "Kunde AG Zürich" }),
+        )
+        .await;
+    party(
+        &t,
+        "customer",
+        &swiss,
+        json!({
+            "profile": { "invoice_reference": "CH-77" },
+            "address": { "street": "Bahnhofstrasse 1", "city": "Zürich", "postcode": "8001",
+                         "country_code": "CH" },
+            "electronic_address": "rechnungen@kunde.example",
+        }),
+    )
+    .await;
+    let invoice = goods_invoice(&t, &f, &swiss, &export_code).await;
+    for syntax in ["ubl", "cii"] {
+        let (status, out) = export(&t, "sales_invoice", &invoice, syntax).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        let parsed = read(out["xml"].as_str().unwrap());
+        assert_eq!(parsed.lines[0].vat_category, "G");
+        assert_eq!(parsed.vat.len(), 1);
+        assert_eq!(parsed.vat[0].category, "G");
+        assert_eq!(amount(parsed.vat[0].rate.unwrap()), 0.0);
+        assert_eq!(amount(parsed.vat[0].tax), 0.0);
+        assert_eq!(
+            parsed.vat[0].exemption_reason_code.as_deref(),
+            Some("VATEX-EU-G")
+        );
+        assert_eq!(parsed.buyer.vat_id, None);
+        assert_eq!(parsed.buyer.country.as_deref(), Some("CH"));
+        assert_eq!(amount(parsed.totals.payable), 200.0);
+        let fatal: Vec<_> = check(&parsed).into_iter().filter(|f| f.fatal).collect();
+        assert!(fatal.is_empty(), "{fatal:?}");
+    }
+    // A code of category G that was charged VAT is not written as G.
+    let wrong = code(
+        &t,
+        &f,
+        json!({ "code": "DE-G19", "name": "Falsch", "rate": "19", "vat_category": "G",
+                "exemption_reason_code": "VATEX-EU-G" }),
+    )
+    .await;
+    let invoice = goods_invoice(&t, &f, &swiss, &wrong).await;
+    let (status, body) = export(&t, "sales_invoice", &invoice, "ubl").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("is VAT category G, which charges no VAT, but the line was taxed 38"),
+        "{body}"
+    );
+    t.stop().await;
+}
+
+/// An incoming invoice under the reverse charge (AE, 0 % from the vendor)
+/// takes the code the company assesses the tax with itself, not a 0 % code
+/// of its own sales.
+#[tokio::test]
+async fn an_incoming_reverse_charge_takes_the_self_assessed_code() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let order_number = f.order["number"].as_str().unwrap();
+    let reverse = code(
+        &t,
+        &f,
+        json!({ "code": "DE-RC-EK", "name": "Steuerschuldner § 13b UStG (Eingang)",
+                "rate": "19", "self_assessed": true, "vat_category": "AE" }),
+    )
+    .await;
+    code(
+        &t,
+        &f,
+        json!({ "code": "DE-RC-VK", "name": "Umkehrung (Verkauf, 0 %)", "rate": "0",
+                "vat_category": "AE", "exemption_reason_code": "VATEX-EU-AE" }),
+    )
+    .await;
+    let s19 = "<cbc:ID>S</cbc:ID><cbc:Percent>19</cbc:Percent>";
+    let xml = incoming_ubl(
+        order_number,
+        "RE-2026-0077",
+        "DE111111111",
+        "Lieferant GmbH",
+    )
+    .replacen(
+        s19,
+        "<cbc:ID>AE</cbc:ID><cbc:Percent>0</cbc:Percent>\
+         <cbc:TaxExemptionReasonCode>VATEX-EU-AE</cbc:TaxExemptionReasonCode>",
+        1,
+    )
+    .replace(s19, "<cbc:ID>AE</cbc:ID><cbc:Percent>0</cbc:Percent>")
+    .replace("19.95", "0.00")
+    .replace("124.95", "105.00");
+    let (status, read) = t
+        .command(
+            &t.admin,
+            "einvoice.read",
+            json!({ "company_id": f.company, "content": xml }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{read}");
+    assert_eq!(read["valid"], true, "{read}");
+    let lines = read["lines"].as_array().unwrap();
+    for line in lines {
+        assert_eq!(line["tax_code_id"], reverse.as_str(), "{read}");
+    }
     t.stop().await;
 }

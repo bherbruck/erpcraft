@@ -1,7 +1,7 @@
 {
   "code": "de_skr03",
   "name": "Deutschland, SKR 03",
-  "description": "Kontenrahmen für ein kleines oder mittleres Handelsunternehmen in Deutschland nach dem DATEV-Standardkontenrahmen SKR 03 (Prozessgliederungsprinzip), in Euro, mit Kalenderjahr als Wirtschaftsjahr. Angelegt werden die Konten, die dieses ERP bucht, und die gebräuchlichsten Kosten- und Erlöskonten, dazu die Steuerschlüssel DE-USt19 (19 %) und DE-USt7 (7 %) mit Umsatzsteuer 1776/1771 und abziehbarer Vorsteuer 1576/1571. A German trading company on the DATEV standard chart SKR 03, in euros, calendar fiscal year, with VAT at 19 % and 7 %.",
+  "description": "Kontenrahmen für ein kleines oder mittleres Handelsunternehmen in Deutschland nach dem DATEV-Standardkontenrahmen SKR 03 (Prozessgliederungsprinzip), in Euro, mit Kalenderjahr als Wirtschaftsjahr. Angelegt werden die Konten, die dieses ERP bucht, und die gebräuchlichsten Kosten- und Erlöskonten, dazu die Steuerschlüssel DE-USt19 (19 %) und DE-USt7 (7 %) mit Umsatzsteuer 1776/1771 und abziehbarer Vorsteuer 1576/1571 sowie DE-IGL (steuerfreie innergemeinschaftliche Lieferung, Erlöskonto 8125) und DE-AUSFUHR (steuerfreie Ausfuhrlieferung, Erlöskonto 8120). A German trading company on the DATEV standard chart SKR 03, in euros, calendar fiscal year, with VAT at 19 % and 7 %, and tax-free intra-Community supplies and exports.",
   "country": "DE",
   "currency": "EUR",
   "start_month": 1,
@@ -9,7 +9,8 @@
     "Early-payment discounts: 3730 Erhaltene Skonti (S/AV) and 8730 Gewährte Skonti (S/AM) as named in the 2023 edition cited below (checked on 2026-11-17; the same edition lists 2150 Aufwendungen aus der Währungsumrechnung and 2660 Erträge aus der Währungsumrechnung). The chart also has discount accounts per tax rate (3731 and 3736 for 7 % and 19 % Vorsteuer, 8731 and 8736 for 7 % and 19 % USt); the template uses the general 3730 and 8730 because this ERP posts one net discount per payment line, whatever rates the invoice carried, and takes the tax on the discount back to the tax accounts itself. A company that exports to DATEV with automatic tax accounts should map them accordingly.",
     "Account numbers and names: DATEV-Kontenrahmen nach dem Bilanzrichtlinie-Umsetzungsgesetz, Standardkontenrahmen - Prozessgliederungsprinzip (SKR 03), Gültig für 2023, as published at https://intex-publishing.de/pdf/Kontenrahmen%20DATEV%20SKR%2003.pdf (read on 2026-11-17); the 2020 edition at https://www.dornbach.de/de/assets/upload/downloads/finanzbuchhaltung/2020/datev-kontenrahmen-skr03-fuer-2020.pdf agrees for every number used here.",
     "Every account below is in that chart under the same number, except 1700, which is the chart's Sonstige Verbindlichkeiten and is used here for goods received not invoiced: SKR 03 has no account of its own for that, so a company that uses 1700 otherwise should give it a sub-account.",
-    "Fixed assets: the asset, depreciation and disposal accounts (0027, 0065, 0210, 0320, 0350, 0420, 2320, 2720, 4822, 4830, 4832) are named as in the 2023 edition; the 2020 edition has the same numbers and calls 4832 Abschreibungen auf Kfz. SKR 03 writes depreciation off the asset account directly, so each class's accumulated depreciation is its cost account. Gains and losses on disposal are netted on 2720 and 2320; a company that books proceeds and residual book value separately (8800 ff., 2310, 2315) changes the rules. The useful lives follow the AfA-Tabelle für die allgemein verwendbaren Anlagegüter (Büromöbel 13, Pkw 6, Lkw 9 Jahre; EDV-Hardware and -Software 3 Jahre, which the BMF letter of 2021 allows to be shortened to 1); Maschinen at 10 years is a placeholder, as their AfA-Tabelle depends on the trade: set it for yours."
+    "Fixed assets: the asset, depreciation and disposal accounts (0027, 0065, 0210, 0320, 0350, 0420, 2320, 2720, 4822, 4830, 4832) are named as in the 2023 edition; the 2020 edition has the same numbers and calls 4832 Abschreibungen auf Kfz. SKR 03 writes depreciation off the asset account directly, so each class's accumulated depreciation is its cost account. Gains and losses on disposal are netted on 2720 and 2320; a company that books proceeds and residual book value separately (8800 ff., 2310, 2315) changes the rules. The useful lives follow the AfA-Tabelle für die allgemein verwendbaren Anlagegüter (Büromöbel 13, Pkw 6, Lkw 9 Jahre; EDV-Hardware and -Software 3 Jahre, which the BMF letter of 2021 allows to be shortened to 1); Maschinen at 10 years is a placeholder, as their AfA-Tabelle depends on the trade: set it for yours.",
+    "Tax-free sales: 8120 Steuerfreie Umsätze nach § 4 Nr. 1a UStG (exports, Ausfuhrlieferungen under § 6 UStG) and 8125 Steuerfreie innergemeinschaftliche Lieferungen nach § 4 Nr. 1b UStG, as numbered and named in the 2023 edition cited above (checked on 2026-11-18). The codes DE-IGL and DE-AUSFUHR are at 0 % and carry their EN 16931 VAT category, K (VATEX-EU-IC) and G (VATEX-EU-G), which an e-invoice writes. A tax code does not choose the revenue account: post these sales to 8125 and 8120 the way revenue accounts are chosen (an account rule or the line's account). Their tax accounts are 1776 and 1576 only because the system needs accounts for every code; nothing is posted to them at 0 %. An intra-Community supply must also be reported in the Zusammenfassende Meldung, which this template does not build."
   ],
   "accounts": [
     { "code": "0027", "name": "EDV-Software", "type": "asset" },
@@ -52,6 +53,8 @@
     { "code": "4930", "name": "Bürobedarf", "type": "expense" },
     { "code": "4950", "name": "Rechts- und Beratungskosten", "type": "expense" },
     { "code": "4970", "name": "Nebenkosten des Geldverkehrs", "type": "expense" },
+    { "code": "8120", "name": "Steuerfreie Umsätze nach § 4 Nr. 1a UStG (Ausfuhr)", "type": "income" },
+    { "code": "8125", "name": "Steuerfreie innergemeinschaftliche Lieferungen nach § 4 Nr. 1b UStG", "type": "income" },
     { "code": "8300", "name": "Erlöse 7 % USt", "type": "income" },
     { "code": "8400", "name": "Erlöse 19 % USt", "type": "income" },
     { "code": "8730", "name": "Gewährte Skonti", "type": "income" }
@@ -80,14 +83,36 @@
       "name": "Umsatzsteuer / Vorsteuer 19 %",
       "rate": "19",
       "collected": "1776",
-      "paid": "1576"
+      "paid": "1576",
+      "vat_category": "S"
     },
     {
       "code": "DE-USt7",
       "name": "Umsatzsteuer / Vorsteuer 7 %",
       "rate": "7",
       "collected": "1771",
-      "paid": "1571"
+      "paid": "1571",
+      "vat_category": "S"
+    },
+    {
+      "code": "DE-IGL",
+      "name": "Steuerfreie innergemeinschaftliche Lieferung (§ 4 Nr. 1b, § 6a UStG)",
+      "rate": "0",
+      "collected": "1776",
+      "paid": "1576",
+      "vat_category": "K",
+      "exemption_reason_code": "VATEX-EU-IC",
+      "exemption_reason": "Steuerfreie innergemeinschaftliche Lieferung"
+    },
+    {
+      "code": "DE-AUSFUHR",
+      "name": "Steuerfreie Ausfuhrlieferung (§ 4 Nr. 1a, § 6 UStG)",
+      "rate": "0",
+      "collected": "1776",
+      "paid": "1576",
+      "vat_category": "G",
+      "exemption_reason_code": "VATEX-EU-G",
+      "exemption_reason": "Steuerfreie Ausfuhrlieferung"
     }
   ],
   "payment_terms": [

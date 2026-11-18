@@ -395,15 +395,22 @@ pub async fn propose(
                 found = Some((only.0, "item"));
             }
         }
-        // The company's tax codes for the category and rate.
+        // The company's tax codes for the category and rate. Where the
+        // vendor charges none because the company accounts for the tax
+        // (a reverse charge, AE, or an intra-Community supply, K, which is
+        // the company's acquisition), only a code the company assesses
+        // itself, at its own rate, is one: a 0 % code of the same category
+        // is for the company's own sales and would leave the tax unassessed.
         let rate = line.vat_rate.unwrap_or_default();
         let candidates: Vec<(Uuid, String)> = sqlx::query_as(
             "SELECT c.id, c.code FROM tax_code c
              JOIN tax_settings s ON s.tax_code_id = c.id AND s.company_id = $1
-             LEFT JOIN einvoice_tax_category t ON t.tax_code_id = c.id
-             WHERE c.active AND c.rate = $2
+             WHERE c.active
+               AND CASE WHEN $3 IN ('AE', 'K') THEN c.self_assessed AND $2 = 0
+                        ELSE c.rate = $2 END
                AND NOT EXISTS (SELECT 1 FROM tax_code_component g WHERE g.group_id = c.id)
-               AND COALESCE(t.category, CASE WHEN c.rate > 0 THEN 'S' END) = $3
+               AND COALESCE(c.vat_category,
+                            CASE WHEN c.rate > 0 AND NOT c.self_assessed THEN 'S' END) = $3
              ORDER BY c.code",
         )
         .bind(company_id)
