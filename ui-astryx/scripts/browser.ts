@@ -16,6 +16,9 @@ const KEY_CODES: Record<string, number> = {
   ArrowUp: 38,
   Delete: 46,
   Tab: 9,
+  Home: 36,
+  End: 35,
+  F2: 113,
 };
 
 export const CTRL = 2;

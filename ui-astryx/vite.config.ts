@@ -14,7 +14,12 @@ const headers = {
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
+    alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+      // The headless grid, used from its source in the repository, with this app's React.
+      "@erpcraft/grid": fileURLToPath(new URL("../packages/grid/src/index.ts", import.meta.url)),
+    },
+    dedupe: ["react", "react-dom", "@tanstack/react-table", "@tanstack/react-virtual"],
   },
   // The browser only talks to this origin; /api is proxied to the erpcraft server.
   server: { port: 5174, strictPort: true, host: "127.0.0.1", proxy, allowedHosts: true },

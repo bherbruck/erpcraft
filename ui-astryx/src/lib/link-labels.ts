@@ -165,3 +165,24 @@ export function useLinkInfo(
   }, [entity, key, value, info]);
   return value && entity ? info : null;
 }
+
+/**
+ * The label of a record now, for code that cannot wait for a hook (a grid's `format`):
+ * the cached label, or undefined while it is fetched. `useLinkLabelsVersion` re-renders
+ * when labels arrive.
+ */
+export function peekLinkLabel(entity: string, key: string, value: string): string | null | undefined {
+  const hit = cache.get(cacheKey(entity, key, value));
+  if (hit === undefined) request(entity, key, value);
+  return hit === undefined ? undefined : (hit?.label ?? null);
+}
+
+let version = 0;
+listeners.add(() => {
+  version += 1;
+});
+
+/** Changes whenever labels arrive or are forgotten. */
+export function useLinkLabelsVersion(): number {
+  return useSyncExternalStore(subscribe, () => version);
+}

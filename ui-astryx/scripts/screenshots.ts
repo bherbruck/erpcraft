@@ -21,6 +21,11 @@ const shot = async (name: string) => {
   await browser.screenshot(`${OUT}/${name}.png`);
   console.log("wrote", name);
 };
+/** Makes a grid cell the active one, by its column header, as a click does. */
+const activateCell = async (row: number, header: string) => {
+  const col = Number(await browser.evaluate(`[...document.querySelectorAll("[data-grid-header] [role=columnheader]")].findIndex((h) => h.textContent.trim().startsWith(${JSON.stringify(header)}))`));
+  await browser.evaluate(`(() => { const c = document.querySelector('[data-grid-body] [data-row="${row}"][data-col="${col}"]'); c?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); c?.focus(); })()`);
+};
 /** Focuses the input an Astryx label names. */
 const focusLabelled = (prefix: string) =>
   browser.evaluate(
@@ -69,8 +74,10 @@ try {
   await browser.key("Escape");
   await browser.key("Escape");
   await browser.evaluate("document.activeElement?.blur()");
-  await focusLabelled("Quantity, Line 1");
-  await browser.insert("15");
+  await activateCell(0, "Quantity");
+  await browser.key("1");
+  await browser.insert("5");
+  await browser.key("Enter");
   await Bun.sleep(1500);
   await browser.settle();
   await shot("07-sales-order-edited");
@@ -89,8 +96,10 @@ try {
   await shot("08a-quick-create-customer");
   await browser.evaluate(`(() => { const d = document.querySelector("dialog[open]"); const b = d && [...d.querySelectorAll("button")].find((x) => x.textContent.trim() === "Cancel"); b?.click(); })()`);
   await Bun.sleep(300);
-  await focusLabelled("Description, Line 1");
-  await browser.insert("Consulting");
+  await activateCell(0, "Description");
+  await browser.key("C");
+  await browser.insert("onsulting");
+  await browser.key("Tab");
   await browser.key("s", 2);
   await Bun.sleep(1000);
   await browser.settle();

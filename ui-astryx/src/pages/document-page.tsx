@@ -7,20 +7,15 @@ import { Center } from "@astryxdesign/core/Center";
 import { DateInput } from "@astryxdesign/core/DateInput";
 import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
-import { Icon } from "@astryxdesign/core/Icon";
-import { IconButton } from "@astryxdesign/core/IconButton";
 import { Link } from "@astryxdesign/core/Link";
 import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
-import { Selector } from "@astryxdesign/core/Selector";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
-import { Table, TableBody, TableCell, TableHeader, TableHeaderCell, TableRow } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import type { ISODateString } from "@astryxdesign/core/utils";
 import { VStack } from "@astryxdesign/core/VStack";
-import { Plus, Trash2 } from "lucide-react";
-import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { ApiError, api } from "@/api/client";
 import type { CollectionMeta, DocTypeMeta, DocumentRecord, FieldMeta, Json, JsonObject } from "@/api/types";
@@ -30,11 +25,11 @@ import { ActionButtons, ActionDialog } from "@/components/actions";
 import { BANK_STATEMENT, BankMatching } from "@/components/bank-matching";
 import { useDecimalHeader } from "@/components/decimal-value";
 import { FieldInput, type FieldValues, initialValues, toEditable } from "@/components/field-input";
-import { FieldValue, isNumeric } from "@/components/field-value";
+import { FieldValue } from "@/components/field-value";
 import { History } from "@/components/history";
 import { Page } from "@/components/page";
 import { Postings } from "@/components/postings";
-import type { FieldContext } from "@/components/references";
+import { type Line, LinesGrid } from "@/components/lines-grid";
 import { StatusBadge } from "@/components/status-badge";
 import { UnsavedDialog, useUnsavedGuard } from "@/components/unsaved-guard";
 import { t } from "@/i18n/t";
@@ -57,13 +52,6 @@ export function DocumentPage() {
 }
 
 // ------------------------------------------------------------------ model (as ../ui)
-
-interface Line {
-  key: string;
-  /** The line as the server returned it: sent back with the user's changes. */
-  stored: JsonObject;
-  values: FieldValues;
-}
 
 interface FormState {
   docDate: string;
@@ -171,225 +159,10 @@ function problemsOf(error: ApiError, docType: DocTypeMeta): Problems | null {
 
 // ------------------------------------------------------------------ line grid
 
-function ColumnHead({ field }: { field: FieldMeta }) {
-  const label = useDecimalHeader(field);
-  return <TableHeaderCell className={isNumeric(field) ? "num" : undefined}>{label}</TableHeaderCell>;
-}
-
-/**
- * The lines of one collection. Astryx's Table in children mode with an Astryx input in
- * each cell: the spike's stand-in for the headless grid (packages/grid).
- */
-function LineGrid({
-  docType,
-  collection,
-  lines,
-  header,
-  editable,
-  problems,
-  computed,
-  companyId,
-  onChange,
-}: {
-  docType: DocTypeMeta;
-  collection: CollectionMeta;
-  lines: Line[];
-  header: FieldValues;
-  editable: boolean;
-  problems: Problems["lines"][string] | undefined;
-  /** The server's preview of the sent lines, for the values it works out (net). */
-  computed?: JsonObject[];
-  companyId: string | null;
-  onChange: (lines: Line[]) => void;
-}) {
-  const gridRef = useRef<HTMLDivElement>(null);
-  const kinds = docType.alternatives.find((alternative) => alternative.collection === collection.name)?.one_of;
-  const kindFields = new Set((kinds ?? []).flatMap((kind) => kind.fields));
-  const all = lineFields(collection);
-  const firstKindField = all.find((field) => kindFields.has(field.name))?.name;
-  // A read-only column nobody has a value in (delivered, while nothing is) says nothing yet.
-  const visible = all.filter(
-    (field) =>
-      field.name === firstKindField ||
-      (!kindFields.has(field.name) && !(field.readonly && lines.length > 0 && lines.every((line) => isBlank(line.values[field.name])))),
-  );
-  const [chosenKind, setChosenKind] = useState<Record<string, number>>({});
-  const kindOf = (line: Line): number => {
-    const filled = (kinds ?? []).findIndex((kind) => kind.fields.some((name) => !isBlank(line.values[name])));
-    return filled >= 0 ? filled : (chosenKind[line.key] ?? 0);
-  };
-  const contextFields = [...docType.fields, ...collection.fields];
-  // Which preview line each line is: blank new lines are not sent, so they have none.
-  const fresh = initialValues(collection.fields);
-  const sentIndex = new Map<string, number>();
-  for (const line of lines) {
-    const sent =
-      Object.keys(line.stored).length > 0 ||
-      collection.fields.some((field) => !isBlank(line.values[field.name]) && line.values[field.name] !== fresh[field.name]);
-    if (sent) sentIndex.set(line.key, sentIndex.size);
-  }
-
-  function setValue(line: Line, name: string, value: Json | undefined): void {
-    onChange(lines.map((other) => (other.key === line.key ? { ...other, values: { ...other.values, [name]: value } } : other)));
-  }
-
-  function add(): void {
-    onChange([...lines, newLine(collection)]);
-    requestAnimationFrame(() => {
-      const rows = gridRef.current?.querySelectorAll<HTMLElement>("tbody tr");
-      rows?.[rows.length - 1]?.querySelector<HTMLElement>("input, button[role=combobox], [role=combobox]")?.focus();
-    });
-  }
-
-  function changeKind(line: Line, next: number): void {
-    setChosenKind((previous) => ({ ...previous, [line.key]: next }));
-    const cleared: FieldValues = { ...line.values };
-    (kinds ?? []).forEach((kind, index) => {
-      if (index !== next) for (const name of kind.fields) cleared[name] = null;
-    });
-    onChange(lines.map((other) => (other.key === line.key ? { ...other, values: cleared } : other)));
-  }
-
-  const onKey = (isLast: boolean) => (event: KeyboardEvent<HTMLElement>) => {
-    // Enter on the last line adds a line, so a document can be typed in without the mouse.
-    if (event.key === "Enter" && isLast && editable && (event.target as HTMLElement).tagName === "INPUT") {
-      const expanded = (event.target as HTMLElement).getAttribute("aria-expanded") === "true";
-      if (expanded) return;
-      event.preventDefault();
-      add();
-    }
-  };
-
-  const cell = (line: Line, field: FieldMeta, number: number, isLast: boolean) => {
-    const context: FieldContext = { header, line: line.values, fields: contextFields };
-    const error = problems?.[number]?.fields[field.name];
-    if (!editable || field.readonly) {
-      const index = sentIndex.get(line.key);
-      const worked = field.readonly && computed && index !== undefined ? computed[index]?.[field.name] : undefined;
-      return (
-        <span className={isNumeric(field) ? "cell-value num" : "cell-value"}>
-          <FieldValue field={field} value={worked ?? line.values[field.name]} context={context} bare={isNumeric(field)} linkify />
-        </span>
-      );
-    }
-    return (
-      <FieldInput
-        field={field}
-        label={`${field.label}, ${t("lines.line_n", { line: number })}`}
-        isLabelHidden
-        size="sm"
-        value={line.values[field.name]}
-        error={error}
-        companyId={companyId}
-        context={context}
-        onKeyDown={onKey(isLast)}
-        onChange={(value) => setValue(line, field.name, value)}
-      />
-    );
-  };
-
-  return (
-    <VStack gap={2}>
-      <Heading level={2}>{collection.label}</Heading>
-      <div ref={gridRef} className="lines-scroll">
-        <Table density="compact" dividers="rows" className="lines-table">
-          <colgroup>
-            <col className="col-no" />
-            {visible.map((field) =>
-              field.name === firstKindField && kinds ? (
-                <col key="kind" className="col-kind" />
-              ) : (
-                <col
-                  key={field.name}
-                  className={isNumeric(field) ? "col-num" : field.type.kind === "text" ? "col-text" : field.type.kind === "date" ? "col-date" : "col-ref"}
-                />
-              ),
-            )}
-            {editable ? <col className="col-act" /> : null}
-          </colgroup>
-          <TableHeader>
-            <TableRow>
-              <TableHeaderCell className="num">{t("lines.number")}</TableHeaderCell>
-              {visible.map((field) =>
-                field.name === firstKindField && kinds ? (
-                  <TableHeaderCell key="kind">{kinds.map((kind) => kind.label).join(t("lines.kind_or"))}</TableHeaderCell>
-                ) : (
-                  <ColumnHead key={field.name} field={field} />
-                ),
-              )}
-              {editable ? (
-                <TableHeaderCell>
-                  <span className="visually-hidden">{t("lines.remove_hint")}</span>
-                </TableHeaderCell>
-              ) : null}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {lines.map((line, index) => {
-              const number = index + 1;
-              const isLast = index === lines.length - 1;
-              const lineProblem = problems?.[number]?.line;
-              return (
-                <TableRow key={line.key}>
-                  <TableCell className="num">
-                    <Text type="supporting" hasTabularNumbers>
-                      {number}
-                    </Text>
-                  </TableCell>
-                  {visible.map((field) => {
-                    if (field.name === firstKindField && kinds) {
-                      const active = kindOf(line);
-                      const kind = kinds[active];
-                      return (
-                        <TableCell key="kind">
-                          <div className={editable && kinds.length > 1 ? "kind-cell" : undefined}>
-                            {editable && kinds.length > 1 ? (
-                              <Selector
-                                label={t("lines.kind", { line: number })}
-                                isLabelHidden
-                                size="sm"
-                                variant="ghost"
-                                value={String(active)}
-                                onChange={(next: string) => changeKind(line, Number(next))}
-                                options={kinds.map((k, i) => ({ value: String(i), label: k.label }))}
-                              />
-                            ) : null}
-                            <VStack gap={1}>
-                              {(kind?.fields ?? []).map((name) => {
-                                const kindField = collection.fields.find((f) => f.name === name);
-                                return kindField ? <div key={name}>{cell(line, kindField, number, isLast)}</div> : null;
-                              })}
-                              {lineProblem ? <Text color="secondary">{lineProblem}</Text> : null}
-                            </VStack>
-                          </div>
-                        </TableCell>
-                      );
-                    }
-                    return <TableCell key={field.name}>{cell(line, field, number, isLast)}</TableCell>;
-                  })}
-                  {editable ? (
-                    <TableCell>
-                      <IconButton
-                        label={t("lines.remove", { line: number })}
-                        icon={<Icon icon={Trash2} />}
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => onChange(lines.filter((other) => other.key !== line.key))}
-                      />
-                    </TableCell>
-                  ) : null}
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </div>
-      {editable ? (
-        <HStack>
-          <Button label={t("lines.add")} icon={<Icon icon={Plus} />} variant="ghost" size="sm" onClick={add} />
-        </HStack>
-      ) : null}
-    </VStack>
+/** The columns of a collection: its line fields, less read-only ones nobody has a value in yet. */
+function gridFields(collection: CollectionMeta, lines: Line[]): FieldMeta[] {
+  return lineFields(collection).filter(
+    (field) => !(field.readonly && lines.length > 0 && lines.every((line) => isBlank(line.values[field.name]))),
   );
 }
 
@@ -725,17 +498,24 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
           {docType.collections
             .filter(() => !matching)
             .map((collection) => (
-            <LineGrid
+            <LinesGrid
               key={collection.name}
               docType={docType}
               collection={collection}
+              fields={gridFields(collection, form.collections[collection.name] ?? [])}
               lines={form.collections[collection.name] ?? []}
-              header={header}
               editable={editable && !serverLines(collection)}
               problems={problems.lines[collection.name]}
               computed={dirty ? previewLines[collection.name] : undefined}
               companyId={doc?.company_id ?? company?.id ?? null}
-              onChange={(lines) => set({ collections: { ...form.collections, [collection.name]: lines } })}
+              currency={typeof form.header.currency === "string" ? form.header.currency : (company?.base_currency ?? null)}
+              newLine={() => newLine(collection)}
+              onChange={(update) =>
+                setForm((previous) => ({
+                  ...previous,
+                  collections: { ...previous.collections, [collection.name]: update(previous.collections[collection.name] ?? []) },
+                }))
+              }
             />
           ))}
 

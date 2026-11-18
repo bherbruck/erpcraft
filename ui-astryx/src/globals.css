@@ -72,3 +72,48 @@
 @media (max-width: 48rem) { .match-row { grid-template-columns: 1fr; } }
 /* Astryx's table bleeds into the padding around it; inside a padded page it keeps to the content edge. */
 .fit-table > .astryx-table-scroll-wrapper { margin: 0; inline-size: auto; max-inline-size: 100%; }
+
+/* ---------------------------------------------------------------- @erpcraft/grid, Astryx skin
+   The grid gives layout in `style` and state in data attributes; this draws them with the
+   theme's tokens. */
+.ag-root { display: flex; flex-direction: column; gap: var(--spacing-2); min-block-size: 0; }
+.ag-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing-2); }
+.ag-scroller {
+  border: 1px solid var(--color-border); border-radius: var(--radius-container);
+  background: var(--color-background-surface); font-size: var(--font-size-sm);
+}
+.ag-scroller:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.ag-header, .ag-footer { background: var(--color-background-surface); z-index: 2; }
+.ag-row-header { border-block-end: 1px solid var(--color-border-emphasized); }
+.ag-row-body { border-block-end: 1px solid var(--color-border); }
+.ag-row-footer { border-block-start: 1px solid var(--color-border-emphasized); }
+.ag-hcell, .ag-cell {
+  display: flex; align-items: center; gap: var(--spacing-1); min-inline-size: 0;
+  padding-inline: var(--spacing-2); background: var(--color-background-surface); outline: none;
+}
+.ag-hcell { position: relative; }
+.ag-hcell[data-align="end"] { flex-direction: row-reverse; }
+.ag-sort {
+  all: unset; display: inline-flex; align-items: center; gap: var(--spacing-1); min-inline-size: 0;
+  flex: 1 1 auto; cursor: pointer;
+}
+.ag-hcell[data-align="end"] .ag-sort { justify-content: flex-end; }
+.ag-hcell-tools { display: inline-flex; opacity: 0.55; }
+.ag-hcell:hover .ag-hcell-tools, .ag-hcell[data-active] .ag-hcell-tools, .ag-hcell[data-filtered] .ag-hcell-tools { opacity: 1; }
+.ag-hcell[data-dragging] { opacity: 0.6; }
+.ag-hcell[data-drop="before"] { box-shadow: inset 2px 0 0 var(--color-accent); }
+.ag-hcell[data-drop="after"] { box-shadow: inset -2px 0 0 var(--color-accent); }
+.ag-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-cell[data-align="end"] { justify-content: flex-end; font-variant-numeric: tabular-nums; }
+.ag-cell[data-editable] { cursor: cell; }
+.ag-cell:not([data-editable]) .ag-text { color: var(--color-text-secondary); }
+.ag-cell[data-selected] { background: var(--color-accent-muted); }
+.ag-cell[data-active] { box-shadow: inset 0 0 0 2px var(--color-accent); }
+.ag-cell[aria-invalid="true"] { box-shadow: inset 0 0 0 2px var(--color-border-error); }
+.ag-cell[data-editing] { padding-inline: 0; }
+.ag-cell[data-pinned], .ag-hcell[data-pinned] { z-index: 1; }
+.ag-editor { flex: 1 1 auto; min-inline-size: 0; }
+.ag-resize { inline-size: 6px; cursor: col-resize; }
+.ag-resize:hover, .ag-resize[data-resizing] { background: var(--color-accent); }
+.ag-checklist { display: flex; flex-direction: column; gap: var(--spacing-1); max-block-size: 16rem; overflow: auto; }
+.ag-pager { display: flex; justify-content: flex-end; }

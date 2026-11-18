@@ -17,7 +17,16 @@
     "skipLibCheck": true,
     "noEmit": true,
     "types": ["vite/client", "bun"],
-    "paths": { "@/*": ["./src/*"] }
+    "paths": {
+      "@/*": ["./src/*"],
+      "@erpcraft/grid": ["../packages/grid/src/index.ts"],
+      "react": ["./node_modules/@types/react"],
+      "react/*": ["./node_modules/@types/react/*"],
+      "react-dom": ["./node_modules/@types/react-dom"],
+      "react-dom/*": ["./node_modules/@types/react-dom/*"],
+      "@tanstack/react-table": ["./node_modules/@tanstack/react-table"],
+      "@tanstack/react-virtual": ["./node_modules/@tanstack/react-virtual"]
+    }
   },
   "include": ["src", "scripts", "vite.config.ts"]
 }
