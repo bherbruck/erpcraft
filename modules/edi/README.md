@@ -19,7 +19,9 @@ This section says what the design rests on. Each statement is marked:
 
 - **read**: read in the source named, on 18 November 2026;
 - **computed**: checked by a test in this crate;
-- **not checked**: written from working knowledge of the standards and the trade, and not read in a primary source for this work. Check it before relying on it; the X12 standard itself is behind a licence and was not consulted.
+- **not checked**: written from working knowledge of the standards and the trade, and not read in a primary source by the author of this file. Check it before relying on it; the X12 standard itself is behind a licence and was not consulted.
+
+A wider survey, with more sources and its own marks, is in [docs/research/2026-11-edi](../../docs/research/2026-11-edi/README.md). Where it verified something this file marks "not checked", it is right and this file is only more cautious; three things it settled are taken over below.
 
 ### The files
 
@@ -33,7 +35,7 @@ This section says what the design rests on. Each statement is marked:
 - **What a small supplier exchanges** (not checked):
   - 850 purchase order in; 997 back for it;
   - 855 order acknowledgement out: accepted, changed or rejected per line;
-  - 856 ship notice out, before the truck arrives. Its body is a tree of `HL` segments: shipment, order, optionally tare (pallet), pack (carton) and item. In "pick and pack" the item is under the pack; in "standard carton" the pack is under the item. BSN05 says which (`0001` and `0002`; which code is which was not verified, so the plan writes it from the partner's guide). Each carton carries `MAN*GM*` and its SSCC;
+  - 856 ship notice out, before the truck arrives. Its body is a tree of `HL` segments: shipment, order, optionally tare (pallet), pack (carton) and item. In "pick and pack" the item is under the pack; in "standard carton" the pack is under the item. BSN05 says which: `0001` pick and pack, `0002` standard carton (the research, C.6). Each carton carries `MAN*GM*` and its SSCC;
   - 810 invoice out;
   - 846 inventory advice out, 860 order change in, 820 remittance advice in.
 - **Versions**: 004010 and 005010 are what retail and manufacturing partners ask for (not checked). The envelopes differ in ISA11 and ISA12; the transaction sets read here do not differ in what is read.
@@ -56,11 +58,11 @@ This section says what the design rests on. Each statement is marked:
 - **AS2** (read, [RFC 4130](https://www.rfc-editor.org/rfc/rfc4130.txt)): an S/MIME message, signed, encrypted or both, sent by HTTP POST with the headers `AS2-From`, `AS2-To`, `AS2-Version` and `Message-ID`. The sender asks for a receipt with `Disposition-Notification-To`, and for a signed one with `Disposition-Notification-Options`; the receipt (MDN) carries a digest of what was received, which is the proof of delivery. Without `Receipt-Delivery-Option` the MDN comes back in the HTTP response (synchronous); with it, to the URL it names (asynchronous). The RFC of 2005 recommends SHA-1 for sending and that receivers support MD5 and SHA-1; partners today ask for SHA-256 and AES (not checked: no public partner guide was read), which is why the older algorithms are off unless a transport allows them. Compression is [RFC 5402](https://www.rfc-editor.org/rfc/rfc5402.txt) (read: before or after signing, both allowed).
 - **SFTP**: a directory to read and one to write on the partner's or a VAN's server. No standard says how; partners' guides do (not checked).
 - **VANs** carry interchanges between mailboxes and bill by document or by kilocharacter, with set-up and mapping fees per partner (not checked: no price list was read; treat every figure you hear as that provider's).
-- **Certification**: some buyers ask that AS2 software be on a list of interoperability-tested products (not checked).
+- **Certification**: Walmart, Target and Amazon require AS2 software on Drummond's certification list (the research, C.1; Drummond's own claim). This module's AS2 is not on it, so those partners are reached over SFTP or a certified gateway; see PLAN.md, phases 5 and 6.
 
 ### Chargebacks
 
-Buyers deduct from what they pay for a ship notice that is late, missing or wrong, for a label that does not scan, and for deliveries outside the window. The amounts are in each buyer's vendor manual, per shipment or as a percentage of the invoice, and differ by buyer and by year. **No figure was verified for this work, so none is stated here.** What the design takes from it does not depend on the figure: a ship notice must be made from the posted delivery and its packing, not typed, and must be on its way before the truck.
+Buyers deduct from what they pay for a ship notice that is late, missing or wrong, for a label that does not scan, and for deliveries outside the window. The amounts are in each buyer's vendor manual, per shipment or as a percentage of the invoice, and differ by buyer and by year. **No buyer's own document was found; what secondary sources say is in the research, C.7, and no figure is relied on here.** What the design takes from it does not depend on the figure: a ship notice must be made from the posted delivery and its packing, not typed, and must be on its way before the truck.
 
 ### Partner guides
 
@@ -70,7 +72,7 @@ A partner publishes an implementation guide: which segments and elements it send
 
 (Read, [x12.org/products/licensing-program](https://x12.org/products/licensing-program).) X12 states that it "manages the exclusive copyright to all standards, publications, and products", and that an organisation that "is or intends to use X12 IP in an solution to license or otherwise provide to your customer, a third party" is "considered an X12 Commercial Use Licensing Partner"; one that uses it "in an internal solution to send or receive X12 transactions" an internal use one.
 
-What that means for an open-source ERP is a legal question that this work did not answer and that should be put to a lawyer, or to X12, before a release. What the code does in the meantime:
+What that means for an open-source ERP is a legal question that this work did not answer and that should be put to a lawyer, or to X12, before a release. Until then it is a hard constraint on every change to this module:
 
 - no text and no table of the standard is in the repository;
 - segments and elements are described in our own words, as far as the code acts on them;
@@ -87,7 +89,7 @@ Versions and licences are as crates.io showed them on 18 November 2026.
 
 | Crate | Version | Licence | What it is | Why not |
 |---|---|---|---|---|
-| `edi` | 0.4.0, August 2025 | non-standard (see its repository) | An X12 parser | Small, and its licence is not a standard one. |
+| `edi` | 0.4.0, August 2025 | GPL-3.0 (a licence file; crates.io shows "non-standard") | An X12 parser | Cannot be a dependency of an Apache-2.0 project. |
 | `x12-types` | 0.12.0, June 2026 | MIT OR Apache-2.0 | Types generated for X12 transaction sets | Carries the standard's definitions, which is the licence question above; and one type per segment is not what a guide kept as data needs. |
 | `x12` | 0.1.0, 2019 | MIT | An X12 parser | Not maintained. |
 | `edifact` (was `edifact-rs`) | 0.20.0, November 2026 | MIT OR Apache-2.0 | An EDIFACT parser | Active, but a second tokenizer, with its own limits to audit. |
@@ -97,7 +99,7 @@ The tokenizer for both syntaxes is about 500 lines, the X12 envelopes 550 and th
 
 **For SFTP (phase 5): `russh` 0.65 with `russh-sftp` 3.0**, both Apache-2.0, pure Rust, maintained (releases in November and September 2026), and with a server side that the tests can run in-process. `ssh2` (0.9.7) binds the C library libssh2; `openssh-sftp-client` (0.15, MIT) drives an `ssh` program on the machine. Neither fits a server that should carry no C library and start no process. Not checked: which cryptographic backend `russh` should be built with here; prefer the one the TLS stack already brings in.
 
-**For AS2 (phase 6): no crate exists** (the crate named `as2` is something else). It is built here from parts:
+**For AS2 (phase 6): one young crate exists**, `asx-rs` (0.19.0, first published June 2026, one author, MIT OR Apache-2.0, HTTP client on OpenSSL); the crate named `as2` is something else. Evaluate it when the phase starts. The plan assumes building from parts:
 
 | Part | Choice | Notes |
 |---|---|---|
@@ -109,7 +111,7 @@ The tokenizer for both syntaxes is about 500 lines, the X12 envelopes 550 and th
 
 The RustCrypto `rsa` crate was not chosen for private-key operations: its timing side channel (RUSTSEC-2023-0071, the "Marvin attack") is patched only from 0.10.0, released on 8 November 2026 (read in the advisory). It may be right later. `cryptographic-message-syntax` (0.28.0) is MPL-2.0, and `openssl` binds a C library the server does not otherwise carry.
 
-**For reference, not for use** (not checked: licences and status are from memory): OpenAS2 (Java) and the Python AS2 libraries are the open implementations to test AS2 against; Bots (Python) is the long-standing open EDI translator, built around mapping scripts per partner, which is the model this module replaces with guides as data.
+**For reference, not for use**: OpenAS2 (Java) and pyas2-lib (Python) are the open implementations to test AS2 against, and both are GPL-3.0, so they are run as separate programs and nothing is copied from them. Bots (Python, GPL-3.0, archived) is the long-standing open EDI translator, built around mapping scripts per partner, which is the model this module replaces with guides as data.
 
 ## What the spike checks
 

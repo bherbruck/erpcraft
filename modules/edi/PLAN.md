@@ -24,7 +24,7 @@ Rules that hold in every phase:
 - **Every writer is checked by its reader.** A message to send is written, read back with the reader an incoming one would meet, and compared with what was meant. A test per message does the same on a fixture.
 - **A reader returns what it could not place.** `unhandled` and `notes` exist on every typed message.
 - **Fixtures are made up.** No real company, retailer or trademark; GTINs begin with 04 (restricted circulation), GLNs are sample numbers.
-- **The standards' text is not copied.** X12 is under copyright (see README.md). Segment and element names are described in our own words; code lists are the handful of codes the code acts on, not tables.
+- **X12's licence is a hard constraint.** (See docs/research/2026-11-edi, C.10.) The code is a generic tokenizer and envelope reader plus typed readers for the segments it acts on, described in our own words. No dictionary of the standard, no table of code-list descriptions, no text of an implementation guide, in code, comments, tests, built-in guides or documentation. A partner's segments and codes are that partner's guide, which the company enters as data. Fixtures are written by us, never copied from a guide or a reference site. A reviewer refuses a change that breaks this.
 - **No new engine.** A guide's conditions and values are `erpcraft_rules::Expression`. No script language, no XSLT, no mapping DSL.
 
 ## What other crates must grow
@@ -189,6 +189,8 @@ Until here every partner is read and written the standard's way. Now what differ
 
 ## Phase 5: SFTP
 
+SFTP comes before AS2 on purpose. Walmart, Target and Amazon require AS2 software on Drummond's certification list, which ours is not, so those partners are reached over SFTP: their own where they offer it, a VAN's mailbox, or a certified gateway that forwards the bytes unchanged. Phase 5 must therefore be complete enough to run a large retailer on: acceptance below includes a mailbox with other parties' files in it.
+
 **Crate**: see README.md, "Crates". Host keys pinned; no agent, no known_hosts file.
 
 **Migration `0004_transport.sql`**: `edi_transport` (`id`, `company_id`, `kind` `manual`/`sftp`/`as2`, `host`, `port`, `username`, `host_key_sha256`, `inbound_dir`, `outbound_dir`, `inbound_pattern`, `outbound_name`, `after_read` (`delete`, `rename`, `leave`), `poll_minutes`, `active`), `edi_transport_secret` (`transport_id`, `kind` `password`/`private_key`, `secret`; not an entity), `edi_partner.transport_id`, `edi_interchange.attempts`, `.next_attempt_at`, `.last_error`.
@@ -199,13 +201,15 @@ Until here every partner is read and written the standard's way. Now what differ
 - Send: write under a temporary name, rename to the final one; success is the rename. Failure: retry after 1 minute, doubling to an hour, 24 hours in all, then `failed` and the event `edi.send_failed`.
 - Commands: `edi_transport.create`, `.update`, `.set_secret`, `.delete` (sensitive, permission `edi_transport:manage` for all companies), `edi_transport.test` (connects, lists, changes nothing), `edi.poll`, `edi.send_pending`.
 
-**Tests** against an in-process SFTP server (the same crate's server side) on localhost with `ERPCRAFT_EDI_ALLOW_PRIVATE=1`: round trip; a host key that changed is refused; a private address is refused without the variable; a file that grows past the limit while read is refused; a crash between store and delete delivers once; retry and give-up; `edi_transport.test` leaks no secret into the audit log.
+**Tests** against an in-process SFTP server (the same crate's server side) on localhost with `ERPCRAFT_EDI_ALLOW_PRIVATE=1`: round trip; a host key that changed is refused; a private address is refused without the variable; a file that grows past the limit while read is refused; a crash between store and delete delivers once; a mailbox holding files addressed to other receivers leaves them untouched and stores them as `unroutable` only if the pattern matches; retry and give-up; `edi_transport.test` leaks no secret into the audit log.
 
 **Done when** two erpcraft servers trade the order-to-cash exchange through one SFTP server, unattended.
 
 ## Phase 6: AS2
 
-**Crates**: see README.md. This phase is the riskiest; build it as `src/as2/` behind its own feature until its interoperability test passes.
+**Who this is for.** OEMs and smaller partners, who ask that AS2 interoperates and not that it is certified. It is not the way to Walmart, Target or Amazon (phase 5 is). Certifying it with Drummond is a separate, later decision for the project's owner, with a fee and a test event twice a year; nothing in this phase assumes it, and `edi_transport` records `certified` as false so that `edi_transport.create` can warn when a partner's guide demands certification.
+
+**Crates**: see README.md. Before starting, evaluate `asx-rs` (docs/research/2026-11-edi, A): if it has matured, does not force OpenSSL and passes the tampering tests below, use it and drop `as2/cms.rs`. This phase is the riskiest; build it as `src/as2/` behind its own feature until its interoperability test passes.
 
 **Migration `0005_as2.sql`**: on `edi_transport`: `as2_url`, `our_as2_id`, `their_as2_id`, `their_certificate` (PEM), `sign_algorithm`, `encrypt_algorithm`, `compress`, `mdn` (`sync`, `async`), `allow_legacy` (SHA-1 and 3DES, off); our certificate and key in `edi_transport_secret`; `edi_as2_message` (`message_id` unique per partner, `interchange_id`, `mic`, `mdn_state`, `mdn bytea`).
 
@@ -215,7 +219,7 @@ Until here every partner is read and written the standard's way. Now what differ
 - Send: sign, compress if asked, encrypt, POST with a time limit and no redirects to a public https address; a signed MDN whose MIC matches is the receipt; an asynchronous MDN is matched by `Original-Message-ID`.
 - `as2.certificate` (`transport_id`): our public certificate to give the partner; `as2.rotate` to add a second certificate before the first expires; `edi.pending` lists certificates expiring within 30 days.
 
-**Tests**: two servers in one test trade signed and encrypted messages both ways, sync and async MDN; every tampering case (body, signature, MIC, wrong certificate, `AS2-From` of another partner, an interchange of another partner inside a valid AS2 message) is refused; legacy algorithms refused unless allowed; a compressed bomb is refused; a repeat is not stored twice. **Interoperability**: run by hand against OpenAS2 and one Python AS2 library, both directions, and record the versions and the date in the README, as the e-invoice README records its validator run.
+**Tests**: two servers in one test trade signed and encrypted messages both ways, sync and async MDN; every tampering case (body, signature, MIC, wrong certificate, `AS2-From` of another partner, an interchange of another partner inside a valid AS2 message) is refused; legacy algorithms refused unless allowed; a compressed bomb is refused; a repeat is not stored twice. **Interoperability**: run by hand against OpenAS2 and one Python AS2 library (both GPL: run as separate programs, never linked or copied from), both directions, and record the versions and the date in the README, as the e-invoice README records its validator run.
 
 **Done when** the interoperability run passes and its record is in the README.
 
