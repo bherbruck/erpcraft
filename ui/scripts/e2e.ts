@@ -747,6 +747,11 @@ async function bankingChecks(): Promise<void> {
   );
   const bankId = asString(bank.id);
   cleanup.push(() => session.run("entity.update", { entity: "account", id: bankId, data: { active: false } }));
+  // The number the statement files name the account by; without it the server refuses to import them.
+  await session.run("entity.create", {
+    entity: "bank_account_number",
+    data: { company_id: companyId, bank_account_id: bankId, iban: "US00EXAMPLE000000001" },
+  });
 
   // In the books before the statement: rent paid from the account, and an invoice to pay.
   const rent = asObject(
@@ -1422,9 +1427,49 @@ async function shellChecks(): Promise<void> {
   }
 }
 
+/** Party data: shown under a customer, edited on a page of its own through party.get and party.set. */
+async function partyChecks(): Promise<void> {
+  const customer = await first("customer", { code: "C001" });
+  if (!customer) throw new Error("the seed data is missing; run `bun run seed` first");
+  const id = asString(customer.id);
+  const before = asObject(await session.run("party.get", { party_type: "customer", party_id: id }));
+  cleanup.push(() =>
+    session.run("party.set", {
+      party_type: "customer",
+      party_id: id,
+      contacts: asArray(before.contacts),
+    }),
+  );
+  await open(`/c/OHIO/e/customer/${id}`);
+  check("a customer shows its party details", (await textOf("main")).includes("Party details"));
+  await browser.click("Edit party details", "a");
+  check(
+    "party details are edited on a page of their own",
+    (await browser.location()).endsWith(`/e/customer/${id}/party`),
+  );
+  await browser.click("Add contact");
+  const last = asArray(before.contacts).length;
+  await browser.fill(`#party-contact-${last}-name`, `E2E contact ${stamp}`);
+  await browser.key("s", CTRL);
+  await browser.settle();
+  const after = asObject(await session.run("party.get", { party_type: "customer", party_id: id }));
+  check(
+    "Ctrl+S saves the party details and returns to the record",
+    asArray(after.contacts).some((contact) => asObject(contact).name === `E2E contact ${stamp}`) &&
+      (await browser.location()).endsWith(`/e/customer/${id}`) &&
+      (await textOf("main")).includes(`E2E contact ${stamp}`),
+  );
+  check(
+    "addresses keep their ids when the party details are saved",
+    JSON.stringify(asArray(after.addresses).map((address) => asObject(address).id)) ===
+      JSON.stringify(asArray(before.addresses).map((address) => asObject(address).id)),
+  );
+}
+
 const groups: [string, () => Promise<void>][] = [
   ["sign-in", signInChecks],
   ["records", recordChecks],
+  ["party", partyChecks],
   ["lists", listChecks],
   ["documents", documentChecks],
   ["actions", actionChecks],

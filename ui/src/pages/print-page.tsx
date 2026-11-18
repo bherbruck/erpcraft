@@ -4,12 +4,12 @@ import { useParams } from "react-router";
 import { api } from "@/api/client";
 import type { DocTypeMeta, EntityRecord } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
+import { Alert } from "@/components/alert";
+import { Button } from "@/components/button";
 import { PageHeader } from "@/components/page";
 import { PrintFrame, printHtml } from "@/components/print-frame";
-import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { t } from "@/i18n/t";
 import { quote } from "@/lib/link-labels";
@@ -73,7 +73,7 @@ function PrintView({ docType, id }: { docType: DocTypeMeta; id: string }) {
             {options.length > 0 ? (
               <div className="flex items-center gap-2">
                 <Label htmlFor="print-template">{t("print.template")}</Label>
-                <Select
+                <NativeSelect
                   id="print-template"
                   className="w-56"
                   value={templateId}
@@ -85,7 +85,7 @@ function PrintView({ docType, id }: { docType: DocTypeMeta; id: string }) {
                       {typeof template.name === "string" ? template.name : template.id}
                     </option>
                   ))}
-                </Select>
+                </NativeSelect>
               </div>
             ) : null}
             <Button

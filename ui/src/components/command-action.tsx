@@ -3,9 +3,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api } from "@/api/client";
 import type { FieldMeta, Json, JsonObject, Posting } from "@/api/types";
 import { useCompany } from "@/app/context";
-import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Dialog } from "@/components/ui/dialog";
+import { Alert } from "@/components/alert";
+import { Button } from "@/components/button";
+import { Dialog } from "@/components/dialog";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { t } from "@/i18n/t";
@@ -48,7 +48,7 @@ export function ActionButtons({
       {actions.map((action) => (
         <Button
           key={action.action}
-          variant={action.destructive ? "destructive-outline" : "outline"}
+          variant={action.destructive ? "destructive" : "outline"}
           disabled={Boolean(disabledReason) || (running != null && running !== action.action)}
           busy={running === action.action}
           title={disabledReason ?? action.command.description}
@@ -350,7 +350,7 @@ export function ActionDialog({
                     companyId={company?.id ?? null}
                   />
                   {property.description ? (
-                    <p className="text-xs text-muted-foreground">{property.description}</p>
+                    <p className="text-sm text-muted-foreground">{property.description}</p>
                   ) : null}
                 </div>
               );

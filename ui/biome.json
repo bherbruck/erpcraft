@@ -1,7 +1,18 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
   "files": {
-    "includes": ["**", "!dist", "!node_modules", "!src/api/generated.ts", "!docs"]
+    "includes": [
+      "**",
+      "!dist",
+      "!node_modules",
+      "!src/api/generated.ts",
+      "!docs",
+      "!e2e-failures",
+      "!src/components/ui",
+      "!src/hooks/use-mobile.ts",
+      "!src/lib/utils.ts",
+      "!components.json"
+    ]
   },
   "formatter": {
     "indentStyle": "space",
@@ -36,8 +47,12 @@
           "options": {
             "patterns": [
               {
-                "group": ["@radix-ui/*"],
+                "group": ["@radix-ui/*", "radix-ui", "radix-ui/*", "cmdk", "react-day-picker"],
                 "message": "Use the shared components in src/components. They carry the rules of GUIDELINES.md (a dialog that does not close on an outside click, a lookup that searches on the server)."
+              },
+              {
+                "group": ["@/components/ui/dialog", "@/components/ui/alert-dialog", "@/components/ui/button"],
+                "message": "Use Dialog from @/components/dialog (closes only through its own buttons) and Button from @/components/button (type=button by default, shows progress while busy)."
               }
             ]
           }

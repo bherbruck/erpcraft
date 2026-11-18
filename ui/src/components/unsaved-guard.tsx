@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { type Blocker, useBlocker } from "react-router";
-import { Button } from "@/components/ui/button";
-import { Dialog } from "@/components/ui/dialog";
+import { Button } from "@/components/button";
+import { Dialog } from "@/components/dialog";
 import { t } from "@/i18n/t";
 
 /**
@@ -45,7 +45,7 @@ export function UnsavedDialog({ blocker }: { blocker: Blocker }) {
       description={t("unsaved.description")}
       footer={
         <>
-          <Button variant="destructive-outline" onClick={() => blocker.proceed?.()}>
+          <Button variant="destructive" onClick={() => blocker.proceed?.()}>
             {t("unsaved.leave")}
           </Button>
           <Button autoFocus onClick={() => blocker.reset?.()}>

@@ -8,14 +8,14 @@ import { useEffect, useState } from "react";
 import { ApiError, api } from "@/api/client";
 import type { FieldMeta, Json } from "@/api/types";
 import { useApp } from "@/app/context";
+import { Alert } from "@/components/alert";
+import { Button } from "@/components/button";
 import { PrintFrame } from "@/components/print-frame";
 import { DocumentLinkInput } from "@/components/references";
-import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
 import { t } from "@/i18n/t";
 import { canRun, findDocType } from "@/lib/meta";
 import { useAsync } from "@/lib/use-async";
@@ -38,7 +38,8 @@ function DocTypeSelect({
 }) {
   const { meta } = useApp();
   return (
-    <Select
+    <NativeSelect
+      className="w-full"
       id={id}
       value={value}
       aria-invalid={invalid || undefined}
@@ -52,7 +53,7 @@ function DocTypeSelect({
           {docType.label}
         </option>
       ))}
-    </Select>
+    </NativeSelect>
   );
 }
 
@@ -103,7 +104,7 @@ function BodyInput({
             <FileCode aria-hidden="true" />
             {t("print_template.start_from_builtin")}
           </Button>
-          <span className="text-xs text-muted-foreground">
+          <span className="text-sm text-muted-foreground">
             {docType === ""
               ? t("print_template.choose_type_first")
               : value !== ""

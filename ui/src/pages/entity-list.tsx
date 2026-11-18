@@ -4,13 +4,13 @@ import { Link, useParams } from "react-router";
 import { api } from "@/api/client";
 import type { EntityMeta, EntityRecord } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
+import { Button } from "@/components/button";
 import { useColumnChoice } from "@/components/column-chooser";
 import { type Column, DataTable } from "@/components/data-table";
 import { FieldValue, isNumeric, Withheld } from "@/components/field-value";
 import { PageHeader } from "@/components/page";
 import { SavedViews } from "@/components/saved-views";
 import { SearchBox } from "@/components/search-box";
-import { Button } from "@/components/ui/button";
 import { t } from "@/i18n/t";
 import {
   COMPANY,

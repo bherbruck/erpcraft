@@ -1,7 +1,7 @@
 import { Columns3 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { useApp } from "@/app/context";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { t } from "@/i18n/t";
 import { isStringArray, readStored, writeStored } from "@/lib/storage";
@@ -56,7 +56,7 @@ export function useColumnChoice<Row>(
           {t("columns.button")}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-56 p-2">
+      <PopoverContent align="end" className="w-56 gap-1 p-2">
         <p className="px-1 pb-1 text-xs font-medium text-muted-foreground">{t("columns.title")}</p>
         <ul className="max-h-72 overflow-y-auto">
           {columns.map((column) => {

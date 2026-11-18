@@ -4,16 +4,16 @@ import { ApiError, api } from "@/api/client";
 import type { EntityName } from "@/api/generated";
 import type { OpenItem } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
+import { Alert } from "@/components/alert";
+import { Badge } from "@/components/badge";
+import { Button } from "@/components/button";
 import { ActionDialog } from "@/components/command-action";
 import { type Column, DataTable } from "@/components/data-table";
 import { Amount, Empty, LinkLabel } from "@/components/field-value";
 import { Lookup } from "@/components/lookup";
 import { PageHeader } from "@/components/page";
-import { Alert } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { NativeSelect } from "@/components/ui/native-select";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { t } from "@/i18n/t";
 import { formatCalendarDate, todayCalendarDate } from "@/lib/dates";
@@ -99,7 +99,7 @@ export function OpenItemsPage() {
           item.discount_amount && item.discount_date ? (
             <span className="whitespace-nowrap">
               <Amount value={item.discount_amount} decimals={decimals} />
-              <span className="block text-xs text-muted-foreground">
+              <span className="block text-sm text-muted-foreground">
                 {t("open_items.until", { date: formatCalendarDate(item.discount_date) })}
               </span>
             </span>
@@ -145,7 +145,7 @@ export function OpenItemsPage() {
             <Amount value={item.open} decimals={decimals} />
             {/* An item in another currency: what is open in its own currency, as the bank will see it. */}
             {item.currency && item.currency !== currency ? (
-              <span className="block text-xs text-muted-foreground">
+              <span className="block text-sm text-muted-foreground">
                 {t("postings.in_currency", {
                   amount: formatDecimal(item.txn_open, { minFraction: currencyDecimals[item.currency] ?? 2 }),
                   currency: item.currency,
@@ -213,7 +213,7 @@ export function OpenItemsPage() {
       <div className="mb-3 flex flex-wrap items-end gap-3">
         <div className="space-y-1">
           <Label htmlFor="open-kind">{t("open_items.kind")}</Label>
-          <Select
+          <NativeSelect
             id="open-kind"
             className="w-60"
             value={kind ?? ""}
@@ -222,7 +222,7 @@ export function OpenItemsPage() {
             <option value="">{t("open_items.both")}</option>
             <option value="payable">{t("open_items.payables")}</option>
             <option value="receivable">{t("open_items.receivables")}</option>
-          </Select>
+          </NativeSelect>
         </div>
         {kind && partyEntity ? (
           <div className="space-y-1">

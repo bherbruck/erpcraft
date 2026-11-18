@@ -1,7 +1,8 @@
 import { type ComponentProps, type KeyboardEvent, useEffect, useState } from "react";
 import type { FieldMeta, Json } from "@/api/types";
-import { Input, Textarea } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { NativeSelect } from "@/components/ui/native-select";
+import { Textarea } from "@/components/ui/textarea";
 import { t } from "@/i18n/t";
 import { trimDecimal } from "@/lib/decimal";
 import { enumLabel } from "@/lib/meta";
@@ -117,7 +118,7 @@ function JsonInput({ value, onChange, id, disabled, ...aria }: FieldInputProps) 
           }
         }}
       />
-      {bad ? <p className="text-xs text-destructive">{t("field.json_invalid")}</p> : null}
+      {bad ? <p className="text-sm text-destructive">{t("field.json_invalid")}</p> : null}
     </div>
   );
 }
@@ -193,7 +194,8 @@ export function FieldInput(props: FieldInputProps) {
       return <DateInput {...common} value={text} onChange={(next) => onChange(next === "" ? null : next)} />;
     case "enum":
       return (
-        <Select
+        <NativeSelect
+          className="w-full"
           {...common}
           value={text}
           onChange={(event) => onChange(event.target.value === "" ? null : event.target.value)}
@@ -206,7 +208,7 @@ export function FieldInput(props: FieldInputProps) {
               {enumLabel(field, option)}
             </option>
           ))}
-        </Select>
+        </NativeSelect>
       );
     case "link":
       return (

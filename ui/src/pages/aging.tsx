@@ -12,16 +12,16 @@ import { DateInput } from "@/components/date-input";
 import { Amount, LinkLabel } from "@/components/field-value";
 import { PageHeader, Section } from "@/components/page";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { NativeSelect } from "@/components/ui/native-select";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { t } from "@/i18n/t";
-import { cn } from "@/lib/cn";
 import { formatCalendarDate } from "@/lib/dates";
 import { isZeroDecimal, sameDecimal } from "@/lib/decimal";
 import { canRun, commandInputs, findCommand, reportTitle } from "@/lib/meta";
 import { paths } from "@/lib/paths";
 import { useUrlState } from "@/lib/url-state";
 import { useAsync } from "@/lib/use-async";
+import { cn } from "@/lib/utils";
 import { NotFoundPage } from "./not-found";
 
 const REPORT = "open_item.aging";
@@ -102,7 +102,7 @@ export function AgingPage() {
       <div className="mb-3 flex flex-wrap items-end gap-3">
         <div className="space-y-1">
           <Label htmlFor="aging-kind">{t("open_items.kind")}</Label>
-          <Select
+          <NativeSelect
             id="aging-kind"
             className="w-60"
             value={kind}
@@ -117,7 +117,7 @@ export function AgingPage() {
                     : option.label}
               </option>
             ))}
-          </Select>
+          </NativeSelect>
         </div>
         <div className="space-y-1">
           <Label htmlFor="aging-as-of">{t("report.as_of")}</Label>
@@ -184,11 +184,11 @@ export function AgingPage() {
                       {[account.code, account.name].join(t("value.separator"))}
                     </Link>
                     <span className="text-end">
-                      <span className="block text-xs text-muted-foreground">{t("aging.balance")}</span>
+                      <span className="block text-sm text-muted-foreground">{t("aging.balance")}</span>
                       <Amount value={account.balance} decimals={decimals} />
                     </span>
                     <span className={cn("text-end", !agrees && "text-destructive")}>
-                      <span className="block text-xs text-muted-foreground">{t("aging.items_add_up")}</span>
+                      <span className="block text-sm text-muted-foreground">{t("aging.items_add_up")}</span>
                       <Amount value={account.open} decimals={decimals} />
                     </span>
                   </li>

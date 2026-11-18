@@ -1,6 +1,6 @@
 import type { FieldMeta, Json } from "@/api/types";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
+import { NativeSelect } from "@/components/ui/native-select";
 import { t } from "@/i18n/t";
 import type { InputProperty } from "@/lib/meta";
 import { DateInput } from "./date-input";
@@ -76,7 +76,8 @@ export function CommandInput({
   }
   if (property.options) {
     return (
-      <Select
+      <NativeSelect
+        className="w-full"
         id={id}
         value={text}
         disabled={disabled}
@@ -89,7 +90,7 @@ export function CommandInput({
             {option.label}
           </option>
         ))}
-      </Select>
+      </NativeSelect>
     );
   }
   if (property.decimal) {

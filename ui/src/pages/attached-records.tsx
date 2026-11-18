@@ -1,6 +1,6 @@
 // Records that belong to one record of another entity without being its lines:
-// a customer's e-invoice data (`einvoice_party`, by a typed link), a company's
-// e-invoice profile (`einvoice_profile`, whose display is the company). Found
+// a bank account's numbers (`bank_account_number`, whose display starts with the
+// account), or a record with a typed link (`entity_link`) to it. Found
 // from the metadata: an entity whose required typed link (`entity_link`) can
 // name this entity, or whose display starts with a required link to it.
 
@@ -9,8 +9,8 @@ import { Link } from "react-router";
 import { api } from "@/api/client";
 import type { EntityMeta, Meta } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
+import { Button } from "@/components/button";
 import { Section } from "@/components/page";
-import { Button } from "@/components/ui/button";
 import { t } from "@/i18n/t";
 import { recordLabel } from "@/lib/link-labels";
 import { canEntity } from "@/lib/meta";

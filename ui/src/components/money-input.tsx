@@ -1,7 +1,7 @@
 import { type InputHTMLAttributes, type Ref, useState } from "react";
 import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/cn";
 import { formatDecimal, isDecimal, isDecimalDraft } from "@/lib/decimal";
+import { cn } from "@/lib/utils";
 
 /**
  * An input for amounts and quantities. The value is a decimal string from the

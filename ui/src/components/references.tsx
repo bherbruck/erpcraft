@@ -353,6 +353,13 @@ function useRowDescriber(type: LookupType): (row: JsonObject) => PickerOption {
   };
 }
 
+/** `limit` for a command that takes one; a command that lists everything (`party.get`) refuses it. */
+function withLimit(command: CommandMeta | undefined, input: JsonObject, limit: number): JsonObject {
+  const schema = command && isObject(command.input_schema) ? command.input_schema : {};
+  const properties = isObject(schema.properties) ? schema.properties : {};
+  return "limit" in properties ? { ...input, limit } : input;
+}
+
 async function lookupRows(
   type: LookupType,
   input: JsonObject,
@@ -398,7 +405,7 @@ export function CommandLookupInput(props: ReferenceInputProps & { type: LookupTy
       load={{
         key: inputKey && command ? `lookup|${type.command}|${inputKey}` : null,
         run: async (_search, signal) => {
-          const { rows, total } = await lookupRows(type, { ...(input ?? {}), limit: 100 }, signal);
+          const { rows, total } = await lookupRows(type, withLimit(command, input ?? {}, 100), signal);
           return { total, options: rows.map(describe) };
         },
       }}
@@ -411,6 +418,8 @@ export function CommandLookupInput(props: ReferenceInputProps & { type: LookupTy
  * no longer listed (an open item since settled) is shown by its id.
  */
 function useLookupLabel(type: LookupType, value: string | null, input: JsonObject | null): string | null | undefined {
+  const { meta } = useApp();
+  const command = findCommand(meta, type.command);
   const describe = useRowDescriber(type);
   // The lookup's command reads its rows by key where the lookup says how
   // (`by_keys`), whether or not the row could still be chosen.
@@ -420,7 +429,7 @@ function useLookupLabel(type: LookupType, value: string | null, input: JsonObjec
     async (signal) => {
       const query: JsonObject = byKeys
         ? { ...(input ?? {}), [byKeys]: [value ?? ""] }
-        : { ...(input ?? {}), limit: 500 };
+        : withLimit(command, input ?? {}, 500);
       const { rows } = await lookupRows(type, query, signal);
       const row = rows.find((candidate) => candidate[type.key] === value);
       return row ? describe(row).label : null;

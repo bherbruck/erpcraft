@@ -4,7 +4,7 @@
 // and without its own origin, and printed from a window that forbids scripts.
 
 import { t } from "@/i18n/t";
-import { cn } from "@/lib/cn";
+import { cn } from "@/lib/utils";
 
 /** The policy the printed page runs under, whatever it contains: no script of any kind, nothing fetched. */
 const PRINT_POLICY = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:";

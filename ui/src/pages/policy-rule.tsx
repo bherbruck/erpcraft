@@ -5,10 +5,10 @@
 
 import type { PolicyMeta } from "@/api/types";
 import { useApp } from "@/app/context";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
+import { Button } from "@/components/button";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import { t } from "@/i18n/t";
 import { enumLabel, findEntity, moduleLabel } from "@/lib/meta";
 import type { FormCustomization } from "./entity-record";
@@ -35,7 +35,8 @@ function PointSelect({
   const modules = [...new Set(policies.map((policy) => policy.module))];
   const known = policies.some((policy) => policy.name === value);
   return (
-    <Select
+    <NativeSelect
+      className="w-full"
       id={id}
       value={value}
       aria-invalid={invalid || undefined}
@@ -57,7 +58,7 @@ function PointSelect({
             ))}
         </optgroup>
       ))}
-    </Select>
+    </NativeSelect>
   );
 }
 
@@ -92,7 +93,7 @@ function ConditionInput({
         className="min-h-16"
         onChange={(event) => onChange(event.target.value === "" ? null : event.target.value)}
       />
-      <p id={hintId} className="text-xs text-muted-foreground">
+      <p id={hintId} className="text-sm text-muted-foreground">
         {t("policy.condition_hint", { example })}
       </p>
       {policy?.default.condition && value === "" ? (

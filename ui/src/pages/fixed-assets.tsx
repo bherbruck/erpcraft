@@ -8,23 +8,23 @@ import { api } from "@/api/client";
 import type { AssetRegisterOutput, AssetScheduleOutput } from "@/api/generated";
 import type { FieldMeta } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
+import { Alert } from "@/components/alert";
+import { Badge } from "@/components/badge";
 import { type Column, DataTable } from "@/components/data-table";
 import { DateInput } from "@/components/date-input";
 import { Amount, Empty } from "@/components/field-value";
 import { Lookup } from "@/components/lookup";
 import { PageHeader, Section } from "@/components/page";
-import { Alert } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { t } from "@/i18n/t";
-import { cn } from "@/lib/cn";
 import { formatCalendarDate } from "@/lib/dates";
 import { formatDecimal, isZeroDecimal } from "@/lib/decimal";
 import { canEntity, canRun, enumLabel, findCommand, findEntity, outputTitle, reportTitle } from "@/lib/meta";
 import { paths } from "@/lib/paths";
 import { useUrlState } from "@/lib/url-state";
 import { useAsync } from "@/lib/use-async";
+import { cn } from "@/lib/utils";
 import { NotFoundPage } from "./not-found";
 
 const REGISTER = "asset.register";
@@ -392,7 +392,7 @@ export function AssetSchedulePage() {
           <Section
             title={title("months")}
             aside={
-              <p className="text-xs text-muted-foreground">
+              <p className="text-sm text-muted-foreground">
                 {t("assets.posted_planned", { posted, planned: data.months.length - posted })}
               </p>
             }

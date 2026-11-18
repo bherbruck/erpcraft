@@ -8,7 +8,8 @@ Status: agreed before the UI was written. Nothing here is built yet.
 
 - Bun for packages, scripts and tests. Vite for the dev server and the build.
 - React and TypeScript.
-- shadcn/ui components, copied into `ui/components/`, with Tailwind. The repository owns them, so a module can restyle without fighting a dependency.
+- shadcn/ui (CLI-generated, in `src/components/ui`), on Radix and Tailwind, with shadcn's standard neutral theme (CSS variables, light and dark) in `src/index.css`. The repository owns the files, so a module can restyle without fighting a dependency.
+- New primitives come from `bunx shadcn@latest add <component>`, never written by hand. The files the CLI writes stay as it wrote them, so `shadcn add <component> --diff` shows upstream changes cleanly; a rule of this document that needs different behaviour is implemented in a shared component in `src/components/` that wraps the primitive (the Dialog that does not close on an outside click wraps shadcn's Dialog), not by editing the primitive.
 - Biome for linting and formatting.
 - The build produces static files that the `erpcraft` binary serves. There is no separate UI server to deploy.
 
@@ -95,7 +96,7 @@ Status: agreed before the UI was written. Nothing here is built yet.
 
 Rules that depend on review get broken. So:
 
-- **By shared components.** `Dialog` (outside click disabled), `Lookup`, `DataTable`, `MoneyInput`, `DateInput` and `Form` (unsaved-changes guard, idempotency key, field errors) implement the rules above once. Screens use these, and lint forbids importing the underlying shadcn primitives outside `ui/components/`.
+- **By shared components.** `Dialog` (outside click disabled), `Button` (`type="button"` unless told otherwise, progress while busy), `Lookup` and `Picker` (shadcn's combobox: Popover and Command, searching on the server), `DataTable`, `MoneyInput`, `DateInput` and `Form` (unsaved-changes guard, idempotency key, field errors) implement the rules above once, in `src/components/`. Screens use these, and lint forbids importing Radix, cmdk, or shadcn's raw `dialog`, `alert-dialog` and `button` outside `src/components/`.
 - **By lint.** No `fetch` outside the API client. No raw colors or sizes. No string literals as JSX text. No `Number()` or `parseFloat` on amount fields.
 - **By the type generator.** API types cannot drift from the server.
 - **By one command.** `bun run check` runs types, lint, format and tests. A change that fails it is not merged.

@@ -7,7 +7,7 @@ import { Bookmark, Check, Trash2 } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { useApp } from "@/app/context";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { t } from "@/i18n/t";
@@ -95,7 +95,7 @@ export function SavedViews({
           {active ? active.name : t("views.button")}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-72 space-y-2 p-2">
+      <PopoverContent align="end" className="w-72 gap-2 p-2">
         <p className="px-1 text-xs font-medium text-muted-foreground">{t("views.title")}</p>
         {views.length === 0 ? (
           <p className="px-1 text-sm text-muted-foreground">{t("views.none")}</p>
@@ -135,7 +135,7 @@ export function SavedViews({
             {t("views.save")}
           </Button>
         </form>
-        <p className="px-1 text-xs text-muted-foreground">{t("views.local")}</p>
+        <p className="px-1 text-sm text-muted-foreground">{t("views.local")}</p>
       </PopoverContent>
     </Popover>
   );

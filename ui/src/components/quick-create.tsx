@@ -1,9 +1,9 @@
 import { type FormEvent, useRef, useState } from "react";
 import { ApiError, api } from "@/api/client";
 import type { EntityMeta, EntityRecord, Json, JsonObject } from "@/api/types";
-import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Dialog } from "@/components/ui/dialog";
+import { Alert } from "@/components/alert";
+import { Button } from "@/components/button";
+import { Dialog } from "@/components/dialog";
 import { Label } from "@/components/ui/label";
 import { t } from "@/i18n/t";
 import { forgetLinkLabels } from "@/lib/link-labels";
@@ -127,7 +127,7 @@ export function QuickCreateDialog({
                 onChange={(value) => setValues((previous) => ({ ...previous, [field.name]: value }))}
               />
               {error ? (
-                <p id={`${fieldId}-error`} role="alert" className="text-xs text-destructive">
+                <p id={`${fieldId}-error`} role="alert" className="text-sm text-destructive">
                   {error}
                 </p>
               ) : null}

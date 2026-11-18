@@ -1,6 +1,6 @@
 import { Link } from "react-router";
 import { useCompany } from "@/app/context";
-import { Alert } from "@/components/ui/alert";
+import { Alert } from "@/components/alert";
 import { t } from "@/i18n/t";
 import type { PendingApproval } from "@/lib/approval";
 import { formatTimestamp } from "@/lib/dates";

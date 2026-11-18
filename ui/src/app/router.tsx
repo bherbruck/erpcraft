@@ -10,6 +10,7 @@ import { EntityListPage } from "@/pages/entity-list";
 import { EntityRecordPage } from "@/pages/entity-record";
 import { HomePage } from "@/pages/home";
 import { NotFoundPage } from "@/pages/not-found";
+import { PartyEditPage } from "@/pages/party-details";
 import { PrintPage } from "@/pages/print-page";
 import { ReportPage } from "@/pages/report-page";
 import { SignInPage } from "@/pages/sign-in";
@@ -42,6 +43,7 @@ export const createAppRouter = () =>
             { path: "e/:entity", element: <EntityListPage /> },
             { path: "e/:entity/new", element: <EntityRecordPage /> },
             { path: "e/:entity/:id", element: <EntityRecordPage /> },
+            { path: "e/:entity/:id/party", element: <PartyEditPage /> },
             { path: "d/:docType", element: <DocumentListPage /> },
             { path: "d/:docType/new", element: <DocumentPage /> },
             { path: "d/:docType/:id", element: <DocumentPage /> },

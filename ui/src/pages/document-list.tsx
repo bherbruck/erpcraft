@@ -5,6 +5,7 @@ import { api } from "@/api/client";
 import type { DocTypeMeta, DocumentSummary, FieldMeta, JsonObject } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
 import { BulkBar, type BulkResult, BulkResults } from "@/components/bulk-actions";
+import { Button } from "@/components/button";
 import { useColumnChoice } from "@/components/column-chooser";
 import { type Column, DataTable } from "@/components/data-table";
 import { useDecimalHeader } from "@/components/decimal-value";
@@ -14,8 +15,7 @@ import { PageHeader } from "@/components/page";
 import { SavedViews } from "@/components/saved-views";
 import { SearchBox } from "@/components/search-box";
 import { StatusBadge } from "@/components/status-badge";
-import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/select";
+import { NativeSelect } from "@/components/ui/native-select";
 import { t } from "@/i18n/t";
 import { formatCalendarDate, formatTimestamp } from "@/lib/dates";
 import { canDoc, canEntity, canRun, findDocType, withoutSource } from "@/lib/meta";
@@ -246,7 +246,7 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
       />
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <SearchBox value={q} onChange={onSearch} label={t("list.search", { label: docType.plural })} />
-        <Select
+        <NativeSelect
           aria-label={t("document.filter_status")}
           className="w-40"
           value={status}
@@ -258,7 +258,7 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
               {state.label}
             </option>
           ))}
-        </Select>
+        </NativeSelect>
         {partyFilters.map((field) =>
           field.type.kind === "link" ? (
             <Lookup

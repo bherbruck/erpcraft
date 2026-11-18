@@ -329,6 +329,12 @@ const checking = await ensure(
   { company_id: company, code: "1010" },
   { name: "Checking (demo)", account_type: "asset", is_bank: true },
 );
+// The number the bank's files name the account by: a statement is imported only into the account that has it.
+await ensure(
+  "bank_account_number",
+  { company_id: company, bank_account_id: checking },
+  { iban: "US00EXAMPLE000000001" },
+);
 const junRent = await ensureDoc("journal_entry", company, "Demo: storage rent from checking", "2026-06-03", () => ({
   lines: [
     line({ account_id: account("6000"), debit: "25.00", credit: "0" }),
@@ -530,56 +536,97 @@ await ensureDoc("asset_disposal", company, "Demo: forklift sold", "2026-11-14", 
 // What an EN 16931 invoice needs to say about the company, its bank account, a customer and a
 // vendor, and the VAT category of the sales tax. Example values: no real company or person.
 await ensure(
-  "einvoice_bank_account",
-  { company_id: company, account_id: account("1000") },
+  "bank_account_number",
+  { company_id: company, bank_account_id: account("1000") },
   { iban: "DE02120300000000202051", bic: "BYLADEM1001" },
 );
-await ensure(
-  "einvoice_profile",
-  { company_id: company },
-  {
+// Party data: the company's, the customer's and the vendor's particulars, addresses, tax
+// identifiers, electronic addresses and contacts (`party.set` replaces each part it is given,
+// so running this twice changes nothing). Addresses already on record are kept as they are, with
+// their ids, since documents may name them.
+async function setParty(input: JsonObject): Promise<void> {
+  const current = asObject(
+    await session.run("party.get", { party_type: input.party_type ?? null, party_id: input.party_id ?? null }),
+  );
+  const { addresses, ...rest } = input;
+  await session.run(
+    "party.set",
+    asArray(current.addresses).length > 0 ? rest : { ...rest, addresses: addresses ?? null },
+  );
+}
+await setParty({
+  party_type: "company",
+  party_id: company,
+  profile: {
     legal_name: "Ohio Widgets LLC",
-    vat_id: "DE123456789",
     legal_registration: "Example registration 12345",
-    street: "100 Example Street",
-    city: "Columbus",
-    postcode: "43215",
-    country_code: "US",
-    contact_name: "Accounts (example)",
-    contact_phone: "+1 614 555 0100",
-    contact_email: "accounts@ohio-widgets.example",
-    electronic_address: "invoices@ohio-widgets.example",
     payment_account_id: account("1000"),
   },
-);
-await ensure(
-  "einvoice_party",
-  { party_type: "customer", party_id: customer },
-  {
-    legal_name: "Buyer LLC",
-    vat_id: "DE987654321",
-    buyer_reference: "BUYER-2026",
-    street: "200 Example Avenue",
-    city: "Cleveland",
-    postcode: "44114",
-    country_code: "US",
-    contact_email: "ap@buyer.example",
-    electronic_address: "invoices@buyer.example",
-  },
-);
-await ensure(
-  "einvoice_party",
-  { party_type: "vendor", party_id: vendor },
-  {
-    legal_name: "Parts Inc",
-    vat_id: "DE111222333",
-    street: "300 Example Road",
-    city: "Dayton",
-    postcode: "45402",
-    country_code: "US",
-    electronic_address: "billing@parts.example",
-  },
-);
+  addresses: [
+    {
+      kind: "billing",
+      is_default: true,
+      street: "100 Example Street",
+      city: "Columbus",
+      postcode: "43215",
+      region: "OH",
+      country_code: "US",
+    },
+  ],
+  tax_ids: [{ scheme: "eu_vat", value: "DE123456789", country_code: "DE" }],
+  electronic_addresses: [{ scheme: "EM", value: "invoices@ohio-widgets.example", is_default: true }],
+  contacts: [
+    { name: "Accounts (example)", phone: "+1 614 555 0100", email: "accounts@ohio-widgets.example", is_default: true },
+  ],
+});
+await setParty({
+  party_type: "customer",
+  party_id: customer,
+  profile: { legal_name: "Buyer LLC", invoice_reference: "BUYER-2026" },
+  addresses: [
+    {
+      kind: "billing",
+      is_default: true,
+      street: "200 Example Avenue",
+      city: "Cleveland",
+      postcode: "44114",
+      region: "OH",
+      country_code: "US",
+    },
+    {
+      kind: "shipping",
+      is_default: true,
+      attention: "Receiving dock",
+      street: "210 Example Avenue",
+      city: "Cleveland",
+      postcode: "44114",
+      region: "OH",
+      country_code: "US",
+    },
+  ],
+  tax_ids: [{ scheme: "eu_vat", value: "DE987654321", country_code: "DE" }],
+  electronic_addresses: [{ scheme: "EM", value: "invoices@buyer.example", is_default: true }],
+  contacts: [{ name: "Accounts payable (example)", email: "ap@buyer.example", is_default: true }],
+});
+await setParty({
+  party_type: "vendor",
+  party_id: vendor,
+  profile: { legal_name: "Parts Inc" },
+  addresses: [
+    {
+      kind: "billing",
+      is_default: true,
+      street: "300 Example Road",
+      city: "Dayton",
+      postcode: "45402",
+      region: "OH",
+      country_code: "US",
+    },
+  ],
+  tax_ids: [{ scheme: "eu_vat", value: "DE111222333", country_code: "DE" }],
+  electronic_addresses: [{ scheme: "EM", value: "billing@parts.example", is_default: true }],
+});
+log("party data of the company, the customer and the vendor", "done");
 await ensure("einvoice_tax_category", { tax_code_id: taxCode }, { category: "S" });
 
 console.log(`\n${created} created, ${found} already there.`);

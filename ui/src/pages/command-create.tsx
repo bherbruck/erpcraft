@@ -8,10 +8,10 @@ import { useNavigate } from "react-router";
 import { ApiError, api } from "@/api/client";
 import type { CommandMeta, EntityMeta, Json, JsonObject } from "@/api/types";
 import { useCompany } from "@/app/context";
+import { Alert } from "@/components/alert";
+import { Button } from "@/components/button";
 import { FieldInput, type FieldValues } from "@/components/field-input";
 import { PageHeader } from "@/components/page";
-import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { UnsavedDialog, useUnsavedGuard } from "@/components/unsaved-guard";
@@ -146,11 +146,11 @@ export function CommandCreatePage({ entity, command }: { entity: EntityMeta; com
                   />
                 )}
                 {fieldError ? (
-                  <p id={`${id}-error`} role="alert" className="text-xs text-destructive">
+                  <p id={`${id}-error`} role="alert" className="text-sm text-destructive">
                     {fieldError}
                   </p>
                 ) : property.description ? (
-                  <p id={`${id}-help`} className="text-xs text-muted-foreground">
+                  <p id={`${id}-help`} className="text-sm text-muted-foreground">
                     {property.description}
                   </p>
                 ) : null}

@@ -1,42 +1,97 @@
-import { Inbox, LogOut, Menu, Search, X } from "lucide-react";
+import { Inbox, LogOut, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { useApp, useCompany } from "@/app/context";
 import { PageActionsProvider } from "@/app/page-actions";
-import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
+import { Alert } from "@/components/alert";
+import { Button } from "@/components/button";
+import { Kbd } from "@/components/ui/kbd";
+import { Separator } from "@/components/ui/separator";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
+  useSidebar,
+} from "@/components/ui/sidebar";
 import { t } from "@/i18n/t";
-import { cn } from "@/lib/cn";
 import { COMPANY, canEntity, canRun, findCommand, navigation, reportTitle } from "@/lib/meta";
 import { NO_COMPANY, pathInCompany, paths } from "@/lib/paths";
 import { CommandPalette } from "./command-palette";
 import { Lookup } from "./lookup";
 
-function NavItem({ to, label, onNavigate }: { to: string; label: string; onNavigate: () => void }) {
+function NavItem({ to, label }: { to: string; label: string }) {
+  const { pathname } = useLocation();
+  const { setOpenMobile } = useSidebar();
+  const active = pathname === to || pathname.startsWith(`${to}/`);
   return (
-    <NavLink
-      to={to}
-      onClick={onNavigate}
-      className={({ isActive }) =>
-        cn(
-          "block truncate rounded-md px-2 py-1 text-sm hover:bg-accent hover:text-accent-foreground",
-          isActive ? "bg-accent font-medium text-accent-foreground" : "text-foreground/80",
-        )
-      }
-    >
-      {label}
-    </NavLink>
+    <SidebarMenuItem>
+      <SidebarMenuButton asChild isActive={active}>
+        <NavLink to={to} onClick={() => setOpenMobile(false)}>
+          <span>{label}</span>
+        </NavLink>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
   );
 }
 
-/** The frame around every screen: the menu, the current company, the user. */
+/** The menu: one group per module, listing only what the user may read. */
+function AppSidebar() {
+  const { meta } = useApp();
+  const { code } = useCompany();
+  const { setOpenMobile } = useSidebar();
+  const groups = useMemo(() => navigation(meta), [meta]);
+  return (
+    <Sidebar>
+      <SidebarHeader className="h-14 justify-center border-b px-4">
+        <Link
+          to={paths.home(code)}
+          onClick={() => setOpenMobile(false)}
+          className="text-base font-semibold tracking-tight"
+        >
+          {t("app.name")}
+        </Link>
+      </SidebarHeader>
+      <SidebarContent>
+        <nav aria-label={t("nav.label")}>
+          {groups.map((group) => (
+            <SidebarGroup key={group.module} aria-label={group.label}>
+              <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {group.reports.map((report) => (
+                    <NavItem key={report.name} to={paths.report(code, report.name)} label={reportTitle(report)} />
+                  ))}
+                  {group.docTypes.map((docType) => (
+                    <NavItem key={docType.name} to={paths.docList(code, docType.name)} label={docType.plural} />
+                  ))}
+                  {group.entities.map((entity) => (
+                    <NavItem key={entity.name} to={paths.entityList(code, entity.name)} label={entity.plural} />
+                  ))}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          ))}
+        </nav>
+      </SidebarContent>
+    </Sidebar>
+  );
+}
+
+/** The frame around every screen: shadcn/ui's sidebar block with the menu, a header with the current company and the user. */
 export function AppShell() {
   const { meta, me, companies, signOut } = useApp();
   const { code, company } = useCompany();
   const navigate = useNavigate();
   const location = useLocation();
-  const groups = useMemo(() => navigation(meta), [meta]);
-  const [navOpen, setNavOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
   useEffect(() => {
@@ -50,71 +105,15 @@ export function AppShell() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const closeNav = (): void => setNavOpen(false);
-
   return (
     <PageActionsProvider>
-      <div className="flex min-h-screen">
-        <aside
-          className={cn(
-            "fixed inset-y-0 start-0 z-30 w-sidebar flex-col border-e bg-sidebar lg:sticky lg:top-0 lg:flex lg:h-screen",
-            navOpen ? "flex" : "hidden",
-          )}
-        >
-          <div className="flex h-topbar shrink-0 items-center justify-between border-b px-3">
-            <Link to={paths.home(code)} onClick={closeNav} className="text-sm font-semibold tracking-tight">
-              {t("app.name")}
-            </Link>
-            <Button variant="ghost" size="icon" className="lg:hidden" onClick={closeNav} aria-label={t("nav.close")}>
-              <X aria-hidden="true" />
-            </Button>
-          </div>
-          <nav aria-label={t("nav.label")} className="min-h-0 flex-1 space-y-4 overflow-y-auto p-2">
-            {groups.map((group) => (
-              <section key={group.module} aria-label={group.label}>
-                <h2 className="px-2 pb-1 text-xs font-medium text-muted-foreground">{group.label}</h2>
-                <ul className="space-y-px">
-                  {group.reports.map((report) => (
-                    <li key={report.name}>
-                      <NavItem to={paths.report(code, report.name)} label={reportTitle(report)} onNavigate={closeNav} />
-                    </li>
-                  ))}
-                  {group.docTypes.map((docType) => (
-                    <li key={docType.name}>
-                      <NavItem to={paths.docList(code, docType.name)} label={docType.plural} onNavigate={closeNav} />
-                    </li>
-                  ))}
-                  {group.entities.map((entity) => (
-                    <li key={entity.name}>
-                      <NavItem to={paths.entityList(code, entity.name)} label={entity.plural} onNavigate={closeNav} />
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            ))}
-          </nav>
-        </aside>
-        {navOpen ? (
-          <button
-            type="button"
-            aria-label={t("nav.close")}
-            className="fixed inset-0 z-20 bg-foreground/30 lg:hidden"
-            onClick={closeNav}
-          />
-        ) : null}
-
-        <div className="flex min-w-0 flex-1 flex-col">
-          <header className="sticky top-0 z-20 flex h-topbar shrink-0 items-center gap-2 border-b bg-background px-3">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="lg:hidden"
-              onClick={() => setNavOpen(true)}
-              aria-label={t("nav.open")}
-            >
-              <Menu aria-hidden="true" />
-            </Button>
-            <label htmlFor="company-switcher" className="hidden text-xs text-muted-foreground sm:block">
+      <SidebarProvider>
+        <AppSidebar />
+        <SidebarInset className="min-w-0">
+          <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-2 border-b bg-background px-4">
+            <SidebarTrigger className="-ms-1" aria-label={t("nav.toggle")} />
+            <Separator orientation="vertical" className="me-1 data-[orientation=vertical]:h-4" />
+            <label htmlFor="company-switcher" className="hidden text-sm text-muted-foreground sm:block">
               {t("company.label")}
             </label>
             <Lookup
@@ -133,21 +132,19 @@ export function AppShell() {
             />
             <div className="flex-1" />
             {canRun(meta, "approval.list") ? (
-              <Button asChild variant="ghost" size="sm">
+              <Button asChild variant="ghost">
                 <NavLink to={paths.approvals(code)}>
                   <Inbox aria-hidden="true" />
                   <span className="hidden md:inline">{findCommand(meta, "approval.list")?.label}</span>
                 </NavLink>
               </Button>
             ) : null}
-            <Button variant="outline" className="gap-2 text-muted-foreground" onClick={() => setPaletteOpen(true)}>
+            <Button variant="outline" className="text-muted-foreground" onClick={() => setPaletteOpen(true)}>
               <Search aria-hidden="true" />
               <span className="hidden md:inline">{t("palette.open")}</span>
-              <kbd className="hidden rounded-sm border bg-muted px-1 font-mono text-xs md:inline">
-                {t("palette.shortcut")}
-              </kbd>
+              <Kbd className="hidden md:inline-flex">{t("palette.shortcut")}</Kbd>
             </Button>
-            <span className="hidden max-w-40 truncate text-sm sm:block" title={me.email}>
+            <span className="hidden max-w-40 truncate text-sm font-medium sm:block" title={me.email}>
               {me.name}
             </span>
             <Button
@@ -161,7 +158,7 @@ export function AppShell() {
             </Button>
           </header>
 
-          <main className="min-w-0 flex-1 p-4">
+          <div className="min-w-0 flex-1 p-4 md:p-6">
             {company === null ? (
               <Alert
                 tone="info"
@@ -191,10 +188,10 @@ export function AppShell() {
               </Alert>
             ) : null}
             <Outlet />
-          </main>
-        </div>
+          </div>
+        </SidebarInset>
         <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
-      </div>
+      </SidebarProvider>
     </PageActionsProvider>
   );
 }

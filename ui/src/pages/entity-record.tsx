@@ -5,6 +5,8 @@ import { ApiError, api } from "@/api/client";
 import type { EntityName } from "@/api/generated";
 import type { DocTypeMeta, EntityMeta, EntityRecord, FieldMeta, Json, JsonObject } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
+import { Alert } from "@/components/alert";
+import { Button } from "@/components/button";
 import { ActionButtons, ActionDialog } from "@/components/command-action";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { FieldInput, type FieldValues, initialValues, toEditable } from "@/components/field-input";
@@ -12,8 +14,6 @@ import { FieldValue, Withheld } from "@/components/field-value";
 import { History } from "@/components/history";
 import { LINE_PICKERS } from "@/components/line-pickers";
 import { PageHeader, Tabs } from "@/components/page";
-import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { UnsavedDialog, useUnsavedGuard } from "@/components/unsaved-guard";
@@ -45,6 +45,7 @@ import { AttachedRecords } from "./attached-records";
 import { ChildRecords } from "./child-records";
 import { CommandCreatePage } from "./command-create";
 import { NotFoundPage } from "./not-found";
+import { isParty, PartyPanel } from "./party-details";
 import { policyRuleForm } from "./policy-rule";
 import { printTemplateForm } from "./print-template";
 import { SSO_PROVIDER, SsoProviderPage } from "./sso-providers";
@@ -499,7 +500,7 @@ function EntityForm({ entity, id, custom }: { entity: EntityMeta; id: string | n
               />
             ) : null}
             {!isNew && original && !entity.read_only && canEntity(meta, entity.name, "delete") ? (
-              <Button variant="destructive-outline" onClick={() => setConfirmDelete(true)}>
+              <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
                 <Trash2 aria-hidden="true" />
                 {t("action.delete")}
               </Button>
@@ -568,7 +569,7 @@ function EntityForm({ entity, id, custom }: { entity: EntityMeta; id: string | n
             {formError ? <Alert title={t("record.save_failed")}>{formError}</Alert> : null}
             {!canWrite && ready && actions.length === 0 ? <Alert tone="info">{t("record.read_only")}</Alert> : null}
             {ready && entity.fields.some((field) => fieldReach(meta, entity.name, field.name, "read") === "none") ? (
-              <p className="text-xs text-muted-foreground">{t("record.fields_withheld")}</p>
+              <p className="text-sm text-muted-foreground">{t("record.fields_withheld")}</p>
             ) : null}
 
             <div className="grid gap-x-4 gap-y-3 rounded-md border bg-card p-4 sm:grid-cols-2">
@@ -641,16 +642,16 @@ function EntityForm({ entity, id, custom }: { entity: EntityMeta; id: string | n
                         </div>
                       )}
                       {error ? (
-                        <p id={`${fieldId}-error`} role="alert" className="text-xs text-destructive">
+                        <p id={`${fieldId}-error`} role="alert" className="text-sm text-destructive">
                           {error}
                         </p>
                       ) : field.help && editable ? (
-                        <p id={hintId} className="text-xs text-muted-foreground">
+                        <p id={hintId} className="text-sm text-muted-foreground">
                           {field.help}
                         </p>
                       ) : null}
                       {!isNew && field.immutable && !field.readonly && canWrite ? (
-                        <p className="text-xs text-muted-foreground">{t("field.immutable")}</p>
+                        <p className="text-sm text-muted-foreground">{t("field.immutable")}</p>
                       ) : null}
                     </div>
                   );
@@ -664,6 +665,7 @@ function EntityForm({ entity, id, custom }: { entity: EntityMeta; id: string | n
           ) : null}
         </div>
         {original && entity.name === USER ? <UserRoles userId={original.id} /> : null}
+        {original && isParty(entity.name) ? <PartyPanel partyType={entity.name} id={original.id} /> : null}
         {original ? <AttachedRecords entity={entity} id={original.id} /> : null}
         {original && children.length > 0
           ? children.map((child) => (

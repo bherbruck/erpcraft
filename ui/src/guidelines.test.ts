@@ -15,7 +15,14 @@ function sources(dir: string): string[] {
   });
 }
 
-const files = sources(SRC).map((path) => ({ name: relative(SRC, path), text: readFileSync(path, "utf8") }));
+// shadcn/ui's CLI writes src/components/ui, src/hooks and src/lib/utils.ts. They are its output, kept as it wrote
+// them (see GUIDELINES.md, Stack), so they are not held to these rules; everything that uses them is.
+const VENDORED = (name: string): boolean =>
+  name.startsWith("components/ui/") || name.startsWith("hooks/") || name === "lib/utils.ts";
+
+const files = sources(SRC)
+  .map((path) => ({ name: relative(SRC, path), text: readFileSync(path, "utf8") }))
+  .filter((file) => !VENDORED(file.name));
 
 function offenders(pattern: RegExp, except: (name: string) => boolean = () => false): string[] {
   const found: string[] = [];

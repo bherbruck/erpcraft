@@ -1,7 +1,16 @@
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { Link } from "react-router";
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
+import { Tabs as ShadcnTabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { t } from "@/i18n/t";
-import { cn } from "@/lib/cn";
+import { cn } from "@/lib/utils";
 
 export interface Crumb {
   label: string;
@@ -27,28 +36,34 @@ export function PageHeader({
   sticky?: boolean;
 }) {
   return (
-    <div className={cn("-mx-4 -mt-4 mb-4 border-b bg-background px-4 py-3", sticky && "sticky top-topbar z-10")}>
+    <div
+      className={cn(
+        "-mx-4 -mt-4 mb-6 border-b bg-background px-4 py-4 md:-mx-6 md:-mt-6 md:px-6",
+        sticky && "sticky top-14 z-10",
+      )}
+    >
       {crumbs && crumbs.length > 0 ? (
-        <nav
-          aria-label={t("nav.breadcrumb")}
-          className="mb-1 flex flex-wrap items-center gap-1 text-xs text-muted-foreground"
-        >
-          {crumbs.map((crumb, index) => (
-            <span key={crumb.label} className="flex items-center gap-1">
-              {index > 0 ? <span aria-hidden="true">{t("nav.crumb_separator")}</span> : null}
-              {crumb.to ? (
-                <Link to={crumb.to} className="hover:text-foreground hover:underline">
-                  {crumb.label}
-                </Link>
-              ) : (
-                crumb.label
-              )}
-            </span>
-          ))}
-        </nav>
+        <Breadcrumb aria-label={t("nav.breadcrumb")} className="mb-1.5">
+          <BreadcrumbList>
+            {crumbs.map((crumb, index) => (
+              <Fragment key={crumb.label}>
+                {index > 0 ? <BreadcrumbSeparator /> : null}
+                <BreadcrumbItem>
+                  {crumb.to ? (
+                    <BreadcrumbLink asChild>
+                      <Link to={crumb.to}>{crumb.label}</Link>
+                    </BreadcrumbLink>
+                  ) : (
+                    <BreadcrumbPage>{crumb.label}</BreadcrumbPage>
+                  )}
+                </BreadcrumbItem>
+              </Fragment>
+            ))}
+          </BreadcrumbList>
+        </Breadcrumb>
       ) : null}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h1 className="min-w-0 truncate text-lg font-semibold tracking-tight">{title}</h1>
+        <h1 className="min-w-0 truncate text-xl font-semibold tracking-tight">{title}</h1>
         {badges}
         <div className="flex flex-1 flex-wrap items-center justify-end gap-2">{actions}</div>
       </div>
@@ -56,27 +71,21 @@ export function PageHeader({
   );
 }
 
-/** Tabs whose selection is part of the URL: each tab is a link. */
+/**
+ * shadcn/ui's Tabs (line variant) whose selection is part of the URL: each tab
+ * is a link, so Back returns to the tab before and a tab can be shared.
+ */
 export function Tabs({ tabs, current }: { tabs: { id: string; label: string; to: string }[]; current: string }) {
   return (
-    <div role="tablist" className="mb-4 flex gap-1 border-b">
-      {tabs.map((tab) => (
-        <Link
-          key={tab.id}
-          to={tab.to}
-          role="tab"
-          aria-selected={tab.id === current}
-          className={cn(
-            "-mb-px border-b-2 px-3 py-1.5 text-sm",
-            tab.id === current
-              ? "border-foreground font-medium text-foreground"
-              : "border-transparent text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {tab.label}
-        </Link>
-      ))}
-    </div>
+    <ShadcnTabs value={current} activationMode="manual" className="mb-4">
+      <TabsList variant="line" className="w-full justify-start border-b">
+        {tabs.map((tab) => (
+          <TabsTrigger key={tab.id} value={tab.id} asChild className="flex-none px-3">
+            <Link to={tab.to}>{tab.label}</Link>
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </ShadcnTabs>
   );
 }
 
@@ -84,7 +93,7 @@ export function Section({ title, children, aside }: { title: string; children: R
   return (
     <section className="space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold">{title}</h2>
+        <h2 className="text-base font-semibold">{title}</h2>
         {aside}
       </div>
       {children}

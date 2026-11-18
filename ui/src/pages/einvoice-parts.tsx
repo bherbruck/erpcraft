@@ -9,11 +9,11 @@ import { ApiError, api } from "@/api/client";
 import type { EinvoiceExportInput, EinvoiceExportOutput } from "@/api/generated";
 import type { JsonObject } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
-import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Dialog } from "@/components/ui/dialog";
+import { Alert } from "@/components/alert";
+import { Button } from "@/components/button";
+import { Dialog } from "@/components/dialog";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { NativeSelect } from "@/components/ui/native-select";
 import { t } from "@/i18n/t";
 import { documentLabel, useDocumentHeader } from "@/lib/doc-labels";
 import { canDoc, canRun, commandInputs, findCommand, findDocType } from "@/lib/meta";
@@ -125,23 +125,33 @@ function ExportDialog({ docType, id, onClose }: { docType: string; id: string; o
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1">
             <Label htmlFor="einvoice-syntax">{inputs.find((input) => input.name === "syntax")?.label}</Label>
-            <Select id="einvoice-syntax" value={syntax} onChange={(event) => setSyntax(event.target.value)}>
+            <NativeSelect
+              className="w-full"
+              id="einvoice-syntax"
+              value={syntax}
+              onChange={(event) => setSyntax(event.target.value)}
+            >
               {syntaxes.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
               ))}
-            </Select>
+            </NativeSelect>
           </div>
           <div className="space-y-1">
             <Label htmlFor="einvoice-profile">{inputs.find((input) => input.name === "profile")?.label}</Label>
-            <Select id="einvoice-profile" value={profile} onChange={(event) => setProfile(event.target.value)}>
+            <NativeSelect
+              className="w-full"
+              id="einvoice-profile"
+              value={profile}
+              onChange={(event) => setProfile(event.target.value)}
+            >
               {profiles.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
               ))}
-            </Select>
+            </NativeSelect>
           </div>
         </div>
         {error ? <Alert title={t("einvoice.export_refused")}>{error.message}</Alert> : null}

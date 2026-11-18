@@ -10,9 +10,9 @@ import { Link } from "react-router";
 import { ApiError, api } from "@/api/client";
 import type { DocTypeMeta, DocumentSummary } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
-import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Dialog } from "@/components/ui/dialog";
+import { Alert } from "@/components/alert";
+import { Button } from "@/components/button";
+import { Dialog } from "@/components/dialog";
 import { t } from "@/i18n/t";
 import { pendingApproval } from "@/lib/approval";
 import { forgetDocuments } from "@/lib/doc-labels";
@@ -111,7 +111,7 @@ export function BulkBar({
           <Button
             key={action.command.name}
             size="sm"
-            variant={action.destructive ? "destructive-outline" : "outline"}
+            variant={action.destructive ? "destructive" : "outline"}
             onClick={() => setConfirming(action)}
           >
             {action.label}

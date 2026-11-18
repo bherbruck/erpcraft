@@ -10,14 +10,14 @@ import { Link, useNavigate } from "react-router";
 import { ApiError, api } from "@/api/client";
 import type { EinvoiceImportInput, EinvoiceReadOutput } from "@/api/generated";
 import { useApp, useCompany } from "@/app/context";
+import { Alert } from "@/components/alert";
+import { Badge } from "@/components/badge";
+import { Button } from "@/components/button";
 import { Amount, Empty, LinkLabel } from "@/components/field-value";
 import { Lookup } from "@/components/lookup";
 import { PageHeader, Section } from "@/components/page";
-import { Alert } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { t } from "@/i18n/t";
 import { formatCalendarDate } from "@/lib/dates";
@@ -124,7 +124,7 @@ export function EinvoiceImportPage() {
               if (chosen) void read(chosen);
             }}
           />
-          <p className="text-xs text-muted-foreground">{input("content_base64")?.description}</p>
+          <p className="text-sm text-muted-foreground">{input("content_base64")?.description}</p>
           {reading ? <p className="text-sm text-muted-foreground">{t("einvoice.reading")}</p> : null}
         </div>
 
@@ -160,7 +160,7 @@ export function EinvoiceImportPage() {
                   <dd>
                     {invoice.seller.name}
                     {invoice.seller.vat_id ? (
-                      <span className="ms-2 text-xs text-muted-foreground">{invoice.seller.vat_id}</span>
+                      <span className="ms-2 text-sm text-muted-foreground">{invoice.seller.vat_id}</span>
                     ) : null}
                   </dd>
                   <dt className="text-muted-foreground">{t("einvoice.issued")}</dt>
@@ -172,7 +172,7 @@ export function EinvoiceImportPage() {
                   <dt className="text-muted-foreground">{t("einvoice.net")}</dt>
                   <dd>
                     <Amount value={invoice.totals.tax_exclusive} decimals={decimals} />{" "}
-                    <span className="text-xs text-muted-foreground">{invoice.currency}</span>
+                    <span className="text-sm text-muted-foreground">{invoice.currency}</span>
                   </dd>
                   <dt className="text-muted-foreground">{t("einvoice.tax")}</dt>
                   <dd>
@@ -181,10 +181,10 @@ export function EinvoiceImportPage() {
                   <dt className="font-medium">{t("einvoice.payable")}</dt>
                   <dd className="font-semibold">
                     <Amount value={invoice.totals.payable} decimals={decimals} />{" "}
-                    <span className="text-xs font-normal text-muted-foreground">{invoice.currency}</span>
+                    <span className="text-sm font-normal text-muted-foreground">{invoice.currency}</span>
                   </dd>
                   <dt className="text-muted-foreground">{t("einvoice.format")}</dt>
-                  <dd className="text-xs text-muted-foreground">
+                  <dd className="text-sm text-muted-foreground">
                     {[proposal.syntax.toUpperCase(), proposal.container, invoice.specification].join(
                       t("value.separator"),
                     )}
@@ -199,11 +199,12 @@ export function EinvoiceImportPage() {
                     {proposal.vendor_id ? (
                       <p>
                         <LinkLabel entity="vendor" keyField="id" value={proposal.vendor_id} linkify />{" "}
-                        <span className="text-xs text-muted-foreground">{t("einvoice.vendor_by_vat")}</span>
+                        <span className="text-sm text-muted-foreground">{t("einvoice.vendor_by_vat")}</span>
                       </p>
                     ) : proposal.candidates.length > 0 ? (
                       <>
-                        <Select
+                        <NativeSelect
+                          className="w-full"
                           id="einvoice-vendor"
                           value={vendor ?? ""}
                           onChange={(event) => setVendor(event.target.value || null)}
@@ -211,14 +212,14 @@ export function EinvoiceImportPage() {
                           {proposal.candidates.map((candidate) => (
                             <option key={candidate.vendor_id} value={candidate.vendor_id}>
                               {t("einvoice.candidate", {
-                                code: candidate.code,
-                                name: candidate.name,
+                                code: candidate.code ?? "",
+                                name: candidate.name ?? "",
                                 by: candidate.matched_by,
                               })}
                             </option>
                           ))}
-                        </Select>
-                        <p className="text-xs text-muted-foreground">{t("einvoice.vendor_confirm")}</p>
+                        </NativeSelect>
+                        <p className="text-sm text-muted-foreground">{t("einvoice.vendor_confirm")}</p>
                       </>
                     ) : (
                       <>
@@ -231,7 +232,7 @@ export function EinvoiceImportPage() {
                           allowCreate={false}
                           onChange={setVendor}
                         />
-                        <p className="text-xs text-muted-foreground">{t("einvoice.vendor_unknown")}</p>
+                        <p className="text-sm text-muted-foreground">{t("einvoice.vendor_unknown")}</p>
                       </>
                     )}
                   </div>
@@ -255,7 +256,7 @@ export function EinvoiceImportPage() {
                         allowCreate={false}
                         onChange={setAccount}
                       />
-                      <p className="text-xs text-muted-foreground">{input("account_id")?.description}</p>
+                      <p className="text-sm text-muted-foreground">{input("account_id")?.description}</p>
                     </div>
                   ) : null}
                 </div>

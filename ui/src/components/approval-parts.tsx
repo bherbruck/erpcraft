@@ -100,7 +100,7 @@ export function ApprovalFacts({
             </dt>
             <dd className="tabular-nums">
               {shown}
-              {currency ? <span className="ms-1 text-xs text-muted-foreground">{currency}</span> : null}
+              {currency ? <span className="ms-1 text-sm text-muted-foreground">{currency}</span> : null}
             </dd>
           </div>
         );

@@ -1,11 +1,11 @@
 import { api } from "@/api/client";
 import type { HistoryEntry } from "@/api/types";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/button";
 import { t } from "@/i18n/t";
 import { formatTimestamp } from "@/lib/dates";
 import { useAsync } from "@/lib/use-async";
+import { Badge } from "./badge";
 import { type Column, DataTable } from "./data-table";
-import { Badge } from "./ui/badge";
 
 const LIMIT = 100;
 
@@ -40,7 +40,7 @@ const columns: Column<HistoryEntry>[] = [
         {entry.error_message ? <p>{entry.error_message}</p> : null}
         {entry.input !== undefined && entry.input !== null ? (
           <details>
-            <summary className="cursor-pointer text-xs text-muted-foreground">{t("history.input")}</summary>
+            <summary className="cursor-pointer text-sm text-muted-foreground">{t("history.input")}</summary>
             <pre className="mt-1 max-w-form overflow-x-auto rounded-sm bg-muted p-2 font-mono text-xs">
               {JSON.stringify(entry.input, null, 2)}
             </pre>

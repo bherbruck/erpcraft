@@ -1,11 +1,21 @@
-import type { LabelHTMLAttributes } from "react";
-import { cn } from "@/lib/cn";
+import * as React from "react"
+import { cn } from "cn"
+import { Label as LabelPrimitive } from "radix-ui"
 
-export function Label({ className, children, ...props }: LabelHTMLAttributes<HTMLLabelElement>) {
+function Label({
+  className,
+  ...props
+}: React.ComponentProps<typeof LabelPrimitive.Root>) {
   return (
-    // biome-ignore lint/a11y/noLabelWithoutControl: the caller passes htmlFor or wraps the control
-    <label className={cn("text-sm font-medium leading-none", className)} {...props}>
-      {children}
-    </label>
-  );
+    <LabelPrimitive.Root
+      data-slot="label"
+      className={cn(
+        "flex items-center gap-2 text-sm leading-none font-medium select-none group-data-[disabled=true]:pointer-events-none group-data-[disabled=true]:opacity-50 peer-disabled:cursor-not-allowed peer-disabled:opacity-50",
+        className
+      )}
+      {...props}
+    />
+  )
 }
+
+export { Label }

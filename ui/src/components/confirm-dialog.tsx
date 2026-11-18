@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
 import type { ApiError } from "@/api/client";
-import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Dialog } from "@/components/ui/dialog";
+import { Alert } from "@/components/alert";
+import { Button } from "@/components/button";
+import { Dialog } from "@/components/dialog";
 import { t } from "@/i18n/t";
 
 /** Asks before something that cannot be taken back. The safe button has the focus. */

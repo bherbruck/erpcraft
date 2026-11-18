@@ -14,7 +14,7 @@ import { Amount, Empty } from "@/components/field-value";
 import { PageHeader } from "@/components/page";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { NativeSelect } from "@/components/ui/native-select";
 import { t } from "@/i18n/t";
 import { formatCalendarDate, formatTimestamp } from "@/lib/dates";
 import { canRun, commandInputs, findCommand, type InputProperty, reportTitle } from "@/lib/meta";
@@ -218,14 +218,14 @@ function GenericReport({ command }: { command: CommandMeta }) {
         {property.format === "date" ? (
           <DateInput id={id} className="w-44" value={value} onChange={set} />
         ) : options ? (
-          <Select id={id} className="w-44" value={value} onChange={(event) => set(event.target.value)}>
+          <NativeSelect id={id} className="w-44" value={value} onChange={(event) => set(event.target.value)}>
             <option value="">{t("report.any")}</option>
             {options.map((option) => (
               <option key={option} value={option}>
                 {option}
               </option>
             ))}
-          </Select>
+          </NativeSelect>
         ) : property.type === "boolean" ? (
           <span className="flex h-8 items-center">
             <input

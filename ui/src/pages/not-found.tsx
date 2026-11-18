@@ -1,6 +1,6 @@
 import { Link } from "react-router";
 import { useCompany } from "@/app/context";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/button";
 import { t } from "@/i18n/t";
 import { paths } from "@/lib/paths";
 

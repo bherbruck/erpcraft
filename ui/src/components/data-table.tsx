@@ -2,12 +2,12 @@ import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
 import type { ApiError } from "@/api/client";
-import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
+import { Alert } from "@/components/alert";
+import { Button } from "@/components/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { t } from "@/i18n/t";
-import { cn } from "@/lib/cn";
+import { cn } from "@/lib/utils";
 
 export interface Column<Row> {
   id: string;
@@ -90,7 +90,7 @@ export function DataTable<Row>({
   const last = paged ? Math.min(page * pageSize, total) : 0;
 
   return (
-    <div className="rounded-md border bg-card">
+    <div className="overflow-hidden rounded-lg border bg-card">
       {error ? (
         <div className="p-3">
           <Alert
@@ -111,7 +111,7 @@ export function DataTable<Row>({
         <TableHeader>
           <TableRow>
             {selection ? (
-              <TableHead className="w-8">
+              <TableHead className="w-10 px-3">
                 <span className="sr-only">{t("list.select")}</span>
               </TableHead>
             ) : null}
@@ -121,7 +121,7 @@ export function DataTable<Row>({
               return (
                 <TableHead
                   key={column.id}
-                  className={cn(end && "text-end", column.className)}
+                  className={cn("px-3", end && "text-end", column.className)}
                   aria-sort={sorted ? (descending ? "descending" : "ascending") : undefined}
                 >
                   {column.sortField && onSort ? (
@@ -162,7 +162,7 @@ export function DataTable<Row>({
                 <TableRow key={key}>
                   {selection ? <TableCell /> : null}
                   {columns.map((column) => (
-                    <TableCell key={column.id}>
+                    <TableCell key={column.id} className="px-3 py-2.5">
                       <Skeleton className={cn("my-0.5 w-2/3", column.align === "end" && "ms-auto")} />
                     </TableCell>
                   ))}
@@ -172,15 +172,11 @@ export function DataTable<Row>({
           {rows?.map((row) => {
             const href = rowHref?.(row);
             return (
-              <TableRow
-                key={rowKey(row)}
-                className={cn(href && "hover:bg-muted/50", selection?.selected.has(rowKey(row)) && "bg-accent/60")}
-              >
+              <TableRow key={rowKey(row)} data-state={selection?.selected.has(rowKey(row)) ? "selected" : undefined}>
                 {selection ? (
-                  <TableCell className="w-8 py-1.5">
+                  <TableCell className="w-10 px-3 py-2.5">
                     <input
                       type="checkbox"
-                      className="size-4 accent-primary"
                       aria-label={selection.label(row)}
                       title={selection.blocked?.(row) ?? undefined}
                       checked={selection.selected.has(rowKey(row))}
@@ -192,12 +188,17 @@ export function DataTable<Row>({
                 {columns.map((column, index) => (
                   <TableCell
                     key={column.id}
-                    className={cn(column.align === "end" && "text-end", href && "p-0", column.className)}
+                    className={cn(
+                      "px-3 py-2.5",
+                      column.align === "end" && "text-end tabular-nums",
+                      href && "p-0",
+                      column.className,
+                    )}
                   >
                     {href ? (
                       // Every cell is part of the row's link, so the whole row opens the
                       // record, also in a new tab. Only the first cell is a tab stop.
-                      <Link to={href} tabIndex={index === 0 ? undefined : -1} className="block px-3 py-1.5">
+                      <Link to={href} tabIndex={index === 0 ? undefined : -1} className="block px-3 py-2.5">
                         {column.cell(row)}
                       </Link>
                     ) : (
@@ -217,7 +218,7 @@ export function DataTable<Row>({
         </div>
       ) : null}
       {paged ? (
-        <div className="flex items-center justify-between gap-3 border-t px-3 py-2 text-sm text-muted-foreground">
+        <div className="flex items-center justify-between gap-3 border-t px-3 py-2.5 text-sm text-muted-foreground">
           <span aria-live="polite">
             {rows === undefined ? (
               <Skeleton className="w-24" />

@@ -12,16 +12,16 @@ import { ApiError, api } from "@/api/client";
 import type { AuthEventsOutput, EntityName, SsoIdentityListOutput, SsoProviderListOutput } from "@/api/generated";
 import type { CommandMeta, EntityMeta, FieldMeta, Json, JsonObject } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
+import { Alert } from "@/components/alert";
+import { Badge } from "@/components/badge";
+import { Button } from "@/components/button";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { type Column, DataTable } from "@/components/data-table";
+import { Dialog } from "@/components/dialog";
 import { FieldInput, type FieldValues } from "@/components/field-input";
 import { Empty } from "@/components/field-value";
 import { Lookup } from "@/components/lookup";
 import { PageHeader, Section } from "@/components/page";
-import { Alert } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -193,12 +193,12 @@ function ProviderInput({
         />
       )}
       {error ? (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className="text-sm text-destructive">
           {error}
         </p>
       ) : null}
       {input.description ? (
-        <p id={describedBy} className="whitespace-pre-line text-xs text-muted-foreground">
+        <p id={describedBy} className="whitespace-pre-line text-sm text-muted-foreground">
           {input.description}
         </p>
       ) : null}
@@ -349,7 +349,7 @@ function ProviderForm({ entity, id }: { entity: EntityMeta; id: string | null })
               </Button>
             ) : null}
             {provider && remove ? (
-              <Button variant="destructive-outline" onClick={() => setDeleteOpen(true)}>
+              <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
                 <Trash2 aria-hidden="true" />
                 {remove.label}
               </Button>
@@ -392,14 +392,14 @@ function ProviderForm({ entity, id }: { entity: EntityMeta; id: string | null })
               ) : (
                 <p className="text-muted-foreground">{t("sso.no_public_url")}</p>
               )}
-              <p className="text-xs text-muted-foreground">{t("sso.redirect_hint")}</p>
+              <p className="text-sm text-muted-foreground">{t("sso.redirect_hint")}</p>
               <p className="flex items-center gap-2">
                 {provider.has_secret ? (
                   <Badge tone="success">{t("sso.secret_set")}</Badge>
                 ) : (
                   <Badge tone="warning">{t("sso.secret_missing")}</Badge>
                 )}
-                <span className="text-xs text-muted-foreground">{t("sso.secret_write_only")}</span>
+                <span className="text-sm text-muted-foreground">{t("sso.secret_write_only")}</span>
               </p>
             </section>
           ) : null}
@@ -518,7 +518,7 @@ function SecretDialog({
           value={secret}
           onChange={(event) => setSecretValue(event.target.value)}
         />
-        {description ? <p className="whitespace-pre-line text-xs text-muted-foreground">{description}</p> : null}
+        {description ? <p className="whitespace-pre-line text-sm text-muted-foreground">{description}</p> : null}
       </form>
     </Dialog>
   );
@@ -661,7 +661,7 @@ function Bindings({ provider }: { provider: Provider }) {
       ) : null}
       {bind && events ? (
         <Section title={t("sso.recent_sign_ins")}>
-          <p className="text-xs text-muted-foreground">{bind.description}</p>
+          <p className="text-sm text-muted-foreground">{bind.description}</p>
           <DataTable
             caption={t("sso.recent_sign_ins")}
             columns={[
@@ -681,7 +681,7 @@ function Bindings({ provider }: { provider: Provider }) {
                   ) : (
                     <span className="flex flex-wrap items-center gap-2">
                       <Badge tone="destructive">{t("sso.refused")}</Badge>
-                      <span className="text-xs text-muted-foreground">{e.reason}</span>
+                      <span className="text-sm text-muted-foreground">{e.reason}</span>
                     </span>
                   ),
               },

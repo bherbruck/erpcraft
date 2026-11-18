@@ -8,17 +8,17 @@ import { ApiError, api } from "@/api/client";
 import type { ApprovalRequest } from "@/api/generated";
 import type { Json, JsonObject } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
+import { Alert } from "@/components/alert";
 import { Approvers } from "@/components/approval-notice";
 import { ApprovalFacts, ApprovalInput, ApprovalSubject } from "@/components/approval-parts";
+import { Badge, type BadgeTone } from "@/components/badge";
+import { Button } from "@/components/button";
 import { type Column, DataTable } from "@/components/data-table";
 import { Empty } from "@/components/field-value";
 import { PageHeader, Section, Tabs } from "@/components/page";
-import { Alert } from "@/components/ui/alert";
-import { Badge, type BadgeTone } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { NativeSelect } from "@/components/ui/native-select";
+import { Textarea } from "@/components/ui/textarea";
 import { type MessageKey, t } from "@/i18n/t";
 import { formatTimestamp } from "@/lib/dates";
 import { forgetDocuments } from "@/lib/doc-labels";
@@ -137,7 +137,7 @@ export function ApprovalsPage() {
         }))}
       />
       <div className="mb-3 flex items-center gap-2">
-        <Select
+        <NativeSelect
           aria-label={t("document.filter_status")}
           className="w-44"
           value={status}
@@ -149,7 +149,7 @@ export function ApprovalsPage() {
               {t(known.label)}
             </option>
           ))}
-        </Select>
+        </NativeSelect>
       </div>
       <DataTable
         caption={list.label}
@@ -234,7 +234,7 @@ export function ApprovalPage() {
             <>
               {reject && canRun(meta, reject.name) ? (
                 <Button
-                  variant="destructive-outline"
+                  variant="destructive"
                   busy={busy === reject.name}
                   disabled={reason.trim() === "" || busy !== null}
                   title={reason.trim() === "" ? t("approval.reason_needed") : undefined}
@@ -306,7 +306,7 @@ export function ApprovalPage() {
                   value={reason}
                   onChange={(event) => setReason(event.target.value)}
                 />
-                <p className="text-xs text-muted-foreground">{t("approval.reason_hint")}</p>
+                <p className="text-sm text-muted-foreground">{t("approval.reason_hint")}</p>
               </div>
             ) : null}
             {data.decisions.length > 0 ? (

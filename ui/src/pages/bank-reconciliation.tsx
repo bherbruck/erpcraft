@@ -14,13 +14,13 @@ import { Lookup } from "@/components/lookup";
 import { PageHeader, Section } from "@/components/page";
 import { Label } from "@/components/ui/label";
 import { t } from "@/i18n/t";
-import { cn } from "@/lib/cn";
 import { formatCalendarDate } from "@/lib/dates";
 import { isZeroDecimal } from "@/lib/decimal";
 import { canDoc, canRun, commandInputs, findCommand, findDocType, reportTitle } from "@/lib/meta";
 import { paths } from "@/lib/paths";
 import { useUrlState } from "@/lib/url-state";
 import { useAsync } from "@/lib/use-async";
+import { cn } from "@/lib/utils";
 import { NotFoundPage } from "./not-found";
 
 const REPORT = "bank.reconciliation";
@@ -170,7 +170,7 @@ export function BankReconciliationPage() {
             <dd className={cn("border-t pt-1 text-end font-semibold", !agrees && "text-destructive")}>
               <Amount value={data.unexplained} decimals={decimals} />
             </dd>
-            <dd className="col-span-2 text-xs text-muted-foreground">
+            <dd className="col-span-2 text-sm text-muted-foreground">
               {agrees ? t("bank.agrees") : t("bank.disagrees")}
             </dd>
           </dl>

@@ -10,18 +10,18 @@ import { ApiError, api } from "@/api/client";
 import type { CompanySetupOutput } from "@/api/generated";
 import type { Json, JsonObject } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
+import { Alert } from "@/components/alert";
+import { Button } from "@/components/button";
 import { PageHeader, Section } from "@/components/page";
-import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { t } from "@/i18n/t";
-import { cn } from "@/lib/cn";
 import { COMPANY, canRun, commandInputs, findCommand } from "@/lib/meta";
 import { paths } from "@/lib/paths";
 import { newKey } from "@/lib/text";
 import { useAsync } from "@/lib/use-async";
+import { cn } from "@/lib/utils";
 import { NotFoundPage } from "./not-found";
 
 export const SETUP_COMMAND = "company.setup";
@@ -142,11 +142,11 @@ function Setup() {
                     <span className="space-y-1">
                       <span className="block font-medium">
                         {candidate.name}
-                        <span className="ms-2 text-xs font-normal text-muted-foreground">
+                        <span className="ms-2 text-sm font-normal text-muted-foreground">
                           {t("setup.country_currency", { country: candidate.country, currency: candidate.currency })}
                         </span>
                       </span>
-                      <span className="line-clamp-3 text-xs text-muted-foreground">{candidate.description}</span>
+                      <span className="line-clamp-3 text-sm text-muted-foreground">{candidate.description}</span>
                     </span>
                   </label>
                 ))
@@ -188,11 +188,11 @@ function Setup() {
                       }}
                     />
                     {error?.field === property.name ? (
-                      <p role="alert" className="text-xs text-destructive">
+                      <p role="alert" className="text-sm text-destructive">
                         {error.message}
                       </p>
                     ) : property.description ? (
-                      <p className="text-xs text-muted-foreground">{property.description}</p>
+                      <p className="text-sm text-muted-foreground">{property.description}</p>
                     ) : null}
                   </div>
                 );

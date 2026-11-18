@@ -7,7 +7,7 @@
 import { Link } from "react-router";
 import type { Json, JsonObject, Meta, Posting } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@/components/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { t } from "@/i18n/t";
 import { formatCalendarDate, formatTimestamp } from "@/lib/dates";
@@ -72,7 +72,7 @@ function InCurrency({
 }) {
   if (!amount || !currency || currency === accounting || isZeroDecimal(amount)) return null;
   return (
-    <span className="ms-2 whitespace-nowrap text-xs text-muted-foreground">
+    <span className="ms-2 whitespace-nowrap text-sm text-muted-foreground">
       {t("postings.in_currency", { currency, amount: formatDecimal(amount, { minFraction: decimals }) })}
     </span>
   );
@@ -385,7 +385,7 @@ export function Postings({ postings, currency }: { postings: Posting[]; currency
             </span>
             {posting.reverses_id ? <Badge tone="warning">{t("postings.reversal")}</Badge> : null}
             {posting.memo ? <span className="text-muted-foreground">{posting.memo}</span> : null}
-            <span className="ms-auto text-xs text-muted-foreground">
+            <span className="ms-auto text-sm text-muted-foreground">
               {posting.created_by_name
                 ? t("postings.recorded_by", { at: formatTimestamp(posting.created_at), name: posting.created_by_name })
                 : t("postings.recorded", { at: formatTimestamp(posting.created_at) })}

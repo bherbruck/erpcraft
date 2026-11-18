@@ -56,8 +56,9 @@ Everything below is built from what the server declares in `GET /api/meta`; wher
 - **Documents started from a record**: a record page offers "New …" for each document type whose header requires a link to it (a disposal from its asset, an order from its vendor), and the new document starts with that link filled in from the address.
 - **Line kinds**: where a document type declares that a line is one of several kinds (`alternatives`: a stock item, a charge, an account; or an order line), the grid shows one column with a kind switch and the fields of the chosen kind; switching empties the others. A kind made of a line of a document the header does not name yet (an order line on an invoice without an order) is not the default. Discounts (percent and amount) and the net the server works out are columns of their own.
 - **Invoices without an order**: a document type whose source document is optional and whose party it then names itself (vendor and sales invoices) offers "New … without …" on its list and on the party's record; the new document leaves the source out and starts with the party.
-- **E-invoicing**: a posted sales invoice or credit note has "Export e-invoice" (syntax and profile from `einvoice.export`'s schema; the XML downloads, and the rules it breaks are listed). "Import e-invoice" on vendor invoices reads an XRechnung or ZUGFeRD file in the browser and shows `einvoice.read`'s proposal (what the invoice says, the vendor its VAT identifier names or the candidates to confirm, the order, where each line goes, the tax code, the rules it breaks) before `einvoice.import` drafts the vendor invoice. A customer, vendor or company shows its e-invoice data (`einvoice_party`, `einvoice_profile`) under it, with "New" when there is none.
+- **E-invoicing**: a posted sales invoice or credit note has "Export e-invoice" (syntax and profile from `einvoice.export`'s schema; the XML downloads, and the rules it breaks are listed). "Import e-invoice" on vendor invoices reads an XRechnung or ZUGFeRD file in the browser and shows `einvoice.read`'s proposal (what the invoice says, the vendor its VAT identifier names or the candidates to confirm, the order, where each line goes, the tax code, the rules it breaks) before `einvoice.import` drafts the vendor invoice. The data an e-invoice needs about the seller and the buyer is party data (below).
 - **Money inputs** show their value as read-only money does (grouped, with the currency's decimals) while they are not being edited, and the digits as typed while they are.
+- **Party details**: the company, a customer and a vendor show their party data under their record (`party.get`): particulars, billing and shipping addresses, tax identifiers, electronic addresses and contacts. "Edit party details" opens a page of its own (`/c/:company/e/:entity/:id/party`) that saves every part with `party.set`, keeping each address's id so documents that name it still find it; it asks before leaving with unsaved changes and saves on Ctrl+S. A document's Bill to and Ship to are lookups of the party's addresses of that kind, as the registry declares them.
 - **Saved views**: each document and entity list can save its search, filters, sort and columns under a name and switch between them. Views are kept in this browser's `localStorage`, per user and per list; keeping them on the server, so they follow the user and can be shared, is a later step.
 
 ### How it is put together
@@ -70,19 +71,22 @@ src/app/sso.ts         Finishes a single sign-on before the router starts.
 src/i18n/              t() and the English dictionary. All of the UI's own text is here.
 src/lib/               meta.ts (reading the registry), decimal.ts (decimal strings, never numbers), dates.ts,
                        link-labels.ts and doc-labels.ts (names of referenced records and documents), url-state.ts.
-src/components/ui/     shadcn-style primitives, written by hand on Radix and Tailwind.
-src/components/        The shared components that carry the rules: DataTable, Lookup, Picker, MoneyInput, DateInput,
-                       Dialog (does not close on an outside click), unsaved-changes guard, ActionDialog (preview, then
-                       confirm), Postings (ledger entries), DecimalValue, references.
+src/components/ui/     shadcn/ui, as `bunx shadcn@latest add` wrote it (components.json). Not edited by hand.
+src/components/        The shared components that carry the rules, built from src/components/ui: AppShell (shadcn's
+                       sidebar block), Button (busy, type=button), Dialog (does not close on an outside click), Alert
+                       and Badge (status tones), Combobox, Lookup and Picker (Popover + Command, search on the server),
+                       DataTable, MoneyInput, DateInput, unsaved-changes guard, ActionDialog (preview, then confirm),
+                       Postings (ledger entries), DecimalValue, references.
+src/hooks/, src/lib/utils.ts  Written by the shadcn CLI.
 src/pages/             One generic page per kind of screen, and the reports with a page of their own.
-src/index.css          Design tokens (light and dark). The only file with raw colors and sizes.
+src/index.css          shadcn's neutral theme (light and dark) plus status tones. The only file with raw colors and sizes.
 scripts/               generate-api-types.ts, seed.ts, screenshots.ts, e2e.ts, check-dist.ts, browser.ts.
 ```
 
 How the guidelines are enforced:
 
 - **Types**: `strict`, `noUncheckedIndexedAccess`; Biome forbids `any`, `@ts-ignore` and `!`.
-- **Biome**: `fetch` and `parseFloat` are forbidden globals outside `src/api/client.ts`; `@radix-ui/*` may only be imported inside `src/components/`; string literals as JSX text are an error.
+- **Biome**: `fetch` and `parseFloat` are forbidden globals outside `src/api/client.ts`; Radix, cmdk and shadcn's raw `dialog`, `alert-dialog` and `button` may only be imported inside `src/components/`; string literals as JSX text are an error. The CLI's own files (`src/components/ui`, `src/hooks`, `src/lib/utils.ts`) are left out of Biome and of `src/guidelines.test.ts`, so they stay as the CLI wrote them.
 - **`src/guidelines.test.ts`**: scans the source for what Biome cannot express: `Number(`, `.toFixed(`, raw colors, Tailwind's fixed palette, arbitrary pixel sizes, type escapes.
 - **The generator**: `CommandInputs` and `CommandOutputs` type every `api.run(...)` call; names the UI relies on (`company`, `account`, ...) are typed as `EntityName`, so a rename on the server breaks the build.
 - **`bun run e2e`**: the scripted browser run, including purchase to pay through the follow-on drafts and the open items page, the print view, a restricted user's fields, a bulk post with a refused row, an action from the palette and single sign-on providers. It signs in as one test user, `e2e-restricted-test-user@example.test`, whose role it sets; its password is derived from the administrator's at run time and never stored.
@@ -98,7 +102,8 @@ In development builds only (`import.meta.env.DEV`), a page opened with `#token=<
   - Money is shown in the currency its field declares. Where a document is in another currency, the server declares some of its amounts in the company's currency although they are in the document's (reported; the UI follows the declaration and will follow its correction).
 - Saved views are kept in the browser only.
 - `asset.capitalise` takes a document line as plain ids; which lines qualify is worked out in the UI (`src/components/line-pickers.tsx`) from the command's description: debits to the class's `asset_cost` account not yet capitalised. Openings of taken-over assets are offered too, as the server does not link them.
-- Records that belong to another record without being its lines (e-invoice data) are found by a required typed link that can name the record's entity, or a display that starts with a required link to it (`src/pages/attached-records.tsx`).
+- Records that belong to another record without being its lines (a bank account's numbers) are found by a required typed link that can name the record's entity, or a display that starts with a required link to it (`src/pages/attached-records.tsx`).
+- Party data is not a generic entity, so which records have it (company, customer, vendor) and the labels of its fields and tax schemes are the UI's (`src/pages/party-details.tsx`); `party.get` and `party.set` describe the fields only in their schemas.
 - The labels and colours of approval statuses (`pending`, `executed`, `failed`, `stale`, `rejected`, `expired`) are the UI's: `approval.list` names them only in its description.
 - Aging cannot open the items of one bucket: `open_item.list` has no filter by days past due, so a party's row opens all its items.
 - Only English. Dates and numbers follow the browser's locale.

@@ -2,8 +2,8 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react
 import { Navigate, useLocation, useNavigate } from "react-router";
 import { api, session } from "@/api/client";
 import type { EntityRecord } from "@/api/types";
-import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
+import { Alert } from "@/components/alert";
+import { Button } from "@/components/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { t } from "@/i18n/t";
 import { forgetLinkLabels, seedRecords, setLabelRegistry } from "@/lib/link-labels";

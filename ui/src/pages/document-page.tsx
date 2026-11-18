@@ -5,8 +5,10 @@ import { ApiError, api } from "@/api/client";
 import type { CollectionMeta, DocTypeMeta, DocumentRecord, FieldMeta, Json, JsonObject } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
 import { useOfferPageActions } from "@/app/page-actions";
+import { Alert } from "@/components/alert";
 import { ApprovalNotice } from "@/components/approval-notice";
 import { BANK_STATEMENT, BankMatching } from "@/components/bank-matching";
+import { Button } from "@/components/button";
 import { ActionButtons, ActionDialog, useFollowOn } from "@/components/command-action";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { DateInput } from "@/components/date-input";
@@ -18,16 +20,13 @@ import { PageHeader, Section, Tabs } from "@/components/page";
 import { Postings } from "@/components/postings";
 import type { FieldContext } from "@/components/references";
 import { StatusBadge } from "@/components/status-badge";
-import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { UnsavedDialog, useUnsavedGuard } from "@/components/unsaved-guard";
 import { t } from "@/i18n/t";
-import { cn } from "@/lib/cn";
 import { formatCalendarDate, formatTimestamp, todayCalendarDate } from "@/lib/dates";
 import { forgetDocuments, rememberDocument } from "@/lib/doc-labels";
 import { canDoc, canRun, findDocType, recordActions } from "@/lib/meta";
@@ -35,6 +34,7 @@ import { paths } from "@/lib/paths";
 import { newKey } from "@/lib/text";
 import { useUrlState } from "@/lib/url-state";
 import { useAsync } from "@/lib/use-async";
+import { cn } from "@/lib/utils";
 import { EinvoiceExportButton } from "./einvoice-parts";
 import { NotFoundPage } from "./not-found";
 
@@ -246,7 +246,8 @@ function LineGrid({
   useEffect(() => {
     if (!focusLine) return;
     const row = gridRef.current?.querySelector(`[data-line="${focusLine}"]`);
-    row?.querySelector<HTMLElement>("input, select, button[role='combobox']")?.focus();
+    // The first field of the line, past the switch of what kind of line it is (that is usually left as it is).
+    row?.querySelector<HTMLElement>("input, select:not([data-line-kind]), button[role='combobox']")?.focus();
     setFocusLine(null);
   }, [focusLine]);
 
@@ -339,7 +340,7 @@ function LineGrid({
                 className={cn(problem && "bg-destructive-soft/40")}
                 aria-invalid={problem ? true : undefined}
               >
-                <TableCell className="text-end text-xs tabular-nums text-muted-foreground">{number}</TableCell>
+                <TableCell className="text-end text-sm tabular-nums text-muted-foreground">{number}</TableCell>
                 {visible.map((field) => {
                   if (field.name === firstKindField && kinds) {
                     const active = kindOf(line);
@@ -351,7 +352,8 @@ function LineGrid({
                       <TableCell key="kind" className={cn(editable ? "px-1 py-1 align-top" : "whitespace-nowrap")}>
                         <div className="flex items-start gap-1">
                           {editable && kinds.length > 1 ? (
-                            <Select
+                            <NativeSelect
+                              data-line-kind
                               className="w-32 shrink-0"
                               aria-label={t("lines.kind", { line: number })}
                               value={kinds[active]?.label ?? ""}
@@ -367,7 +369,7 @@ function LineGrid({
                                   {option.label}
                                 </option>
                               ))}
-                            </Select>
+                            </NativeSelect>
                           ) : null}
                           {(kind?.fields ?? []).map((name) => {
                             const part = fieldByName(name);
@@ -402,7 +404,7 @@ function LineGrid({
                           })}
                         </div>
                         {kindErrors.map((message) => (
-                          <p key={message} role="alert" className="px-1 pt-0.5 text-start text-xs text-destructive">
+                          <p key={message} role="alert" className="px-1 pt-0.5 text-start text-sm text-destructive">
                             {message}
                           </p>
                         ))}
@@ -448,7 +450,7 @@ function LineGrid({
                             }
                           />
                           {error ? (
-                            <p id={errorId} role="alert" className="px-1 pt-0.5 text-start text-xs text-destructive">
+                            <p id={errorId} role="alert" className="px-1 pt-0.5 text-start text-sm text-destructive">
                               {error}
                             </p>
                           ) : null}
@@ -457,7 +459,7 @@ function LineGrid({
                         <>
                           <FieldValue field={field} value={line.values[field.name]} context={context} linkify />
                           {error ? (
-                            <p role="alert" className="text-xs text-destructive">
+                            <p role="alert" className="text-sm text-destructive">
                               {error}
                             </p>
                           ) : null}
@@ -485,7 +487,7 @@ function LineGrid({
               problem?.line ? (
                 <TableRow key={`${line.key}-problem`} className="bg-destructive-soft/40 hover:bg-destructive-soft/40">
                   <TableCell />
-                  <TableCell colSpan={visible.length + (editable ? 1 : 0)} className="pt-0 text-xs text-destructive">
+                  <TableCell colSpan={visible.length + (editable ? 1 : 0)} className="pt-0 text-sm text-destructive">
                     <span role="alert">{problem.line}</span>
                   </TableCell>
                 </TableRow>
@@ -505,7 +507,7 @@ function LineGrid({
             <Plus aria-hidden="true" />
             {t("lines.add")}
           </Button>
-          <span className="hidden text-xs text-muted-foreground md:inline">{t("lines.hint")}</span>
+          <span className="hidden text-sm text-muted-foreground md:inline">{t("lines.hint")}</span>
         </div>
       ) : null}
     </div>
@@ -904,7 +906,7 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
               </Button>
             ) : null}
             {doc && !locked && doc.postings.length === 0 && canDoc(meta, docType.name, "delete") ? (
-              <Button variant="destructive-outline" onClick={() => setConfirmDelete(true)}>
+              <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
                 <Trash2 aria-hidden="true" />
                 {t("action.delete")}
               </Button>
@@ -1014,7 +1016,7 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
               <div className="flex min-h-8 items-center text-sm">{formatCalendarDate(form.docDate)}</div>
             )}
             {fieldError("doc_date") ? (
-              <p role="alert" className="text-xs text-destructive">
+              <p role="alert" className="text-sm text-destructive">
                 {fieldError("doc_date")}
               </p>
             ) : null}
@@ -1061,11 +1063,11 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
                   </div>
                 )}
                 {error ? (
-                  <p id={`${fieldId}-error`} role="alert" className="text-xs text-destructive">
+                  <p id={`${fieldId}-error`} role="alert" className="text-sm text-destructive">
                     {error}
                   </p>
                 ) : editable && field.help ? (
-                  <p id={hintId} className="text-xs text-muted-foreground">
+                  <p id={hintId} className="text-sm text-muted-foreground">
                     {field.help}
                   </p>
                 ) : null}
@@ -1091,13 +1093,13 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
               </div>
             )}
             {fieldError("memo") ? (
-              <p role="alert" className="text-xs text-destructive">
+              <p role="alert" className="text-sm text-destructive">
                 {fieldError("memo")}
               </p>
             ) : null}
           </div>
           {doc ? (
-            <p className="text-xs text-muted-foreground sm:col-span-2 xl:col-span-4">
+            <p className="text-sm text-muted-foreground sm:col-span-2 xl:col-span-4">
               {doc.created_by_name
                 ? t("document.created_by", {
                     label: label("created_by_name", t("document.created")),
@@ -1186,7 +1188,7 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
                     key={`${link.relation}:${link.id}`}
                     className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2"
                   >
-                    <span className="w-28 text-xs text-muted-foreground">
+                    <span className="w-28 text-sm text-muted-foreground">
                       {link.relation === "source" ? t("document.link_source") : t("document.link_follow_up")}
                     </span>
                     <Link

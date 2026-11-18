@@ -13,11 +13,11 @@ import { ApiError, api } from "@/api/client";
 import type { BankStatementProposalsOutput } from "@/api/generated";
 import type { DocTypeMeta, DocumentRecord, Json, JsonObject } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
-import { Alert } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Alert } from "@/components/alert";
+import { Badge } from "@/components/badge";
+import { Button } from "@/components/button";
+import { Kbd } from "@/components/ui/kbd";
 import { t } from "@/i18n/t";
-import { cn } from "@/lib/cn";
 import { formatCalendarDate } from "@/lib/dates";
 import { isZeroDecimal } from "@/lib/decimal";
 import { forgetDocuments, useDocumentHeader } from "@/lib/doc-labels";
@@ -25,6 +25,7 @@ import { canRun, findCommand, findDocType, toAction } from "@/lib/meta";
 import { paths } from "@/lib/paths";
 import { newKey } from "@/lib/text";
 import { useAsync } from "@/lib/use-async";
+import { cn } from "@/lib/utils";
 import { ActionDialog } from "./command-action";
 import { Amount, LinkLabel } from "./field-value";
 import { Lookup } from "./lookup";
@@ -226,7 +227,7 @@ export function BankMatching({
         <span className="text-sm text-muted-foreground">
           {t("bank.to_match", { count: unmatched, total: lines.length })}
         </span>
-        <span className="ms-auto hidden text-xs text-muted-foreground md:inline">{t("bank.keys")}</span>
+        <span className="ms-auto hidden text-sm text-muted-foreground md:inline">{t("bank.keys")}</span>
       </div>
       {proposals.error ? <Alert title={t("bank.proposals_failed")}>{proposals.error.message}</Alert> : null}
       <ul ref={list} className="divide-y rounded-md border bg-card">
@@ -254,7 +255,7 @@ export function BankMatching({
             >
               <div className="min-w-0 space-y-0.5">
                 <div className="flex items-baseline gap-2">
-                  <span className="w-6 shrink-0 text-end text-xs tabular-nums text-muted-foreground">{index + 1}</span>
+                  <span className="w-6 shrink-0 text-end text-sm tabular-nums text-muted-foreground">{index + 1}</span>
                   <span className="whitespace-nowrap">
                     {text(line, "booking_date") ? formatCalendarDate(text(line, "booking_date") ?? "") : null}
                   </span>
@@ -267,14 +268,14 @@ export function BankMatching({
               <div className="text-end font-medium md:min-w-28">
                 <Amount value={amount} decimals={decimals} />
                 {difference && !isZeroDecimal(difference) ? (
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-sm text-muted-foreground">
                     {label("difference")} <Amount value={difference} decimals={decimals} />
                   </p>
                 ) : null}
               </div>
               <div className="min-w-0 space-y-1.5">
                 {error?.line === lineId ? (
-                  <p role="alert" className="text-xs text-destructive">
+                  <p role="alert" className="text-sm text-destructive">
                     {error.error.message}
                   </p>
                 ) : null}
@@ -305,17 +306,17 @@ export function BankMatching({
                 ) : (
                   <>
                     {proposals.data === undefined ? (
-                      <p className="text-xs text-muted-foreground">{t("value.loading")}</p>
+                      <p className="text-sm text-muted-foreground">{t("value.loading")}</p>
                     ) : offered.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">{t("bank.no_proposal")}</p>
+                      <p className="text-sm text-muted-foreground">{t("bank.no_proposal")}</p>
                     ) : (
                       <ol className="space-y-1">
                         {offered.map((proposal, number) => (
                           <li key={proposalKey(proposal)} className="flex items-start gap-2">
-                            <kbd className="mt-0.5 rounded-sm border bg-muted px-1 font-mono text-xs">{number + 1}</kbd>
+                            <Kbd className="mt-0.5">{number + 1}</Kbd>
                             <span className="min-w-0 flex-1">
                               <span className="block">{proposalText(proposal)}</span>
-                              <span className="block text-xs text-muted-foreground">
+                              <span className="block text-sm text-muted-foreground">
                                 {t("bank.reason", { reason: proposal.reason, score: proposal.score })}
                               </span>
                             </span>

@@ -1,12 +1,25 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/inter";
 
 /*
  * Design tokens. This file is the only place where raw colors, sizes and font
  * names appear; components use the Tailwind names mapped below.
- * Light and dark follow the system setting.
+ *
+ * The theme is shadcn/ui's standard neutral theme (written by `shadcn init`),
+ * with light and dark. Dark follows the system setting, so `dark:` is a media
+ * query instead of a class: the page needs no script to choose a theme, which
+ * the server's content security policy would not allow inline anyway.
+ *
+ * Added to shadcn's set: soft status tones (success, warning, info), the white
+ * of a printed page, and the named layout sizes components refer to.
  */
+@custom-variant dark (@media (prefers-color-scheme: dark));
+
 :root {
   color-scheme: light dark;
+  --radius: 0.625rem;
 
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -16,66 +29,91 @@
   --popover-foreground: oklch(0.145 0 0);
   --primary: oklch(0.205 0 0);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.965 0 0);
+  --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.965 0 0);
-  --muted-foreground: oklch(0.46 0 0);
-  --accent: oklch(0.955 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
-  --border: oklch(0.905 0 0);
-  --input: oklch(0.87 0 0);
-  --ring: oklch(0.55 0.12 255);
-  --sidebar: oklch(0.98 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
 
-  --destructive: oklch(0.5 0.2 27);
-  --destructive-foreground: oklch(0.985 0 0);
-  --destructive-soft: oklch(0.96 0.025 27);
-  --success: oklch(0.42 0.11 152);
-  --success-soft: oklch(0.955 0.04 152);
-  --warning: oklch(0.47 0.11 70);
+  /* Status tones: the word carries the meaning, the color supports it. Text on its soft background meets AA. */
+  --success: oklch(0.45 0.12 152);
+  --success-soft: oklch(0.96 0.04 152);
+  --warning: oklch(0.48 0.11 65);
   --warning-soft: oklch(0.96 0.05 85);
-  --info: oklch(0.45 0.13 255);
-  --info-soft: oklch(0.955 0.03 255);
+  --info: oklch(0.47 0.14 255);
+  --info-soft: oklch(0.96 0.03 255);
+  --destructive-soft: oklch(0.965 0.025 27);
   /* A printed page is white in both themes, as on paper. */
   --paper: oklch(1 0 0);
-
-  --radius: 0.375rem;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: oklch(0.17 0 0);
-    --foreground: oklch(0.95 0 0);
-    --card: oklch(0.2 0 0);
-    --card-foreground: oklch(0.95 0 0);
-    --popover: oklch(0.22 0 0);
-    --popover-foreground: oklch(0.95 0 0);
-    --primary: oklch(0.92 0 0);
-    --primary-foreground: oklch(0.2 0 0);
-    --secondary: oklch(0.27 0 0);
-    --secondary-foreground: oklch(0.95 0 0);
-    --muted: oklch(0.25 0 0);
-    --muted-foreground: oklch(0.74 0 0);
-    --accent: oklch(0.28 0 0);
-    --accent-foreground: oklch(0.95 0 0);
-    --border: oklch(0.31 0 0);
-    --input: oklch(0.38 0 0);
-    --ring: oklch(0.7 0.12 255);
-    --sidebar: oklch(0.195 0 0);
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.922 0 0);
+    --primary-foreground: oklch(0.205 0 0);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.488 0.243 264.376);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.556 0 0);
 
-    --destructive: oklch(0.72 0.17 25);
-    --destructive-foreground: oklch(0.17 0 0);
-    --destructive-soft: oklch(0.28 0.06 25);
-    --success: oklch(0.78 0.13 152);
+    --success: oklch(0.8 0.13 152);
     --success-soft: oklch(0.27 0.05 152);
-    --warning: oklch(0.82 0.12 85);
+    --warning: oklch(0.84 0.12 85);
     --warning-soft: oklch(0.28 0.05 85);
-    --info: oklch(0.77 0.11 255);
+    --info: oklch(0.8 0.1 255);
     --info-soft: oklch(0.27 0.05 255);
+    --destructive-soft: oklch(0.28 0.06 25);
   }
 }
 
 @theme inline {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --font-heading: var(--font-sans);
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -90,56 +128,58 @@
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
   --color-sidebar: var(--sidebar);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
-  --color-destructive-soft: var(--destructive-soft);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
   --color-success: var(--success);
   --color-success-soft: var(--success-soft);
   --color-warning: var(--warning);
   --color-warning-soft: var(--warning-soft);
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
+  --color-destructive-soft: var(--destructive-soft);
   --color-paper: var(--paper);
 
-  --radius-sm: calc(var(--radius) - 2px);
-  --radius-md: var(--radius);
-  --radius-lg: calc(var(--radius) + 2px);
-
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 
   /* Layout sizes that components refer to by name. */
-  --spacing-sidebar: 15rem;
-  --spacing-topbar: 3rem;
-  --container-form: 46rem;
-  --container-dialog: 34rem;
-  --container-dialog-wide: 56rem;
-  --container-palette: 38rem;
-  --container-lookup: 22rem;
+  --container-form: 48rem;
+  --container-lookup: 24rem;
   --spacing-print: 80vh;
 }
 
 @layer base {
   * {
-    border-color: var(--border);
-  }
-  html {
-    /* Dense by default: one step below the browser's 16px. */
-    font-size: 14px;
+    @apply border-border outline-ring/50;
   }
   body {
-    background: var(--background);
-    color: var(--foreground);
-    font-family: var(--font-sans);
-    -webkit-font-smoothing: antialiased;
+    @apply bg-background font-sans text-foreground antialiased;
   }
-  :focus-visible {
-    outline: 2px solid var(--ring);
-    outline-offset: 1px;
+  /* Native checkboxes and radios (tables of choices, kept native so a row's box is a real input) take the theme. */
+  input[type="checkbox"],
+  input[type="radio"] {
+    @apply size-4 accent-primary;
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]) {

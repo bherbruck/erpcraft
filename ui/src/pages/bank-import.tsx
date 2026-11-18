@@ -11,11 +11,11 @@ import { ApiError, api } from "@/api/client";
 import type { EntityName } from "@/api/generated";
 import type { JsonObject } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
+import { Alert } from "@/components/alert";
+import { Button } from "@/components/button";
 import { Lookup } from "@/components/lookup";
 import { MoneyInput } from "@/components/money-input";
 import { PageHeader } from "@/components/page";
-import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { t } from "@/i18n/t";
 import { forgetDocuments } from "@/lib/doc-labels";
@@ -143,7 +143,7 @@ function BankImport() {
                   <span>
                     <span className="font-medium">{option.value}</span>
                     {option.description ? (
-                      <span className="block text-xs text-muted-foreground">{option.description}</span>
+                      <span className="block text-sm text-muted-foreground">{option.description}</span>
                     ) : null}
                   </span>
                 </label>
@@ -158,7 +158,7 @@ function BankImport() {
               className="block w-full text-sm file:me-3 file:rounded-md file:border file:bg-card file:px-3 file:py-1 file:text-sm"
               onChange={(event) => setFile(event.target.files?.[0] ?? null)}
             />
-            <p className="text-xs text-muted-foreground">{input("content")?.description}</p>
+            <p className="text-sm text-muted-foreground">{input("content")?.description}</p>
           </div>
           {format === "csv" ? (
             <>
@@ -170,7 +170,7 @@ function BankImport() {
                   onChange={setOpening}
                   minFraction={currency ? (currencyDecimals[currency] ?? 2) : 2}
                 />
-                <p className="text-xs text-muted-foreground">{input("opening_balance")?.description}</p>
+                <p className="text-sm text-muted-foreground">{input("opening_balance")?.description}</p>
               </div>
               <div className="space-y-1 text-sm">
                 <span className="font-medium">{mappingEntity?.label}</span>

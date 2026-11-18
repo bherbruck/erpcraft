@@ -130,7 +130,7 @@ export function DecimalValue({
   return (
     <span className="whitespace-nowrap tabular-nums">
       {formatted}
-      {suffix ? <span className="ms-1 text-xs text-muted-foreground">{suffix}</span> : null}
+      {suffix ? <span className="ms-1 text-sm text-muted-foreground">{suffix}</span> : null}
     </span>
   );
 }
