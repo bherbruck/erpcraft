@@ -1407,6 +1407,16 @@ impl Command for PostCreditNote {
                 )
                 .await?
                 {
+                    if tax.self_assessed {
+                        // Taken back from the tax accounts alone: the
+                        // vendor was owed none of it.
+                        if !tax.value().is_zero() {
+                            let (debit, credit) = tax.debit_credit();
+                            gl.push(gl_line(tax.account_id, debit, credit, line.id));
+                        }
+                        taxes.push(tax);
+                        continue;
+                    }
                     let back = -tax.amount;
                     tax_back += back;
                     if !back.is_zero() {

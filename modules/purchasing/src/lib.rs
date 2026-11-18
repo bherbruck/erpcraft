@@ -2992,7 +2992,14 @@ impl Command for PostInvoice {
                 .await?;
                 tax_amounts.push(Some(erpcraft_tax::Tax::total(&line_taxes)));
                 for tax in line_taxes {
-                    if !tax.amount.is_zero() {
+                    if tax.self_assessed {
+                        // Owed by the company itself and reclaimed: on the
+                        // tax accounts alone, not owed to the vendor.
+                        if !tax.value().is_zero() {
+                            let (debit, credit) = tax.debit_credit();
+                            gl.push(gl_line(tax.account_id, debit, credit, line.id));
+                        }
+                    } else if !tax.amount.is_zero() {
                         owed += tax.amount;
                         owed_value += tax.value();
                         // The tax account holds the accounting value; what

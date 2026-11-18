@@ -1623,3 +1623,55 @@ async fn a_posted_invoice_keeps_the_address_it_was_posted_with() {
     assert_eq!(parties["buyer"]["city"], "Aachen");
     t.stop().await;
 }
+
+/// A sale under the reverse charge is written as category AE at 0 %, with
+/// the exemption reason, and the buyer's VAT identifier.
+#[tokio::test]
+async fn a_reverse_charge_sale_is_category_ae() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let reverse = t
+        .create(
+            "tax_code",
+            json!({ "code": "DE-RC", "name": "Steuerschuldnerschaft des Leistungsempfängers",
+                    "rate": "19", "self_assessed": true }),
+        )
+        .await;
+    let accounts: (String, String) = sqlx::query_as(
+        "SELECT collected_account_id::text, paid_account_id::text FROM tax_settings
+         WHERE tax_code_id = $1::uuid",
+    )
+    .bind(&f.vat19)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    t.create(
+        "tax_settings",
+        json!({ "company_id": f.company, "tax_code_id": reverse,
+                "collected_account_id": accounts.0, "paid_account_id": accounts.1 }),
+    )
+    .await;
+    let invoice = f
+        .posted(
+            &t,
+            "sales_invoice",
+            "2026-04-03",
+            json!({ "customer_id": f.customer, "lines": [
+                { "account_id": f.account["8400"], "description": "Montage", "qty": "1",
+                  "unit_price": "500.00", "tax_code_id": reverse } ] }),
+        )
+        .await;
+    assert_eq!(dec(&invoice["summary"]["total_gross"]), 500.0, "{invoice}");
+    let (status, out) = export(&t, "sales_invoice", &invoice, "ubl").await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    let parsed = read(out["xml"].as_str().unwrap());
+    assert_eq!(parsed.vat.len(), 1);
+    assert_eq!(parsed.vat[0].category, "AE");
+    assert_eq!(amount(parsed.vat[0].tax), 0.0);
+    assert_eq!(amount(parsed.totals.payable), 500.0);
+    assert_eq!(
+        parsed.vat[0].exemption_reason_code.as_deref(),
+        Some("VATEX-EU-AE")
+    );
+    t.stop().await;
+}

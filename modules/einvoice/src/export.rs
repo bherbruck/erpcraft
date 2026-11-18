@@ -376,17 +376,19 @@ pub async fn build(
             ));
             continue;
         };
-        let (code, rate, parts, category, reason, reason_code): (
+        #[allow(clippy::type_complexity)]
+        let (code, rate, parts, category, reason, reason_code, self_assessed): (
             String,
             Decimal,
             i64,
             Option<String>,
             Option<String>,
             Option<String>,
+            bool,
         ) = sqlx::query_as(
             "SELECT c.code, c.rate,
                     (SELECT count(*) FROM tax_code_component g WHERE g.group_id = c.id),
-                    t.category, t.exemption_reason, t.exemption_reason_code
+                    t.category, t.exemption_reason, t.exemption_reason_code, c.self_assessed
              FROM tax_code c LEFT JOIN einvoice_tax_category t ON t.tax_code_id = c.id
              WHERE c.id = $1",
         )
@@ -401,8 +403,20 @@ pub async fn build(
             ));
             continue;
         }
+        // Tax the buyer accounts for: reverse charge, at 0 % on the invoice,
+        // unless the code is named otherwise.
+        let (rate, reason, reason_code) = if self_assessed {
+            (
+                Decimal::ZERO,
+                reason.or_else(|| Some("Reverse charge".into())),
+                reason_code.or_else(|| Some("VATEX-EU-AE".into())),
+            )
+        } else {
+            (rate, reason, reason_code)
+        };
         let category = match category {
             Some(c) => c,
+            None if self_assessed => "AE".to_owned(),
             None if rate > Decimal::ZERO => "S".to_owned(),
             None => {
                 missing.0.push(format!(

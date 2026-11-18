@@ -74,6 +74,11 @@ impl Module for TaxModule {
                 name: "charge",
                 sql: include_str!("../migrations/0006_charge.sql"),
             },
+            Migration {
+                version: 7,
+                name: "self_assessed",
+                sql: include_str!("../migrations/0007_self_assessed.sql"),
+            },
         ]
     }
 
@@ -123,6 +128,20 @@ impl Module for TaxModule {
                 .field(
                     FieldMeta::new("authority", "Authority", FieldType::Text)
                         .help("Who the tax is owed to."),
+                )
+                .field(
+                    FieldMeta::new(
+                        "self_assessed",
+                        "Accounted for by the buyer",
+                        FieldType::Bool,
+                    )
+                    .help(
+                        "Reverse charge, an intra-Community acquisition or US use tax. On \
+                             a purchase the vendor charges none: the company owes the tax on \
+                             the collected account and reclaims it on the paid account (an \
+                             expense where it cannot). On a sale nothing is charged and the \
+                             base is recorded.",
+                    ),
                 )
                 .field(created())
                 .order_by(&["code"])
@@ -256,6 +275,11 @@ pub struct Tax {
     /// that currency, and this is what they are worth in the accounting
     /// currency, which the tax accounts hold and a return totals.
     pub foreign: Option<Converted>,
+    /// Tax the buyer accounts for itself (reverse charge, use tax): not
+    /// charged by the party and not owed with the invoice. On a purchase a
+    /// code gives two: `paid` (debit its account) and `collected` (credit
+    /// its account), of the same amount. On a sale it is for nothing.
+    pub self_assessed: bool,
 }
 
 /// The accounting-currency value of a tax worked out in another currency.
@@ -275,9 +299,28 @@ pub struct Conversion {
 }
 
 impl Tax {
-    /// The tax of several components together, in the document's currency.
+    /// The tax of several components together that the party charges, in
+    /// the document's currency: what is owed with the invoice. Tax the
+    /// buyer accounts for itself is not.
     pub fn total(taxes: &[Tax]) -> Decimal {
-        taxes.iter().map(|tax| tax.amount).sum()
+        taxes
+            .iter()
+            .filter(|tax| !tax.self_assessed)
+            .map(|tax| tax.amount)
+            .sum()
+    }
+
+    /// The general ledger line for this tax, in the accounting currency:
+    /// debit the account for tax paid, credit it for tax collected, the
+    /// other way round for tax taken back (an amount below zero).
+    pub fn debit_credit(&self) -> (Decimal, Decimal) {
+        let value = self.value();
+        match (self.direction, value.is_sign_negative()) {
+            (Direction::Paid, false) => (value, Decimal::ZERO),
+            (Direction::Paid, true) => (Decimal::ZERO, -value),
+            (Direction::Collected, false) => (Decimal::ZERO, value),
+            (Direction::Collected, true) => (-value, Decimal::ZERO),
+        }
     }
 
     /// What the tax is worth in the accounting currency.
@@ -318,19 +361,22 @@ struct Part {
     rate: Decimal,
     active: bool,
     compound: bool,
+    self_assessed: bool,
 }
 
 /// The code a line carries, and the taxes it is made of, in order: the
 /// code alone when it has no components.
 async fn parts(conn: &mut PgConnection, tax_code_id: Uuid) -> Result<(Part, Vec<Part>)> {
-    let code: Option<Part> =
-        sqlx::query_as("SELECT id, code, rate, active, compound FROM tax_code WHERE id = $1")
-            .bind(tax_code_id)
-            .fetch_optional(&mut *conn)
-            .await?;
+    let code: Option<Part> = sqlx::query_as(
+        "SELECT id, code, rate, active, compound, self_assessed FROM tax_code WHERE id = $1",
+    )
+    .bind(tax_code_id)
+    .fetch_optional(&mut *conn)
+    .await?;
     let code = code.ok_or_else(|| Error::not_found("tax code"))?;
     let components: Vec<Part> = sqlx::query_as(
-        "SELECT c.id, c.code, c.rate, c.active, c.compound FROM tax_code_component g
+        "SELECT c.id, c.code, c.rate, c.active, c.compound, c.self_assessed
+         FROM tax_code_component g
          JOIN tax_code c ON c.id = g.component_id
          WHERE g.group_id = $1 ORDER BY g.position",
     )
@@ -483,7 +529,12 @@ async fn work_out(
         } else {
             base
         };
-        let amount = round_money(taxed * part.rate / Decimal::ONE_HUNDRED, decimals);
+        // A sale with tax the buyer accounts for charges none.
+        let amount = if part.self_assessed && direction == Direction::Collected {
+            Decimal::ZERO
+        } else {
+            round_money(taxed * part.rate / Decimal::ONE_HUNDRED, decimals)
+        };
         taxes.push(Tax {
             tax_code_id: part.id,
             direction,
@@ -503,7 +554,16 @@ async fn work_out(
                 base: round_money(taxed * c.rate, base_decimals),
                 amount: round_money(amount * c.rate, base_decimals),
             }),
+            self_assessed: part.self_assessed,
         });
+        // On a purchase the company owes what it reclaims: the same tax
+        // again, collected.
+        if part.self_assessed && direction == Direction::Paid {
+            let mut owed = taxes.last().cloned().expect("just pushed");
+            owed.direction = Direction::Collected;
+            owed.account_id = *collected;
+            taxes.push(owed);
+        }
     }
     Ok(taxes)
 }
@@ -539,6 +599,7 @@ pub async fn credit(
         amount: Decimal,
         group_code_id: Option<Uuid>,
         compound: bool,
+        self_assessed: bool,
         taken_base: Decimal,
         taken: Decimal,
         collected_account_id: Option<Uuid>,
@@ -553,7 +614,7 @@ pub async fn credit(
     // order they were worked out.
     let charged: Vec<Charged> = sqlx::query_as(
         "SELECT e.id, e.tax_code_id, e.direction, e.rate, e.base, e.amount, e.group_code_id,
-                e.compound,
+                e.compound, e.self_assessed,
                 COALESCE((SELECT sum(c.base) FROM tax_entry c WHERE c.credits_id = e.id), 0)
                     AS taken_base,
                 COALESCE((SELECT sum(c.amount) FROM tax_entry c WHERE c.credits_id = e.id), 0)
@@ -657,6 +718,7 @@ pub async fn credit(
                 base: -f.base,
                 amount: -f.amount,
             }),
+            self_assessed: entry.self_assessed,
         });
     }
     Ok(taxes)
@@ -725,7 +787,7 @@ pub async fn discount(
          FROM tax_entry e
          LEFT JOIN tax_settings s ON s.company_id = e.company_id AND s.tax_code_id = e.tax_code_id
          WHERE e.posting_id = $1 AND e.company_id = $2 AND e.reverses_id IS NULL
-           AND e.credits_id IS NULL
+           AND e.credits_id IS NULL AND NOT e.self_assessed
            AND NOT EXISTS (SELECT 1 FROM tax_entry r WHERE r.reverses_id = e.id)
          ORDER BY e.line_no",
     )
@@ -779,6 +841,7 @@ pub async fn discount(
             group_code_id: entry.group_code_id,
             compound: entry.compound,
             foreign,
+            self_assessed: false,
         });
     }
     Ok(taxes)
@@ -790,7 +853,7 @@ pub async fn discount(
 pub async fn posted_value(conn: &mut PgConnection, document_id: Uuid) -> Result<Decimal> {
     let value: Decimal = sqlx::query_scalar(
         "SELECT COALESCE(sum(e.amount), 0) FROM tax_entry e JOIN posting p ON p.id = e.posting_id
-         WHERE p.document_id = $1 AND p.reverses_id IS NULL
+         WHERE p.document_id = $1 AND p.reverses_id IS NULL AND NOT e.self_assessed
            AND NOT EXISTS (SELECT 1 FROM posting r WHERE r.reverses_id = p.id)",
     )
     .bind(document_id)
@@ -811,9 +874,10 @@ pub async fn record(conn: &mut PgConnection, posting: &Posting, taxes: &[Tax]) -
         sqlx::query(
             "INSERT INTO tax_entry (id, company_id, posting_id, line_no, source_line_id,
                 tax_code_id, direction, posting_date, rate, base, amount, credits_id,
-                group_code_id, compound, currency, txn_base, txn_amount, account_id)
+                group_code_id, compound, currency, txn_base, txn_amount, account_id,
+                self_assessed)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18)",
+                     $18, $19)",
         )
         .bind(new_id())
         .bind(posting.company_id)
@@ -835,6 +899,7 @@ pub async fn record(conn: &mut PgConnection, posting: &Posting, taxes: &[Tax]) -
         .bind(tax.foreign.as_ref().map(|_| tax.base))
         .bind(tax.foreign.as_ref().map(|_| tax.amount))
         .bind(tax.account_id)
+        .bind(tax.self_assessed)
         .execute(&mut *conn)
         .await?;
     }

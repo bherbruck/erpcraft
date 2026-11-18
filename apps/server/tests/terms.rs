@@ -1181,3 +1181,125 @@ async fn an_invoice_due_in_parts_ages_and_is_paid_by_part() {
     );
     t.stop().await;
 }
+
+/// Tax the buyer accounts for itself: an EU reverse charge or a US use
+/// tax. The vendor charges none and is owed the net amount; the company
+/// owes the tax and reclaims it, both on the tax accounts and both in the
+/// tax report. A credit note takes both back; a sale charges nothing.
+#[tokio::test]
+async fn tax_the_buyer_accounts_for_is_owed_and_reclaimed_by_the_company() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let reverse = t
+        .create(
+            "tax_code",
+            json!({ "code": "RC19", "name": "Reverse charge 19 %", "rate": "19",
+                    "self_assessed": true }),
+        )
+        .await;
+    t.create(
+        "tax_settings",
+        json!({ "company_id": f.c.id, "tax_code_id": reverse,
+                "collected_account_id": f.account["2300"], "paid_account_id": f.account["1400"] }),
+    )
+    .await;
+
+    // A service from a vendor in another member state: 1,000.00 net.
+    let invoice = f
+        .posted(
+            &t,
+            "vendor_invoice",
+            "2026-03-01",
+            json!({ "vendor_id": f.vendor, "lines": [
+                { "account_id": f.account["5200"], "description": "Engineering services",
+                  "qty": "1", "unit_price": "1000.00", "tax_code_id": reverse } ] }),
+        )
+        .await;
+    assert_eq!(dec(&invoice["summary"]["total_gross"]), 1000.0, "{invoice}");
+    assert_eq!(dec(&invoice["body"]["lines"][0]["tax_amount"]), 0.0);
+    let item = f.item_of(&t, "payable", &invoice).await;
+    assert_eq!(
+        dec(&item["txn_amount"]),
+        1000.0,
+        "the vendor is owed the net amount"
+    );
+    let books = f.books(&t).await;
+    assert!(close(books["2000"], -1000.0));
+    assert!(close(books["5200"], 1000.0));
+    assert!(close(books["1400"], 190.0), "reclaimed");
+    assert!(close(books["2300"], -190.0), "owed");
+    let (_, report) = t
+        .command(
+            &t.admin,
+            "tax.report",
+            json!({ "company_id": f.c.id, "from": "2026-01-01", "to": "2026-12-31" }),
+        )
+        .await;
+    let row = report["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["code"] == "RC19")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (dec(&row["paid_base"]), dec(&row["paid"])),
+        (1000.0, 190.0),
+        "{row}"
+    );
+    assert_eq!(
+        (dec(&row["collected_base"]), dec(&row["collected"])),
+        (1000.0, 190.0),
+        "{row}"
+    );
+
+    // Half of it credited: both taxes are taken back, the vendor owes the
+    // net amount alone.
+    let line = invoice["body"]["lines"][0]["id"].clone();
+    let credit = f
+        .posted(
+            &t,
+            "vendor_credit_note",
+            "2026-03-05",
+            json!({ "vendor_invoice_id": invoice["id"],
+                    "lines": [{ "invoice_line_id": line, "qty": "1", "unit_price": "500.00" }] }),
+        )
+        .await;
+    assert_eq!(dec(&credit["summary"]["total_gross"]), 500.0, "{credit}");
+    let books = f.books(&t).await;
+    assert!(close(books["2000"], -500.0));
+    assert!(close(books["1400"], 95.0));
+    assert!(close(books["2300"], -95.0));
+
+    // Paid: the vendor is owed the net amount alone.
+    let item = f.item_of(&t, "payable", &invoice).await;
+    f.posted(
+        &t,
+        "payment",
+        "2026-03-06",
+        json!({ "direction": "outgoing", "bank_account_id": f.c.cash,
+                "allocations": [{ "open_item_id": item["id"], "amount": "500.00" }] }),
+    )
+    .await;
+    let books = f.books(&t).await;
+    assert!(close(books["2000"], 0.0));
+    assert!(close(books["1400"], 95.0));
+
+    // Sold under the reverse charge: the customer accounts for the tax; the
+    // invoice charges none and records the base.
+    let sale = f
+        .posted(
+            &t,
+            "sales_invoice",
+            "2026-03-10",
+            json!({ "customer_id": f.customer, "lines": [
+                { "account_id": f.c.revenue, "qty": "1", "unit_price": "200.00",
+                  "tax_code_id": reverse } ] }),
+        )
+        .await;
+    assert_eq!(dec(&sale["summary"]["total_gross"]), 200.0, "{sale}");
+    let books = f.books(&t).await;
+    assert!(close(books["1200"], 200.0));
+    assert!(close(books["2300"], -95.0), "nothing more is owed");
+    t.stop().await;
+}
