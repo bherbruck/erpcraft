@@ -40,8 +40,18 @@ try {
   // Generated lists: the same component for every document type and entity.
   await browser.goto(`${BASE}/c/${BIG}/d/sales_order`);
   await shot("02-sales-orders");
-  await browser.goto(`${BASE}/c/${BIG}/d/sales_order?q=SO-2023-012&sort=-summary.total_net&status=closed`);
-  await shot("03-sales-orders-search-sort");
+  const chips = JSON.stringify([
+    { field: "q", operator: "contains", value: { type: "string", value: "SO-2023-012" } },
+    { field: "status", operator: "any", value: { type: "enum_list", value: ["closed"] } },
+    { field: "doc_date", operator: ">=", value: { type: "date_absolute", unixSeconds: Date.UTC(2023, 4, 1) / 1000 } },
+  ]);
+  await browser.goto(`${BASE}/c/${BIG}/d/sales_order?f=${encodeURIComponent(chips)}&sort=-summary.total_net`);
+  await shot("03-sales-orders-filter-chips-sort");
+  await browser.evaluate(`(() => { const i = document.querySelector(".filter-bar input"); i?.focus(); i?.click(); })()`);
+  await browser.insert("cust");
+  await Bun.sleep(800);
+  await shot("03b-filter-field-suggestions");
+  await browser.key("Escape");
   await browser.goto(`${BASE}/c/${BIG}/d/purchase_order`);
   await shot("04-purchase-orders");
   await browser.goto(`${BASE}/c/${BIG}/d/journal_entry`);
@@ -70,6 +80,15 @@ try {
 
   await browser.goto(`${BASE}/c/${SMALL}/d/sales_order/new`);
   await shot("08-sales-order-new");
+  // "New Customer…" from inside the lookup: created in a dialog, the form underneath kept.
+  await focusLabelled("Customer");
+  await browser.insert("Zephyr Cycles");
+  await Bun.sleep(1000);
+  await browser.key("Enter");
+  await Bun.sleep(600);
+  await shot("08a-quick-create-customer");
+  await browser.evaluate(`(() => { const d = document.querySelector("dialog[open]"); const b = d && [...d.querySelectorAll("button")].find((x) => x.textContent.trim() === "Cancel"); b?.click(); })()`);
+  await Bun.sleep(300);
   await focusLabelled("Description, Line 1");
   await browser.insert("Consulting");
   await browser.key("s", 2);
@@ -88,6 +107,11 @@ try {
     );
     await browser.goto(`${BASE}/c/${String(companyCode)}/d/journal_entry/${id}`);
     await shot("09-journal-entry-posted");
+    // Reverse: the dialog shows the server's preview of the postings before anything happens.
+    await browser.evaluate(`[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Reverse")?.click()`);
+    await Bun.sleep(1500);
+    await shot("09b-reverse-preview-dialog");
+    await browser.key("Escape");
   }
 
   // Generated entity screens.

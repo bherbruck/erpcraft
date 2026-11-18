@@ -1,8 +1,7 @@
 import { Button } from "@astryxdesign/core/Button";
 import { HStack } from "@astryxdesign/core/HStack";
-import { Selector } from "@astryxdesign/core/Selector";
 import { Text } from "@astryxdesign/core/Text";
-import { useCallback, useMemo } from "react";
+import { useMemo } from "react";
 import { useParams } from "react-router";
 import { api } from "@/api/client";
 import type { DocTypeMeta, DocumentSummary, FieldMeta, JsonObject } from "@/api/types";
@@ -10,9 +9,8 @@ import { useApp, useCompany } from "@/app/context";
 import { type Column, DataTable, useColumnChoice } from "@/components/data-table";
 import { useDecimalHeader } from "@/components/decimal-value";
 import { Empty, FieldValue, isNumeric } from "@/components/field-value";
-import { Lookup } from "@/components/lookup";
 import { Page } from "@/components/page";
-import { SearchBox } from "@/components/search-box";
+import { FilterBar, filterSpec, parseFilters, toQuery, type FilterSpec } from "@/components/filter-bar";
 import { StatusBadge } from "@/components/status-badge";
 import { t } from "@/i18n/t";
 import { formatCalendarDate, formatTimestamp } from "@/lib/dates";
@@ -22,8 +20,6 @@ import { pageFromUrl, useUrlState } from "@/lib/url-state";
 import { useAsync } from "@/lib/use-async";
 import { NotFoundPage } from "./not-found";
 
-/** URL parameters that filter by a summary field: `s.vendor_id`. */
-const SUMMARY_FILTER = "s.";
 
 export function DocumentListPage() {
   const { meta } = useApp();
@@ -52,36 +48,49 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
   const { meta } = useApp();
   const { code, company } = useCompany();
   const url = useUrlState();
-  const q = url.get("q");
-  const status = url.get("status");
+  const filters = parseFilters(url.get("f"));
   const sort = url.get("sort");
   const page = pageFromUrl(url.get("page"));
   const size = Number(url.get("size")) || 25;
   const canCreate = canDoc(meta, docType.name, "create") && company !== null;
   const summaryHeaders = useHeaders(docType.summary);
 
-  // Who a document is with, as a filter: the summary's links to records.
-  const partyFilters = docType.summary.filter(
-    (field) => field.type.kind === "link" && canEntity(meta, field.type.entity, "read"),
-  );
-  const summaryFilter: Record<string, string> = {};
-  for (const field of partyFilters) {
-    const value = url.get(`${SUMMARY_FILTER}${field.name}`);
-    if (value) summaryFilter[field.name] = value;
-  }
-  const filterKey = JSON.stringify(summaryFilter);
+  // The header the server filters by expression, and who the document is with by exact value.
+  const specs = useMemo(() => {
+    const header = (name: string) => meta.document_header.find((field) => field.name === name);
+    const out: FilterSpec[] = [];
+    const number = header("number");
+    if (number) out.push({ key: "number", label: number.label, kind: "text" });
+    out.push({
+      key: "status",
+      label: header("status")?.label ?? t("document.status"),
+      kind: "enum",
+      values: docType.states.map((state) => ({ value: state.name, label: state.label })),
+    });
+    const date = header("doc_date");
+    if (date) out.push({ key: "doc_date", label: date.label, kind: "date" });
+    for (const field of docType.summary) {
+      if (field.type.kind === "link" && canEntity(meta, field.type.entity, "read")) {
+        const spec = filterSpec(field, `summary.${field.name}`, true);
+        if (spec) out.push(spec);
+      }
+    }
+    return out;
+  }, [meta, docType]);
+  const query = toQuery(filters, specs);
+  const filterKey = `${query.q}|${query.where}|${JSON.stringify(query.summary)}`;
 
   const list = useAsync(
-    company ? `${docType.name}|${company.id}|${q}|${status}|${sort}|${page}|${size}|${filterKey}` : null,
+    company ? `${docType.name}|${company.id}|${filterKey}|${sort}|${page}|${size}` : null,
     (signal) =>
       api.run(
         "document.list",
         {
           doc_type: docType.name,
           company_id: company?.id ?? null,
-          q: q || null,
-          status: status || null,
-          summary: summaryFilter,
+          q: query.q || null,
+          where: query.where,
+          summary: query.summary,
           sort: sort ? [sort] : ["-doc_date", "-created_at"],
           limit: size,
           offset: (page - 1) * size,
@@ -172,14 +181,8 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
   }, [docType, meta.document_header]);
   const { visible, chooser } = useColumnChoice(`document.${docType.name}`, columns);
 
-  const setUrl = url.set;
-  const onSearch = useCallback((next: string) => setUrl({ q: next, page: null }, { replace: true }), [setUrl]);
-  const filtered = q !== "" || status !== "" || Object.keys(summaryFilter).length > 0;
-  const clearFilters = (): void => {
-    const cleared: Record<string, null> = { q: null, status: null, page: null };
-    for (const field of partyFilters) cleared[`${SUMMARY_FILTER}${field.name}`] = null;
-    url.set(cleared);
-  };
+  const filtered = filters.length > 0;
+  const clearFilters = (): void => url.set({ f: null, page: null });
   const newButton = canCreate ? (
     <Button label={t("list.new", { label: docType.label })} variant="primary" href={paths.docNew(code, docType.name)} />
   ) : null;
@@ -190,37 +193,17 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
       actions={newButton}
       padded={false}
       toolbar={
-        <HStack gap={2} wrap="wrap" vAlign="center">
-          <SearchBox value={q} onChange={onSearch} label={t("list.search", { label: docType.plural })} busy={list.loading && list.data !== undefined} />
-          <Selector
-            label={t("document.filter_status")}
-            isLabelHidden
-            size="sm"
-            variant="secondary"
-            value={status}
-            hasClear={status !== ""}
-            placeholder={t("document.any_status")}
-            onChange={(next: string | null) => url.set({ status: next ?? null, page: null })}
-            options={docType.states.map((state) => ({ value: state.name, label: state.label }))}
+        <HStack gap={2} vAlign="center">
+          <FilterBar
+            meta={meta}
+            specs={specs}
+            filters={filters}
+            companyId={company?.id ?? null}
+            resultCount={list.data?.total}
+            label={t("filter.placeholder", { label: docType.plural })}
+            onChange={(next) => url.set({ f: next.length ? JSON.stringify(next) : null, page: null })}
           />
-          {partyFilters.map((field) =>
-            field.type.kind === "link" ? (
-              <div key={field.name} className="filter-lookup">
-                <Lookup
-                  label={t("document.filter_by", { label: field.label })}
-                  isLabelHidden
-                  size="sm"
-                  entity={field.type.entity}
-                  keyField={field.type.key}
-                  value={url.get(`${SUMMARY_FILTER}${field.name}`) || null}
-                  companyId={company?.id}
-                  allowCreate={false}
-                  onChange={(next) => url.set({ [`${SUMMARY_FILTER}${field.name}`]: next, page: null })}
-                />
-              </div>
-            ) : null,
-          )}
-          <div className="push-end">{chooser}</div>
+          {chooser}
         </HStack>
       }
     >

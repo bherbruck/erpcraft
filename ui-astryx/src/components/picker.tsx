@@ -121,6 +121,7 @@ export function Picker(props: PickerProps) {
       placeholder={t("lookup.search", { label: props.noun })}
       emptySearchText={t("spike.no_results")}
       status={props.error ? { type: "error", message: props.error } : undefined}
+      statusVariant={props.isLabelHidden ? "tooltip" : undefined}
       renderItem={(item) => {
         const detail = item.auxiliaryData?.option.detail;
         return (

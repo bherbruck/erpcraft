@@ -92,7 +92,7 @@ export function AppShell() {
   );
 
   return (
-    <AstryxShell sideNav={sideNav} topNav={topNav} variant="section" contentPadding={0}>
+    <AstryxShell sideNav={sideNav} topNav={topNav} variant="section" contentPadding={0} mobileNav={{ breakpoint: "lg" }}>
       <div className="page-fill">
         <Outlet />
       </div>

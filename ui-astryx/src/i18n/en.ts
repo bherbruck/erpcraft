@@ -633,6 +633,13 @@ export const en = {
   "spike.totals": "Totals",
   "spike.no_results": "No matches",
   "common.back": "Back",
+  "filter.text": "Text",
+  "filter.contains": "contains",
+  "filter.is": "is",
+  "filter.is_any": "is any of",
+  "filter.on_or_after": "on or after",
+  "filter.on_or_before": "on or before",
+  "filter.placeholder": "Filter {label}",
 } as const;
 
 export type MessageKey = keyof typeof en;

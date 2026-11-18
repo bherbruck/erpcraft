@@ -1,6 +1,6 @@
 import { Button } from "@astryxdesign/core/Button";
 import { HStack } from "@astryxdesign/core/HStack";
-import { useCallback, useMemo } from "react";
+import { useMemo } from "react";
 import { useParams } from "react-router";
 import { api } from "@/api/client";
 import type { EntityMeta, EntityRecord } from "@/api/types";
@@ -8,7 +8,7 @@ import { useApp, useCompany } from "@/app/context";
 import { type Column, DataTable, useColumnChoice } from "@/components/data-table";
 import { FieldValue, isNumeric, Withheld } from "@/components/field-value";
 import { Page } from "@/components/page";
-import { SearchBox } from "@/components/search-box";
+import { FilterBar, filterSpec, parseFilters, toQuery, type FilterSpec } from "@/components/filter-bar";
 import { t } from "@/i18n/t";
 import { canEntity, fieldReach, findEntity, isCompanyScoped, listFields } from "@/lib/meta";
 import { paths } from "@/lib/paths";
@@ -31,7 +31,14 @@ function EntityList({ entity }: { entity: EntityMeta }) {
   const { meta } = useApp();
   const { code, company } = useCompany();
   const url = useUrlState();
-  const q = url.get("q");
+  const filters = parseFilters(url.get("f"));
+  const specs = useMemo(
+    () => listFields(meta, entity).flatMap((field) => filterSpec(field) ?? []) as FilterSpec[],
+    [meta, entity],
+  );
+  const query = toQuery(filters, specs);
+  const q = query.q;
+  const where = query.where;
   const sort = url.get("sort");
   const page = pageFromUrl(url.get("page"));
   const size = Number(url.get("size")) || 25;
@@ -41,13 +48,14 @@ function EntityList({ entity }: { entity: EntityMeta }) {
   const waitingForCompany = scoped && company === null;
 
   const list = useAsync(
-    waitingForCompany ? null : `${entity.name}|${company?.id ?? ""}|${q}|${sort}|${page}|${size}`,
+    waitingForCompany ? null : `${entity.name}|${company?.id ?? ""}|${q}|${where}|${sort}|${page}|${size}`,
     (signal) =>
       api.run(
         "entity.list",
         {
           entity: entity.name,
           q: searchable && q ? q : null,
+          where,
           sort: sort ? [sort] : [],
           filters: scoped && company ? { company_id: company.id } : {},
           limit: size,
@@ -77,8 +85,6 @@ function EntityList({ entity }: { entity: EntityMeta }) {
   );
   const { visible, chooser } = useColumnChoice(`entity.${entity.name}`, columns);
 
-  const setUrl = url.set;
-  const onSearch = useCallback((next: string) => setUrl({ q: next, page: null }, { replace: true }), [setUrl]);
   const newButton = canCreate ? (
     <Button label={t("list.new", { label: entity.label })} variant="primary" href={paths.entityNew(code, entity.name)} />
   ) : null;
@@ -89,12 +95,16 @@ function EntityList({ entity }: { entity: EntityMeta }) {
       actions={newButton}
       padded={false}
       toolbar={
-        <HStack gap={2} wrap="wrap" hAlign="between">
-          {searchable ? (
-            <SearchBox value={q} onChange={onSearch} label={t("list.search", { label: entity.plural })} busy={list.loading && list.data !== undefined} />
-          ) : (
-            <span />
-          )}
+        <HStack gap={2} vAlign="center">
+          <FilterBar
+            meta={meta}
+            specs={specs}
+            filters={filters}
+            companyId={company?.id ?? null}
+            resultCount={list.data?.total}
+            label={t("filter.placeholder", { label: entity.plural })}
+            onChange={(next) => url.set({ f: next.length ? JSON.stringify(next) : null, page: null })}
+          />
           {chooser}
         </HStack>
       }
@@ -118,10 +128,10 @@ function EntityList({ entity }: { entity: EntityMeta }) {
         empty={
           waitingForCompany
             ? { title: t("list.needs_company", { label: entity.plural }) }
-            : q
+            : filters.length > 0
               ? {
-                  title: t("list.no_match", { query: q }),
-                  action: <Button label={t("list.clear_search")} size="sm" onClick={() => url.set({ q: null, page: null })} />,
+                  title: t("list.no_match_filtered"),
+                  action: <Button label={t("list.clear_filters")} size="sm" onClick={() => url.set({ f: null, page: null })} />,
                 }
               : page > 1
                 ? {

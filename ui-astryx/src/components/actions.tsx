@@ -186,9 +186,9 @@ export function ActionDialog({
   const status = isObject(preview.result) && typeof preview.result.status === "string" ? preview.result.status : null;
 
   return (
-    <Dialog isOpen onOpenChange={(open) => (open ? null : onClose())} purpose="form" width={760} padding={0}>
+    <Dialog isOpen onOpenChange={(open) => (open ? null : onClose())} purpose="form" width={760}>
       <DialogHeader title={t("preview.title", { action: action.label, subject })} subtitle={action.command.description} onOpenChange={() => onClose()} />
-      <VStack gap={4} padding={4}>
+      <VStack gap={4} paddingBlockStart={3}>
         {inputs.length > 0 ? (
           <div className="form-grid">
             {inputs.map((each) => (

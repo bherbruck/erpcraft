@@ -71,10 +71,10 @@ export function QuickCreateDialog({
   }
 
   return (
-    <Dialog isOpen onOpenChange={(open) => (open ? null : onClose())} purpose="form" width={640} padding={0}>
+    <Dialog isOpen onOpenChange={(open) => (open ? null : onClose())} purpose="form" width={640}>
       <DialogHeader title={t("record.new", { label: entity.label })} subtitle={t("quick_create.description")} onOpenChange={() => onClose()} />
       <form noValidate onSubmit={(event) => void submit(event)}>
-        <VStack gap={4} padding={4}>
+        <VStack gap={4} paddingBlockStart={3}>
           {formError ? <Banner status="error" title={t("record.save_failed")} description={formError} /> : null}
           <div className="form-grid">
             {fields.map((field) => (

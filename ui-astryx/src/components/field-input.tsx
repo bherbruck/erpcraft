@@ -106,6 +106,7 @@ function DecimalInput(props: FieldInputProps & { text: string; status: { type: "
         onKeyDown={props.onKeyDown}
         isDisabled={props.disabled}
         status={props.status}
+        statusVariant={props.isLabelHidden ? "tooltip" : undefined}
         width="100%"
       />
     </div>
@@ -162,6 +163,8 @@ export function FieldInput(props: FieldInputProps) {
     isDisabled: disabled,
     size: props.size,
     status,
+    // In a grid cell the error sits behind the status icon, so a row does not grow.
+    statusVariant: props.isLabelHidden ? ("tooltip" as const) : undefined,
     // The registry's help sits behind an info button on the label, so it does not push the form apart.
     labelTooltip: props.isLabelHidden ? undefined : (field.help ?? undefined),
   };
