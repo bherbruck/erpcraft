@@ -42,6 +42,11 @@ impl Module for AccountingModule {
                 name: "year_end_close",
                 sql: include_str!("../migrations/0002_year_end_close.sql"),
             },
+            Migration {
+                version: 3,
+                name: "year_of_periods",
+                sql: include_str!("../migrations/0003_year_of_periods.sql"),
+            },
         ]
     }
 

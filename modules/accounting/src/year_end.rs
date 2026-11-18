@@ -29,6 +29,10 @@ const ACCOUNT: &str = "retained_earnings_account_id";
 struct Body {
     fiscal_period_id: Uuid,
     retained_earnings_account_id: Uuid,
+    /// For a year kept as several periods: its first. The year then runs
+    /// from the start of this period to the end of `fiscal_period_id`.
+    #[serde(default)]
+    first_period_id: Option<Uuid>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -42,7 +46,7 @@ struct Period {
 
 async fn load_body(conn: &mut PgConnection, document_id: Uuid) -> Result<Body> {
     sqlx::query_as(
-        "SELECT fiscal_period_id, retained_earnings_account_id
+        "SELECT fiscal_period_id, retained_earnings_account_id, first_period_id
          FROM year_end_close WHERE document_id = $1",
     )
     .bind(document_id)
@@ -74,6 +78,37 @@ async fn lock_period(
         Error::validation("the fiscal period must be a period of the document's company")
             .with_field("fiscal_period_id")
     })
+}
+
+/// The first period of the year a close covers: the one the body names,
+/// else the closing period itself. It is one of the company's and starts
+/// no later than the closing period.
+async fn first_period(
+    conn: &mut PgConnection,
+    doc: &Document,
+    body: &Body,
+    last: &Period,
+) -> Result<Period> {
+    let Some(first) = body.first_period_id.filter(|id| *id != last.id) else {
+        return Ok(Period {
+            id: last.id,
+            name: last.name.clone(),
+            start_date: last.start_date,
+            end_date: last.end_date,
+            status: last.status.clone(),
+        });
+    };
+    let first = lock_period(conn, doc, first, false)
+        .await
+        .map_err(|e| e.with_field("first_period_id"))?;
+    if first.start_date > last.start_date {
+        return Err(Error::validation(format!(
+            "the year's first period, {}, starts after its last, {}",
+            first.name, last.name
+        ))
+        .with_field("first_period_id"));
+    }
+    Ok(first)
 }
 
 /// The rules a year-end close must meet, as a draft and again when it is
@@ -149,6 +184,16 @@ impl DocumentHandler for YearEndClose {
                     FieldType::link("account"),
                 )
                 .required(),
+                FieldMeta::new(
+                    "first_period_id",
+                    "First period of the year",
+                    FieldType::link("fiscal_period"),
+                )
+                .help(
+                    "For a year kept as several periods (months): its first. The close then \
+                     covers every period from this one to the fiscal period above, its last, \
+                     and closes them all. Left out: the year is the fiscal period alone.",
+                ),
                 // Set by year_end_close.post and year_end_close.reverse.
                 FieldMeta::new("closing_posting_id", "Closing posting", FieldType::Posting)
                     .readonly(),
@@ -193,16 +238,20 @@ impl DocumentHandler for YearEndClose {
         let body: Body = erpcraft_kernel::input::parse(body.clone(), "year-end close body")?;
         let period = lock_period(&mut *ctx.conn, doc, body.fiscal_period_id, false).await?;
         check(&mut *ctx.conn, doc, &body, &period).await?;
+        first_period(&mut *ctx.conn, doc, &body, &period).await?;
         sqlx::query(
-            "INSERT INTO year_end_close (document_id, fiscal_period_id, retained_earnings_account_id)
-             VALUES ($1, $2, $3)
+            "INSERT INTO year_end_close (document_id, fiscal_period_id, retained_earnings_account_id,
+                 first_period_id)
+             VALUES ($1, $2, $3, $4)
              ON CONFLICT (document_id) DO UPDATE SET
                 fiscal_period_id = EXCLUDED.fiscal_period_id,
-                retained_earnings_account_id = EXCLUDED.retained_earnings_account_id",
+                retained_earnings_account_id = EXCLUDED.retained_earnings_account_id,
+                first_period_id = EXCLUDED.first_period_id",
         )
         .bind(doc.id)
         .bind(body.fiscal_period_id)
         .bind(body.retained_earnings_account_id)
+        .bind(body.first_period_id.filter(|id| *id != body.fiscal_period_id))
         .execute(&mut *ctx.conn)
         .await?;
         Ok(())
@@ -233,9 +282,10 @@ impl DocumentHandler for YearEndClose {
     }
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
-        let row: Option<(Uuid, Uuid, Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
+        #[allow(clippy::type_complexity)]
+        let row: Option<(Uuid, Uuid, Option<Uuid>, Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
             "SELECT y.fiscal_period_id, y.retained_earnings_account_id,
-                    c.posting_id, c.reversal_posting_id
+                    c.posting_id, c.reversal_posting_id, y.first_period_id
              FROM year_end_close y
              LEFT JOIN year_end_closing c ON c.document_id = y.document_id
              WHERE y.document_id = $1",
@@ -244,9 +294,10 @@ impl DocumentHandler for YearEndClose {
         .fetch_optional(&mut *conn)
         .await?;
         Ok(match row {
-            Some((period, account, posting, reversal)) => json!({
+            Some((period, account, posting, reversal, first)) => json!({
                 "fiscal_period_id": period,
                 "retained_earnings_account_id": account,
+                "first_period_id": first,
                 "closing_posting_id": posting,
                 "reversal_posting_id": reversal,
             }),
@@ -282,7 +333,9 @@ impl Command for PostYearEndClose {
              posted into the closed year; it needs no permission beyond year_end_close:post for \
              that. Refused if the period is closed, already has a year-end close that is not \
              reversed, or has nothing to close. Posting a close that is already posted returns it \
-             unchanged.",
+             unchanged. With first_period_id the year is every period from that one to the \
+             fiscal period: their income and expenses are closed together, and all of them are \
+             closed.",
         )
         .from_states(&["draft"])
         .permission("year_end_close:post")
@@ -307,6 +360,19 @@ impl Command for PostYearEndClose {
         let period = lock_period(&mut *ctx.conn, &doc, body.fiscal_period_id, true).await?;
         ctx.touch("fiscal_period", period.id);
         check(&mut *ctx.conn, &doc, &body, &period).await?;
+        let first = first_period(&mut *ctx.conn, &doc, &body, &period).await?;
+        // Every period of the year, earliest first, locked as the last is:
+        // nothing else is posted into the year while it is closed.
+        let year: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT id, status FROM fiscal_period
+             WHERE company_id = $1 AND start_date >= $2 AND end_date <= $3
+             ORDER BY start_date FOR UPDATE",
+        )
+        .bind(doc.company_id)
+        .bind(first.start_date)
+        .bind(period.end_date)
+        .fetch_all(&mut *ctx.conn)
+        .await?;
 
         // The unique index year_end_closing_one_per_period says the same.
         let in_effect: Option<Option<String>> = sqlx::query_scalar(
@@ -347,19 +413,23 @@ impl Command for PostYearEndClose {
              ORDER BY a.code",
         )
         .bind(doc.company_id)
-        .bind(period.start_date)
+        .bind(first.start_date)
         .bind(period.end_date)
         .fetch_all(&mut *ctx.conn)
         .await?;
+        let name = if first.id == period.id {
+            period.name.clone()
+        } else {
+            format!("{} to {}", first.name, period.name)
+        };
         if balances.is_empty() {
             return Err(Error::validation(format!(
                 "there is nothing to close: no income or expense account has a balance in \
-                 fiscal period {}",
-                period.name
+                 fiscal period {name}"
             )));
         }
 
-        let memo = format!("Year-end close of {}", period.name);
+        let memo = format!("Year-end close of {name}");
         let line = |account_id: Uuid, debit: Decimal, credit: Decimal| GlLine {
             account_id,
             debit,
@@ -412,8 +482,16 @@ impl Command for PostYearEndClose {
         .bind(posting.id)
         .execute(&mut *ctx.conn)
         .await?;
-        sqlx::query("UPDATE fiscal_period SET status = 'closed' WHERE id = $1")
-            .bind(period.id)
+        // The whole year is closed: its last period, and every one before
+        // it that is still open.
+        let open: Vec<Uuid> = year
+            .iter()
+            .filter(|(_, status)| status == "open")
+            .map(|(id, _)| *id)
+            .chain([period.id])
+            .collect();
+        sqlx::query("UPDATE fiscal_period SET status = 'closed' WHERE id = ANY($1)")
+            .bind(&open)
             .execute(&mut *ctx.conn)
             .await?;
         document::transition(ctx, &mut doc, "posted").await?;

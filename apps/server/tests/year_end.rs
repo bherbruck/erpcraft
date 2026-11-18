@@ -692,3 +692,88 @@ async fn closing_a_year_needs_its_own_permissions() {
 
     t.stop().await;
 }
+
+/// A year kept as twelve monthly periods is closed in one step: the
+/// income and expenses of all twelve go to retained earnings, dated the
+/// last day of December, and every month is closed.
+#[tokio::test]
+async fn a_year_of_monthly_periods_is_closed_in_one_step() {
+    let t = TestApp::start().await;
+    let company = t.company("ACME", "USD").await;
+    let c = company.id.clone();
+    let mut months = vec![];
+    let last_day = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    for month in 1..=12usize {
+        let start = format!("2025-{month:02}-01");
+        let end = format!("2025-{month:02}-{}", last_day[month - 1]);
+        months.push(
+            t.create(
+                "fiscal_period",
+                json!({ "company_id": c, "name": format!("2025-{month:02}"),
+                        "start_date": start, "end_date": end }),
+            )
+            .await,
+        );
+    }
+    let retained = account(&t, &c, "3100", "Retained earnings", "equity").await;
+    let rent = account(&t, &c, "5000", "Rent", "expense").await;
+    let cash = company.cash.clone();
+    journal(&t, &c, "2025-03-05", &cash, &company.revenue, "2500.00").await;
+    journal(&t, &c, "2025-11-20", &rent, &cash, "800.00").await;
+    // March is closed already, as a month-end close leaves it.
+    let (status, body) = t
+        .command(&t.admin, "fiscal_period.close", json!({ "id": months[2] }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The first period must not come after the last.
+    let (status, refused) = t
+        .post(
+            &t.admin,
+            "/api/documents/year_end_close",
+            json!({ "company_id": c, "doc_date": "2025-01-31", "body": {
+                "fiscal_period_id": months[0], "first_period_id": months[11],
+                "retained_earnings_account_id": retained } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["error"]["field"], "first_period_id", "{refused}");
+
+    let (status, draft) = t
+        .post(
+            &t.admin,
+            "/api/documents/year_end_close",
+            json!({ "company_id": c, "doc_date": "2025-12-31", "body": {
+                "fiscal_period_id": months[11], "first_period_id": months[0],
+                "retained_earnings_account_id": retained } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{draft}");
+    let (status, posted) = t
+        .command(&t.admin, "year_end_close.post", json!({ "id": id(&draft) }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{posted}");
+    assert_eq!(dec(&posted["summary"]["result"]), 1700.0, "{posted}");
+    assert_eq!(posted["body"]["first_period_id"], months[0].as_str());
+    for month in &months {
+        assert_eq!(period_status(&t, month).await, "closed");
+    }
+    // Income and expenses are zero for the year; retained earnings has it.
+    let balances = trial_balance(&t, &c).await;
+    let at = |account: &str| {
+        balances
+            .iter()
+            .find(|(a, _)| a == account)
+            .map_or(0.0, |(_, b)| *b)
+    };
+    assert_eq!(at(&company.revenue), 0.0);
+    assert_eq!(at(&rent), 0.0);
+    assert_eq!(at(&retained), -1700.0);
+    // Nothing more goes into the year, in any month.
+    let doc = journal_draft(&t, &c, "2025-06-10", &rent, &cash, "1.00").await;
+    let (status, body) = t
+        .command(&t.admin, "journal_entry.post", json!({ "id": doc }))
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    t.stop().await;
+}
