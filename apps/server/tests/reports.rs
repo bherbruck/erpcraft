@@ -548,10 +548,9 @@ async fn reports_need_read_access_to_the_company_and_its_accounts() {
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
 
     // The reports are published as read-only tools.
-    let tools = t.mcp(&t.admin, "tools/list", json!({})).await;
-    let names: Vec<&str> = tools["tools"]
-        .as_array()
-        .unwrap()
+    // Every page of them: there are more tools than one page holds.
+    let tools = t.all_tools(&t.admin).await;
+    let names: Vec<&str> = tools
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();

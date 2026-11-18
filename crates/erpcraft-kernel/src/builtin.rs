@@ -76,6 +76,11 @@ impl Module for KernelModule {
                 name: "approval_binding",
                 sql: include_str!("../migrations/0009_approval_binding.sql"),
             },
+            Migration {
+                version: 10,
+                name: "approval_delegation",
+                sql: include_str!("../migrations/0010_approval_delegation.sql"),
+            },
         ]
     }
 

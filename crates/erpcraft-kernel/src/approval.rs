@@ -186,6 +186,9 @@ pub struct DecisionView {
     pub user_id: Uuid,
     /// Their name.
     pub name: String,
+    /// Whose decision it was, when it was made in their place by the
+    /// person they delegated their approvals to.
+    pub on_behalf_of: Option<Uuid>,
     /// `approve` or `reject`.
     pub decision: String,
     pub reason: Option<String>,
@@ -210,7 +213,7 @@ async fn load(conn: &mut crate::PgConnection, id: Uuid, lock: bool) -> Result<Ap
     .await?
     .ok_or_else(|| Error::not_found("approval request"))?;
     request.decisions = sqlx::query_as(
-        "SELECT d.user_id, u.name, d.decision, d.reason, d.decided_at
+        "SELECT d.user_id, u.name, d.on_behalf_of, d.decision, d.reason, d.decided_at
          FROM approval_decision d JOIN app_user u ON u.id = d.user_id
          WHERE d.request_id = $1 ORDER BY d.decided_at, u.name",
     )
@@ -428,15 +431,24 @@ async fn outbox(
 /// Whether the actor is one of the people who may approve the request.
 /// Never its requester; otherwise an administrator always is.
 async fn qualifies(ctx: &mut Ctx<'_>, request: &ApprovalRequest) -> Result<bool> {
-    if ctx.actor.user_id == request.requested_by {
+    Ok(standing(ctx, request).await?.is_some())
+}
+
+/// Whether `actor` may decide the request in their own right.
+async fn in_own_right(
+    conn: &mut crate::PgConnection,
+    actor: &Actor,
+    request: &ApprovalRequest,
+) -> Result<bool> {
+    if actor.user_id == request.requested_by {
         return Ok(false);
     }
-    if ctx.actor.is_admin {
+    if actor.is_admin {
         return Ok(true);
     }
     if let Some(permission) = &request.approver_permission
-        && ctx.actor.scopes.is_none()
-        && ctx.actor.can(permission, request.company_id)
+        && actor.scopes.is_none()
+        && actor.can(permission, request.company_id)
     {
         return Ok(true);
     }
@@ -445,14 +457,58 @@ async fn qualifies(ctx: &mut Ctx<'_>, request: &ApprovalRequest) -> Result<bool>
             "SELECT EXISTS (SELECT 1 FROM role_assignment WHERE user_id = $1 AND role_id = $2
                             AND (company_id IS NULL OR company_id = $3))",
         )
-        .bind(ctx.actor.user_id)
+        .bind(actor.user_id)
         .bind(role)
         .bind(request.company_id)
-        .fetch_one(&mut *ctx.conn)
+        .fetch_one(&mut *conn)
         .await?;
-        return Ok(holds && ctx.actor.scopes.is_none());
+        return Ok(holds && actor.scopes.is_none());
     }
     Ok(false)
+}
+
+/// On what grounds the actor may decide the request: `Some(None)` in their
+/// own right, `Some(Some(user))` in the place of a user who delegated
+/// their approvals to them and has not decided it yet, `None` not at all.
+/// The requester never decides their own request, in person or by proxy,
+/// and a delegation is followed one step only.
+async fn standing(ctx: &mut Ctx<'_>, request: &ApprovalRequest) -> Result<Option<Option<Uuid>>> {
+    if ctx.actor.user_id == request.requested_by {
+        return Ok(None);
+    }
+    if in_own_right(&mut *ctx.conn, ctx.actor, request).await? {
+        return Ok(Some(None));
+    }
+    if ctx.actor.scopes.is_some() {
+        return Ok(None);
+    }
+    let delegators: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT d.user_id FROM approval_delegation d
+         JOIN app_user u ON u.id = d.user_id AND u.active
+         WHERE d.delegate_id = $1 AND current_date BETWEEN d.starts_on AND d.ends_on
+           AND d.user_id <> $2
+         ORDER BY d.user_id",
+    )
+    .bind(ctx.actor.user_id)
+    .bind(request.requested_by)
+    .fetch_all(&mut *ctx.conn)
+    .await?;
+    for delegator in delegators {
+        let decided = request
+            .decisions
+            .iter()
+            .any(|d| d.on_behalf_of.unwrap_or(d.user_id) == delegator);
+        if decided {
+            continue;
+        }
+        let Ok(actor) = load_actor(ctx.kernel.pool(), delegator, None).await else {
+            continue;
+        };
+        if in_own_right(&mut *ctx.conn, &actor, request).await? {
+            return Ok(Some(Some(delegator)));
+        }
+    }
+    Ok(None)
 }
 
 // ---------------------------------------------------------------- commands
@@ -463,6 +519,9 @@ pub(crate) fn commands() -> Vec<Arc<dyn DynCommand>> {
         command(Get),
         command(Approve),
         command(Reject),
+        command(Delegate),
+        command(Delegations),
+        command(EndDelegation),
     ]
 }
 
@@ -631,7 +690,7 @@ impl Command for Get {
 
 /// The checks before a decision: the request is pending and not expired,
 /// and the actor may decide it and has not yet.
-async fn decidable(ctx: &mut Ctx<'_>, id: Uuid) -> Result<ApprovalRequest> {
+async fn decidable(ctx: &mut Ctx<'_>, id: Uuid) -> Result<(ApprovalRequest, Option<Uuid>)> {
     ctx.touch("approval_request", id);
     let request = load(&mut *ctx.conn, id, true).await?;
     if request.requested_by == ctx.actor.user_id {
@@ -639,7 +698,8 @@ async fn decidable(ctx: &mut Ctx<'_>, id: Uuid) -> Result<ApprovalRequest> {
             "nobody approves or rejects their own request",
         ));
     }
-    if !qualifies(ctx, &request).await? {
+    let on_behalf_of = standing(ctx, &request).await?;
+    if on_behalf_of.is_none() {
         if visible(ctx, &request).await? {
             return Err(Error::forbidden(
                 "you are not one of the people who may decide this request",
@@ -653,14 +713,16 @@ async fn decidable(ctx: &mut Ctx<'_>, id: Uuid) -> Result<ApprovalRequest> {
             request.status
         )));
     }
+    let on_behalf_of = on_behalf_of.flatten();
+    let authority = on_behalf_of.unwrap_or(ctx.actor.user_id);
     if request
         .decisions
         .iter()
-        .any(|d| d.user_id == ctx.actor.user_id)
+        .any(|d| d.user_id == ctx.actor.user_id || d.on_behalf_of.unwrap_or(d.user_id) == authority)
     {
         return Err(Error::state("you decided on this request already"));
     }
-    Ok(request)
+    Ok((request, on_behalf_of))
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -694,10 +756,10 @@ impl Command for Approve {
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: DecideInput) -> Result<ApprovalRequest> {
-        let request = decidable(ctx, input.id).await?;
+        let (request, on_behalf_of) = decidable(ctx, input.id).await?;
         sqlx::query(
-            "INSERT INTO approval_decision (request_id, user_id, decision, reason)
-             VALUES ($1, $2, 'approve', $3)",
+            "INSERT INTO approval_decision (request_id, user_id, decision, reason, on_behalf_of)
+             VALUES ($1, $2, 'approve', $3, $4)",
         )
         .bind(request.id)
         .bind(ctx.actor.user_id)
@@ -708,6 +770,7 @@ impl Command for Approve {
                 .map(str::trim)
                 .filter(|r| !r.is_empty()),
         )
+        .bind(on_behalf_of)
         .execute(&mut *ctx.conn)
         .await?;
         let approvals = request
@@ -933,14 +996,15 @@ impl Command for Reject {
             .filter(|r| !r.is_empty())
             .ok_or_else(|| Error::field("reason", "say why the request is rejected"))?
             .to_owned();
-        let request = decidable(ctx, input.id).await?;
+        let (request, on_behalf_of) = decidable(ctx, input.id).await?;
         sqlx::query(
-            "INSERT INTO approval_decision (request_id, user_id, decision, reason)
-             VALUES ($1, $2, 'reject', $3)",
+            "INSERT INTO approval_decision (request_id, user_id, decision, reason, on_behalf_of)
+             VALUES ($1, $2, 'reject', $3, $4)",
         )
         .bind(request.id)
         .bind(ctx.actor.user_id)
         .bind(&reason)
+        .bind(on_behalf_of)
         .execute(&mut *ctx.conn)
         .await?;
         sqlx::query(
@@ -960,5 +1024,215 @@ impl Command for Reject {
         )
         .await?;
         Ok(request)
+    }
+}
+
+// ------------------------------------------------------------- delegation
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct DelegateInput {
+    /// Who decides in the caller's place.
+    delegate_id: Uuid,
+    /// The first day. Today when omitted.
+    starts_on: Option<chrono::NaiveDate>,
+    /// The last day.
+    ends_on: chrono::NaiveDate,
+    /// Why, for the record: a holiday, a leave.
+    reason: Option<String>,
+}
+
+/// A delegation of approvals.
+#[derive(Debug, Serialize, JsonSchema, sqlx::FromRow)]
+pub struct DelegationView {
+    pub id: Uuid,
+    /// Whose approvals are delegated.
+    pub user_id: Uuid,
+    pub user_name: String,
+    /// Who decides in their place.
+    pub delegate_id: Uuid,
+    pub delegate_name: String,
+    pub starts_on: chrono::NaiveDate,
+    pub ends_on: chrono::NaiveDate,
+    pub reason: Option<String>,
+}
+
+const DELEGATION: &str = "SELECT d.id, d.user_id, u.name AS user_name, d.delegate_id,
+        v.name AS delegate_name, d.starts_on, d.ends_on, d.reason
+    FROM approval_delegation d
+    JOIN app_user u ON u.id = d.user_id
+    JOIN app_user v ON v.id = d.delegate_id";
+
+struct Delegate;
+
+#[async_trait::async_trait]
+impl Command for Delegate {
+    type Input = DelegateInput;
+    type Output = DelegationView;
+
+    fn spec(&self) -> CommandSpec {
+        CommandSpec::action(
+            "approval.delegate",
+            "Let someone else decide, from one day to another, the approval requests the \
+             caller could decide: while away, for example. They decide in the caller's place \
+             and their decision says so; it counts as the caller's, so one person is never \
+             counted twice. They never decide a request of their own, and what they could \
+             decide in their own right they decide as themselves. Anyone may delegate their \
+             own approvals.",
+        )
+        .label("Delegate approvals")
+        .resource("approval")
+        .target(false)
+    }
+
+    async fn run(&self, ctx: &mut Ctx<'_>, input: DelegateInput) -> Result<DelegationView> {
+        let starts_on = input.starts_on.unwrap_or_else(|| Utc::now().date_naive());
+        if input.ends_on < starts_on {
+            return Err(Error::field(
+                "ends_on",
+                "the last day comes after the first",
+            ));
+        }
+        if input.delegate_id == ctx.actor.user_id {
+            return Err(Error::field(
+                "delegate_id",
+                "approvals are delegated to someone else",
+            ));
+        }
+        let active: Option<bool> = sqlx::query_scalar("SELECT active FROM app_user WHERE id = $1")
+            .bind(input.delegate_id)
+            .fetch_optional(&mut *ctx.conn)
+            .await?;
+        if active != Some(true) {
+            return Err(Error::field(
+                "delegate_id",
+                "the delegate must be an active user",
+            ));
+        }
+        let id = new_id();
+        sqlx::query(
+            "INSERT INTO approval_delegation (id, user_id, delegate_id, starts_on, ends_on, reason)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(id)
+        .bind(ctx.actor.user_id)
+        .bind(input.delegate_id)
+        .bind(starts_on)
+        .bind(input.ends_on)
+        .bind(
+            input
+                .reason
+                .as_deref()
+                .map(str::trim)
+                .filter(|r| !r.is_empty()),
+        )
+        .execute(&mut *ctx.conn)
+        .await?;
+        ctx.touch("app_user", ctx.actor.user_id);
+        Ok(sqlx::query_as(&format!("{DELEGATION} WHERE d.id = $1"))
+            .bind(id)
+            .fetch_one(&mut *ctx.conn)
+            .await?)
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct DelegationsInput {}
+
+#[derive(Serialize, JsonSchema)]
+struct DelegationsOutput {
+    /// What the caller delegated, and what was delegated to them, that has
+    /// not ended.
+    items: Vec<DelegationView>,
+}
+
+struct Delegations;
+
+#[async_trait::async_trait]
+impl Command for Delegations {
+    type Input = DelegationsInput;
+    type Output = DelegationsOutput;
+
+    fn spec(&self) -> CommandSpec {
+        CommandSpec::query(
+            "approval.delegations",
+            "The caller's delegations of approvals that have not ended: those they gave and \
+             those given to them.",
+        )
+        .label("Delegations")
+        .resource("approval")
+        .target(false)
+    }
+
+    async fn run(&self, ctx: &mut Ctx<'_>, _input: DelegationsInput) -> Result<DelegationsOutput> {
+        Ok(DelegationsOutput {
+            items: sqlx::query_as(&format!(
+                "{DELEGATION} WHERE (d.user_id = $1 OR d.delegate_id = $1)
+                   AND d.ends_on >= current_date
+                 ORDER BY d.starts_on, d.id"
+            ))
+            .bind(ctx.actor.user_id)
+            .fetch_all(&mut *ctx.conn)
+            .await?,
+        })
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EndInput {
+    /// The delegation.
+    id: Uuid,
+}
+
+struct EndDelegation;
+
+#[async_trait::async_trait]
+impl Command for EndDelegation {
+    type Input = EndInput;
+    type Output = DelegationView;
+
+    fn spec(&self) -> CommandSpec {
+        CommandSpec::action(
+            "approval.end_delegation",
+            "End a delegation of the caller's approvals today; one that has not started is \
+             ended before it starts. Decisions already made in their place stand.",
+        )
+        .label("End delegation")
+        .resource("approval")
+        .target(false)
+    }
+
+    async fn run(&self, ctx: &mut Ctx<'_>, input: EndInput) -> Result<DelegationView> {
+        let today = Utc::now().date_naive();
+        let found: Option<DelegationView> = sqlx::query_as(&format!(
+            "{DELEGATION} WHERE d.id = $1 AND d.user_id = $2 FOR UPDATE OF d"
+        ))
+        .bind(input.id)
+        .bind(ctx.actor.user_id)
+        .fetch_optional(&mut *ctx.conn)
+        .await?;
+        let mut view = found.ok_or_else(|| Error::not_found("delegation"))?;
+        if view.starts_on >= today {
+            // Not begun: it never will.
+            sqlx::query("DELETE FROM approval_delegation WHERE id = $1")
+                .bind(view.id)
+                .execute(&mut *ctx.conn)
+                .await?;
+            view.ends_on = view.starts_on;
+        } else if view.ends_on >= today {
+            // In force: its last day was yesterday.
+            let yesterday = today.pred_opt().unwrap_or(today);
+            sqlx::query("UPDATE approval_delegation SET ends_on = $2 WHERE id = $1")
+                .bind(view.id)
+                .bind(yesterday)
+                .execute(&mut *ctx.conn)
+                .await?;
+            view.ends_on = yesterday;
+        } else {
+            ctx.no_change();
+        }
+        Ok(view)
     }
 }

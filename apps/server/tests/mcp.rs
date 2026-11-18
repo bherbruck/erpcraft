@@ -530,7 +530,7 @@ async fn tools_are_listed_in_pages_and_only_those_the_caller_can_run() {
     let clerk = clerk(&t, &c).await;
     let listed = all_tools(&t, &clerk).await;
     let shown = names(&listed);
-    assert!(listed.len() < 30, "{shown:?}");
+    assert!(listed.len() < 40, "{shown:?}");
     for name in [
         "erpcraft_modules",
         "erpcraft_tools",

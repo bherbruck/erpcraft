@@ -815,3 +815,103 @@ async fn an_approved_run_keeps_the_scopes_it_was_asked_with() {
     assert_eq!(status_of(&t, &order).await, "draft");
     t.stop().await;
 }
+
+/// A controller away delegates their approvals: the deputy decides in
+/// their place, the decision says so, and it counts as the controller's,
+/// never twice.
+#[tokio::test]
+async fn a_delegate_decides_in_the_place_of_an_approver() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let (deputy, deputy_id) = t
+        .user_with_rules(
+            "deputy@example.com",
+            json!(["purchase_order:read"]),
+            Some(&f.c.id),
+        )
+        .await;
+    // Not to oneself, and not backwards in time.
+    let (status, _) = t
+        .command(
+            &f.controller,
+            "approval.delegate",
+            json!({ "delegate_id": deputy_id, "starts_on": "2026-03-10", "ends_on": "2026-03-01" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, delegation) = t
+        .command(
+            &f.controller,
+            "approval.delegate",
+            json!({ "delegate_id": deputy_id, "ends_on": "2099-12-31", "reason": "holiday" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{delegation}");
+    let controller_id = delegation["user_id"].as_str().unwrap().to_owned();
+    let (_, mine) = t.command(&deputy, "approval.delegations", json!({})).await;
+    assert_eq!(mine["items"].as_array().unwrap().len(), 1, "{mine}");
+
+    // An order needing one controller: the deputy approves it.
+    let large = f.order(&t, "100").await;
+    let request = f.pending(&t, &large).await;
+    let (_, list) = t.command(&deputy, "approval.list", json!({})).await;
+    assert_eq!(list["items"].as_array().unwrap().len(), 1, "{list}");
+    let (status, decided) = t
+        .command(&deputy, "approval.approve", json!({ "id": request }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{decided}");
+    assert_eq!(decided["status"], "executed", "{decided}");
+    assert_eq!(
+        decided["decisions"][0]["on_behalf_of"],
+        controller_id.as_str()
+    );
+    assert_eq!(status_of(&t, &large).await, "open");
+
+    // One needing two: the deputy's approval is the controller's, who
+    // cannot add another; a second controller can.
+    let huge = f.order(&t, "300").await;
+    let request = f.pending(&t, &huge).await;
+    let (status, _) = t
+        .command(&deputy, "approval.approve", json!({ "id": request }))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = t
+        .command(&f.controller, "approval.approve", json!({ "id": request }))
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    let (status, decided) = t
+        .command(
+            &f.second_controller,
+            "approval.approve",
+            json!({ "id": request }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{decided}");
+    assert_eq!(decided["status"], "executed", "{decided}");
+
+    // Ended, the deputy decides nothing more.
+    let (status, ended) = t
+        .command(
+            &f.controller,
+            "approval.end_delegation",
+            json!({ "id": delegation["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{ended}");
+    let other = f.order(&t, "100").await;
+    let request = f.pending(&t, &other).await;
+    let (status, _) = t
+        .command(&deputy, "approval.approve", json!({ "id": request }))
+        .await;
+    assert_ne!(status, StatusCode::OK);
+    // Nobody else ends another's delegation.
+    let (status, _) = t
+        .command(
+            &deputy,
+            "approval.end_delegation",
+            json!({ "id": delegation["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    t.stop().await;
+}
