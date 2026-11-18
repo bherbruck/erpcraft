@@ -94,6 +94,11 @@ impl Module for EdiModule {
                 name: "shipment",
                 sql: include_str!("../migrations/0002_shipment.sql"),
             },
+            Migration {
+                version: 3,
+                name: "review",
+                sql: include_str!("../migrations/0003_review.sql"),
+            },
         ]
     }
 
@@ -118,6 +123,7 @@ impl Module for EdiModule {
             command(commands::Explain),
             command(commands::ContentOf),
             command(commands::MarkSent),
+            command(commands::Purge),
             command(commands_out::Generate),
             command(commands_out::Pack),
             command(commands_out::AutoPack),

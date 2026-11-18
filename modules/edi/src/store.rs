@@ -1,9 +1,12 @@
-//! The log of raw payloads. Bytes received are stored before anything
-//! reads them, in a transaction of their own, so that a file that breaks
-//! the reader, the server or a rule is still on record; bytes sent are
-//! stored once their control numbers are fixed.
+//! The log of raw payloads. Bytes received are stored in the transaction
+//! that reads them, once it is known whose they are: what a partner sent
+//! is kept for its company, what nobody could be found for is kept for the
+//! caller who sent it. Bytes sent are stored once their control numbers
+//! are fixed.
 
-use erpcraft_kernel::{PgConnection, PgPool, Result, new_id};
+use erpcraft_kernel::{PgConnection, Result, new_id};
+
+use crate::partner::Partner;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -12,40 +15,93 @@ pub fn sha256(bytes: &[u8]) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Stores bytes received and returns the interchange that holds them: a
-/// new one in the state `stored`, or the one that already holds the same
-/// bytes. Committed before it returns, whatever happens after.
-pub async fn store_incoming(pool: &PgPool, bytes: &[u8], transport: &str) -> Result<Uuid> {
-    let hash = sha256(bytes);
-    let size = i32::try_from(bytes.len())
-        .map_err(|_| erpcraft_kernel::Error::validation("the file is too large"))?;
-    let mut tx = pool.begin().await?;
-    let inserted: Option<Uuid> = sqlx::query_scalar(
-        "INSERT INTO edi_interchange (id, direction, sha256, size, payload, transport, state)
-         VALUES ($1, 'in', $2, $3, $4, $5, 'stored')
-         ON CONFLICT (sha256) WHERE direction = 'in' DO NOTHING
+fn size_of(bytes: &[u8]) -> Result<i32> {
+    i32::try_from(bytes.len())
+        .map_err(|_| erpcraft_kernel::Error::validation("the file is too large"))
+}
+
+/// Stores bytes received from a partner, read and routed, in the
+/// caller's transaction. Nothing when the same bytes from a partner were
+/// stored before: that is a repeat ([`routed_repeat`]).
+pub async fn insert_routed(
+    conn: &mut PgConnection,
+    bytes: &[u8],
+    hash: &str,
+    partner: &Partner,
+    received_by: Uuid,
+) -> Result<Option<Uuid>> {
+    Ok(sqlx::query_scalar(
+        "INSERT INTO edi_interchange (id, company_id, partner_id, direction, syntax, sha256, size,
+             payload, transport, state, received_by)
+         VALUES ($1, $2, $3, 'in', 'x12', $4, $5, $6, 'manual', 'stored', $7)
+         ON CONFLICT (sha256) WHERE direction = 'in' AND partner_id IS NOT NULL DO NOTHING
          RETURNING id",
     )
     .bind(new_id())
-    .bind(&hash)
-    .bind(size)
+    .bind(partner.company_id)
+    .bind(partner.id)
+    .bind(hash)
+    .bind(size_of(bytes)?)
     .bind(bytes)
-    .bind(transport)
-    .fetch_optional(&mut *tx)
+    .bind(received_by)
+    .fetch_optional(&mut *conn)
+    .await?)
+}
+
+/// The interchange that holds bytes received and routed before.
+pub async fn routed_repeat(conn: &mut PgConnection, hash: &str) -> Result<Uuid> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM edi_interchange
+         WHERE sha256 = $1 AND direction = 'in' AND partner_id IS NOT NULL FOR UPDATE",
+    )
+    .bind(hash)
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+/// Stores bytes nobody could be found for, kept for the caller who sent
+/// them. Returns the interchange and whether this caller sent them before.
+pub async fn insert_unrouted(
+    conn: &mut PgConnection,
+    bytes: &[u8],
+    hash: &str,
+    received_by: Uuid,
+    state: &str,
+    usage: Option<String>,
+    error: &str,
+) -> Result<(Uuid, bool)> {
+    let inserted: Option<Uuid> = sqlx::query_scalar(
+        "INSERT INTO edi_interchange (id, direction, syntax, usage, sha256, size, payload,
+             transport, state, error, received_by)
+         VALUES ($1, 'in', $2, $3, $4, $5, $6, 'manual', $7, $8, $9)
+         ON CONFLICT (sha256, received_by) WHERE direction = 'in' AND partner_id IS NULL
+         DO NOTHING RETURNING id",
+    )
+    .bind(new_id())
+    .bind(usage.as_ref().map(|_| "x12"))
+    .bind(&usage)
+    .bind(hash)
+    .bind(size_of(bytes)?)
+    .bind(bytes)
+    .bind(state)
+    .bind(error)
+    .bind(received_by)
+    .fetch_optional(&mut *conn)
     .await?;
-    let id = match inserted {
-        Some(id) => id,
-        None => {
+    match inserted {
+        Some(id) => Ok((id, false)),
+        None => Ok((
             sqlx::query_scalar(
-                "SELECT id FROM edi_interchange WHERE sha256 = $1 AND direction = 'in'",
+                "SELECT id FROM edi_interchange WHERE sha256 = $1 AND direction = 'in'
+                   AND partner_id IS NULL AND received_by = $2",
             )
-            .bind(&hash)
-            .fetch_one(&mut *tx)
-            .await?
-        }
-    };
-    tx.commit().await?;
-    Ok(id)
+            .bind(hash)
+            .bind(received_by)
+            .fetch_one(&mut *conn)
+            .await?,
+            true,
+        )),
+    }
 }
 
 /// What an interchange to send is stored with.

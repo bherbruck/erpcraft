@@ -79,10 +79,17 @@ impl Ta1 {
     /// A TA1 for an interchange's header with a status and note chosen by
     /// the caller, such as a duplicate.
     pub fn answering(isa: &Isa, status: Ta1Status, note: &str) -> Self {
+        // Echoed from the partner's header, which may hold anything: the
+        // date and time only as digits.
+        let digits = |text: &str| {
+            text.chars()
+                .filter(char::is_ascii_digit)
+                .collect::<String>()
+        };
         Ta1 {
             control: isa.control.clone(),
-            date: isa.date.clone(),
-            time: isa.time.clone(),
+            date: digits(&isa.date),
+            time: digits(&isa.time),
             status,
             note: note.to_owned(),
         }

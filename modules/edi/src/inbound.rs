@@ -1,10 +1,10 @@
 //! Receiving: store, read, route, acknowledge.
 //!
-//! 1. The bytes are stored first, in a transaction of their own
-//!    ([`store::store_incoming`]). The same bytes again are a repeat: the
-//!    first result is returned and nothing is done twice.
-//! 2. They are read on the blocking pool, behind `catch_unwind`: a panic
-//!    is a refusal, kept as `unreadable`, never a crash.
+//! 1. The bytes are read on the blocking pool, behind `catch_unwind`: a
+//!    panic is a refusal, kept as `unreadable`, never a crash.
+//! 2. They are stored in the same transaction, once it is known whose
+//!    they are ([`store`]). The same bytes again are a repeat: the first
+//!    result is returned and nothing is done twice.
 //! 3. The interchange is routed to the partner its envelope names. None:
 //!    `unroutable`, and nothing else happens.
 //! 4. Each functional group is acknowledged by syntax alone, at once.
@@ -193,85 +193,82 @@ pub async fn receive(
     if let Some(company) = company_id {
         ctx.require(PERMISSION, company)?;
     }
-    let id = store::store_incoming(ctx.kernel.pool(), &bytes, "manual").await?;
-    ctx.touch("edi_interchange", id);
-    // Locked until this command ends: the same bytes at once wait here,
-    // and then find them read.
-    let (state, routed_to): (String, Option<Uuid>) =
-        sqlx::query_as("SELECT state, company_id FROM edi_interchange WHERE id = $1 FOR UPDATE")
-            .bind(id)
-            .fetch_one(&mut *ctx.conn)
-            .await?;
-    if state != "stored" {
-        if let Some(company) = routed_to {
-            ctx.require(PERMISSION, company)?;
-            if company_id.is_some_and(|c| c != company) {
-                return Err(Error::validation(
-                    "these bytes were received before for another company",
-                ));
-            }
-        }
-        ctx.no_change();
-        return output(ctx.conn, id, true).await;
-    }
-
-    let read = blocking(move || read_file(&bytes).map_err(|e| e.to_string())).await;
+    // Read before anything is stored, but stored in this same transaction:
+    // what is kept is decided by whose it is, and a preview, a refusal or a
+    // failure keeps nothing. A panic in the reader is caught.
+    let hash = store::sha256(&bytes);
+    let owned = bytes.clone();
+    let read = blocking(move || read_file(&owned).map_err(|e| e.to_string())).await;
     let mut read = match read.and_then(|r| r) {
-        Ok(read) => read,
-        Err(why) => return unreadable(ctx, id, &why).await,
+        Ok(read) if read.len() == 1 => read,
+        Ok(read) => {
+            let why = format!(
+                "the file holds {} interchanges; each is received on its own",
+                read.len()
+            );
+            return unrouted(ctx, &bytes, &hash, "unreadable", None, &why).await;
+        }
+        Err(why) => return unrouted(ctx, &bytes, &hash, "unreadable", None, &why).await,
     };
-    if read.len() != 1 {
-        let why = format!(
-            "the file holds {} interchanges; each is received on its own",
-            read.len()
-        );
-        return unreadable(ctx, id, &why).await;
-    }
     let ReadInterchange { interchange, sets } = read.remove(0);
     let isa = &interchange.isa;
 
-    let Some(partner) = partner::route(&mut *ctx.conn, isa, company_id).await? else {
-        sqlx::query(
-            "UPDATE edi_interchange SET state = 'unroutable', syntax = 'x12', usage = $2,
-                 error = $3
-             WHERE id = $1",
-        )
-        .bind(id)
-        .bind(isa.usage.to_string())
-        .bind(format!(
-            "no active partner is from {}/{} to {}/{}",
-            isa.sender_qualifier, isa.sender_id, isa.receiver_qualifier, isa.receiver_id
-        ))
+    let partner = match partner::route(&mut *ctx.conn, isa, company_id).await? {
+        Ok(partner) => partner,
+        Err(why) => return unrouted(ctx, &bytes, &hash, "unroutable", Some(isa), &why).await,
+    };
+    // Refused here, a caller learns nothing about what was received before.
+    ctx.require(PERMISSION, partner.company_id)?;
+    // One receive per partner at a time: the check for a control number
+    // used before and the numbers of the answers are taken in turn.
+    sqlx::query("SELECT 1 FROM edi_partner WHERE id = $1 FOR NO KEY UPDATE")
+        .bind(partner.id)
         .execute(&mut *ctx.conn)
         .await?;
-        return output(ctx.conn, id, false).await;
+    let Some(id) =
+        store::insert_routed(&mut *ctx.conn, &bytes, &hash, &partner, ctx.actor.user_id).await?
+    else {
+        let id = store::routed_repeat(&mut *ctx.conn, &hash).await?;
+        ctx.no_change();
+        return output(ctx.conn, id, true).await;
     };
-    ctx.require(PERMISSION, partner.company_id)?;
+    ctx.touch("edi_interchange", id);
 
-    // The same control number from this partner with other bytes: kept,
-    // answered with a TA1 that says so, and not worked on.
-    let duplicate: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM edi_interchange
-                        WHERE partner_id = $1 AND direction = 'in' AND control = $2 AND id <> $3)",
+    // The same control number from this partner with other bytes: kept as
+    // its duplicate, answered with a TA1 that says so, and not worked on.
+    let first: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM edi_interchange
+         WHERE partner_id = $1 AND direction = 'in' AND control = $2 AND id <> $3
+           AND duplicate_of IS NULL",
     )
     .bind(partner.id)
     .bind(&isa.control)
     .bind(id)
-    .fetch_one(&mut *ctx.conn)
+    .fetch_optional(&mut *ctx.conn)
     .await?;
+    let duplicate = first.is_some();
     let test = isa.usage != 'P' || partner.is_test();
+    // An envelope whose trailer does not match its header is rejected as
+    // a whole, as its TA1 says; nothing in it is worked on.
+    let envelope_ta1 = Ta1::of(&interchange);
+    let envelope_rejected = envelope_ta1.status == Ta1Status::Rejected;
 
     sqlx::query(
-        "UPDATE edi_interchange SET company_id = $2, partner_id = $3, syntax = 'x12',
-             control = $4, usage = $5, state = 'read', error = $6
+        "UPDATE edi_interchange SET syntax = 'x12', control = $2, usage = $3, state = 'read',
+             error = $4, duplicate_of = $5
          WHERE id = $1",
     )
     .bind(id)
-    .bind(partner.company_id)
-    .bind(partner.id)
     .bind(&isa.control)
     .bind(isa.usage.to_string())
-    .bind(duplicate.then_some("this control number came from this partner before"))
+    .bind(if duplicate {
+        Some("this control number came from this partner before")
+    } else if envelope_rejected {
+        Some("the interchange's trailer does not match its header")
+    } else {
+        None
+    })
+    .bind(first)
     .execute(&mut *ctx.conn)
     .await?;
 
@@ -323,6 +320,14 @@ pub async fn receive(
                     ),
                 ));
                 "rejected"
+            } else if envelope_rejected {
+                findings.push(Finding::blocking(
+                    "interchange_rejected",
+                    None,
+                    "The interchange's control number in its trailer (IEA02) is not the one in \
+                     its header (ISA13): it was rejected with a TA1 and not worked on.",
+                ));
+                "rejected"
             } else if set_ack.status == Status::Rejected {
                 for sentence in crate::x12::ack::describe(set_ack) {
                     findings.push(Finding::blocking("syntax", None, sentence));
@@ -351,7 +356,7 @@ pub async fn receive(
             .bind(id)
             .bind(partner.company_id)
             .bind(partner.id)
-            .bind(&set.id)
+            .bind(message_code(&set.id))
             .bind(&group.control)
             .bind(&set.control)
             .bind(position)
@@ -375,12 +380,17 @@ pub async fn receive(
             ids.push(message_id);
             if let Some(answer) = answer
                 && !duplicate
+                && !envelope_rejected
             {
                 match_ack(ctx, &partner, message_id, answer).await?;
             }
         }
-        if !is_ack_group && !duplicate && matches!(partner.ack_form.as_str(), "997" | "999") {
-            let ack_id = acknowledge(ctx, &partner, &interchange, &ack, id).await?;
+        if !is_ack_group
+            && !duplicate
+            && !envelope_rejected
+            && matches!(partner.ack_form.as_str(), "997" | "999")
+        {
+            let ack_id = acknowledge(ctx, &partner, &interchange, group, &ack, id).await?;
             sqlx::query("UPDATE edi_message SET ack_message_id = $2 WHERE id = ANY($1)")
                 .bind(&ids)
                 .bind(ack_id)
@@ -392,7 +402,7 @@ pub async fn receive(
     let ta1 = if duplicate {
         Some(Ta1::answering(isa, Ta1Status::Rejected, NOTE_DUPLICATE))
     } else if isa.ack_requested || !interchange.errors.is_empty() {
-        Some(Ta1::of(&interchange))
+        Some(envelope_ta1)
     } else {
         None
     };
@@ -481,13 +491,56 @@ async fn match_ack(
     Ok(())
 }
 
-async fn unreadable(ctx: &mut Ctx<'_>, id: Uuid, why: &str) -> Result<ReceiveOutput> {
-    sqlx::query("UPDATE edi_interchange SET state = 'unreadable', error = $2 WHERE id = $1")
-        .bind(id)
-        .bind(why)
-        .execute(&mut *ctx.conn)
-        .await?;
-    output(ctx.conn, id, false).await
+/// The usage an answer is written with: the interchange's own, when it is
+/// one there is.
+fn usage_of(isa: &crate::x12::Isa) -> char {
+    match isa.usage {
+        'T' => 'T',
+        'I' => 'I',
+        _ => 'P',
+    }
+}
+
+/// What a message is called, as the database keeps it: a set whose type
+/// is no type is named by nothing.
+fn message_code(id: &str) -> &str {
+    if id.len() <= 6
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+    {
+        id
+    } else {
+        ""
+    }
+}
+
+/// Keeps bytes nobody could be found for, for the caller who sent them:
+/// unreadable, or unroutable with the envelope read. The same bytes from
+/// the same caller again are a repeat.
+async fn unrouted(
+    ctx: &mut Ctx<'_>,
+    bytes: &[u8],
+    hash: &str,
+    state: &str,
+    isa: Option<&crate::x12::Isa>,
+    why: &str,
+) -> Result<ReceiveOutput> {
+    let (id, repeat) = store::insert_unrouted(
+        &mut *ctx.conn,
+        bytes,
+        hash,
+        ctx.actor.user_id,
+        state,
+        isa.map(|i| i.usage.to_string()),
+        why,
+    )
+    .await?;
+    ctx.touch("edi_interchange", id);
+    if repeat {
+        ctx.no_change();
+    }
+    output(ctx.conn, id, repeat).await
 }
 
 /// Whether two acknowledgements say the same: what was read back from the
@@ -538,19 +591,26 @@ async fn acknowledge(
     ctx: &mut Ctx<'_>,
     partner: &Partner,
     interchange: &Interchange,
+    group: &crate::x12::Group,
     ack: &FunctionalAck,
     answers: Uuid,
 ) -> Result<Uuid> {
     let (form, set_id) = match partner.ack_form.as_str() {
         "999" => (
             AckForm::Ack999 {
-                version: partner.version.clone(),
+                version: group.version.clone(),
+                conventions: group
+                    .sets
+                    .iter()
+                    .map(|set| set.segments[0].get(3).to_owned())
+                    .collect(),
             },
             "999",
         ),
         _ => (AckForm::Ack997, "997"),
     };
     let d = partner.delimiters()?;
+    let ack = &ack.cleaned(&d);
     let body = ack.body_as(&d, &form);
     let at = Utc::now().naive_utc();
     // The last step before the bytes are fixed.
@@ -561,12 +621,12 @@ async fn acknowledge(
         at,
         interchange_control,
         group_control,
-        interchange.isa.usage,
+        usage_of(&interchange.isa),
     )?;
     let text = x12::write(&envelope, set_id, &[body])
         .map_err(|e| Error::internal(format!("the acknowledgement could not be written: {e}")))?;
     // Read back as the partner will read it.
-    let back = x12::read(text.as_bytes())
+    let back = x12::read_with(text.as_bytes(), crate::segment::Limits::for_answers())
         .ok()
         .and_then(|mut all| all.pop())
         .and_then(|i| i.groups.into_iter().next())
@@ -585,7 +645,7 @@ async fn acknowledge(
             company_id: partner.company_id,
             partner_id: partner.id,
             control: &control_text,
-            usage: interchange.isa.usage,
+            usage: usage_of(&interchange.isa),
             bytes: &bytes,
         },
     )
@@ -619,7 +679,8 @@ async fn send_ta1(
 ) -> Result<Uuid> {
     let at = Utc::now().naive_utc();
     let interchange_control = control::next(&mut *ctx.conn, partner.id, Kind::Interchange).await?;
-    let envelope = partner.envelope("TA", at, interchange_control, 0, interchange.isa.usage)?;
+    let envelope =
+        partner.envelope("TA", at, interchange_control, 0, usage_of(&interchange.isa))?;
     let text = x12::write_ta1s(&envelope, &[ta1.segment()])
         .map_err(|e| Error::internal(format!("the TA1 could not be written: {e}")))?;
     let back = x12::read(text.as_bytes())
@@ -640,7 +701,7 @@ async fn send_ta1(
             company_id: partner.company_id,
             partner_id: partner.id,
             control: &control_text,
-            usage: interchange.isa.usage,
+            usage: usage_of(&interchange.isa),
             bytes: &bytes,
         },
     )

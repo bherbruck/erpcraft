@@ -18,7 +18,7 @@
 use chrono::NaiveDateTime;
 
 use crate::segment::{
-    Budget, Charset, Delimiters, EdiError, Element, MAX_BYTES, Segment, Tokenizer, skip_filler,
+    Budget, Charset, Delimiters, EdiError, Element, Limits, Segment, Tokenizer, skip_filler,
     write_segment,
 };
 
@@ -153,14 +153,19 @@ pub struct Interchange {
 
 /// Reads every interchange of a file.
 pub fn read(bytes: &[u8]) -> Result<Vec<Interchange>, EdiError> {
-    if bytes.len() > MAX_BYTES {
+    read_with(bytes, Limits::default())
+}
+
+/// Reads every interchange of a file within other limits.
+pub fn read_with(bytes: &[u8], limits: Limits) -> Result<Vec<Interchange>, EdiError> {
+    if bytes.len() > limits.bytes {
         return Err(EdiError::at(
             0,
-            format!("the file is larger than {} MiB", MAX_BYTES / 1024 / 1024),
+            format!("the file is larger than {} MiB", limits.bytes / 1024 / 1024),
         ));
     }
     let charset = Charset::of(bytes);
-    let mut budget = Budget::default();
+    let mut budget = Budget::of(limits);
     let mut interchanges = Vec::new();
     let mut pos = skip_filler(bytes, 0, &Delimiters::X12);
     if pos >= bytes.len() {

@@ -32,6 +32,7 @@ fn a_999_says_what_the_997_says_with_its_own_tags() {
         &envelope.delimiters,
         &AckForm::Ack999 {
             version: "005010".into(),
+            conventions: vec![],
         },
     );
     let written = x12::write(&envelope, "999", &[body]).unwrap();
@@ -121,6 +122,7 @@ fn no_change_to_an_acknowledgement_makes_reading_it_panic() {
             &envelope.delimiters,
             &AckForm::Ack999 {
                 version: "005010".into(),
+                conventions: vec![],
             },
         )],
     )

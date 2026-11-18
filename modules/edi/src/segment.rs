@@ -154,6 +154,46 @@ impl Default for Budget {
     }
 }
 
+/// The limits of one read. The defaults are for what partners send; this
+/// module reads its own acknowledgements back with larger ones, since an
+/// answer to a file at the limits can be longer than the file.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    pub bytes: usize,
+    pub segments: usize,
+    pub components: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits {
+            bytes: MAX_BYTES,
+            segments: MAX_SEGMENTS,
+            components: MAX_COMPONENTS,
+        }
+    }
+}
+
+impl Limits {
+    /// What the answer to a file within the default limits can take.
+    pub fn for_answers() -> Self {
+        Limits {
+            bytes: MAX_BYTES * 3,
+            segments: MAX_SEGMENTS * 3,
+            components: MAX_COMPONENTS * 3,
+        }
+    }
+}
+
+impl Budget {
+    pub fn of(limits: Limits) -> Self {
+        Budget {
+            segments: limits.segments,
+            components: limits.components,
+        }
+    }
+}
+
 /// One data element: its repetitions, each a list of components. An
 /// element that is neither repeated nor a composite is the common case
 /// and costs one string.

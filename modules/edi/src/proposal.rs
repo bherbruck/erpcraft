@@ -238,20 +238,21 @@ struct XrefRow {
 
 async fn xref(
     ctx: &mut Ctx<'_>,
-    partner_id: Uuid,
+    partner: &Partner,
     kind: &str,
     value: &str,
 ) -> Result<Option<XrefRow>> {
     Ok(sqlx::query_as(
         "SELECT item_id, partner_uom, units_per FROM edi_item_xref
-         WHERE (partner_id = $1 OR partner_id IS NULL) AND kind = $2
+         WHERE company_id = $4 AND (partner_id = $1 OR partner_id IS NULL) AND kind = $2
            AND CASE WHEN kind = 'gtin' THEN lpad(value, 14, '0') = lpad($3, 14, '0')
                     ELSE value = $3 END
          ORDER BY partner_id NULLS LAST LIMIT 1",
     )
-    .bind(partner_id)
+    .bind(partner.id)
     .bind(kind)
     .bind(value)
+    .bind(partner.company_id)
     .fetch_optional(&mut *ctx.conn)
     .await?)
 }
@@ -260,7 +261,7 @@ async fn xref(
 /// seller's number, buyer's number; and how it was found.
 async fn match_item(
     ctx: &mut Ctx<'_>,
-    partner_id: Uuid,
+    partner: &Partner,
     line: &Line,
 ) -> Result<Option<(XrefRow, String)>> {
     for kind in KIND_ORDER {
@@ -269,7 +270,7 @@ async fn match_item(
             .iter()
             .filter(|p| kind_of(&p.qualifier) == Some(kind))
         {
-            if let Some(row) = xref(ctx, partner_id, kind, &id.value).await? {
+            if let Some(row) = xref(ctx, partner, kind, &id.value).await? {
                 return Ok(Some((row, format!("{kind} {}", id.value))));
             }
         }
@@ -292,16 +293,22 @@ async fn item(ctx: &mut Ctx<'_>, id: Uuid) -> Result<Option<(String, String, Str
 
 /// Our unit for a partner's unit code, by the partner's cross-reference
 /// or the one for every partner.
-async fn our_uom(ctx: &mut Ctx<'_>, partner_id: Uuid, code: &str) -> Result<Option<String>> {
+async fn our_uom(ctx: &mut Ctx<'_>, partner: &Partner, code: &str) -> Result<Option<String>> {
     Ok(sqlx::query_scalar(
         "SELECT uom FROM edi_uom_xref
-         WHERE (partner_id = $1 OR partner_id IS NULL) AND partner_uom = $2
+         WHERE company_id = $3 AND (partner_id = $1 OR partner_id IS NULL) AND partner_uom = $2
          ORDER BY partner_id NULLS LAST LIMIT 1",
     )
-    .bind(partner_id)
+    .bind(partner.id)
     .bind(code)
+    .bind(partner.company_id)
     .fetch_optional(&mut *ctx.conn)
     .await?)
+}
+
+/// Whether a quantity or price fits a sales order line, `numeric(20, 6)`.
+fn fits(value: Decimal) -> bool {
+    value.abs() < Decimal::from(100_000_000_000_000i64) && value.normalize().scale() <= 6
 }
 
 /// A unit price divided into a smaller unit, only when it divides exactly
@@ -540,7 +547,7 @@ pub async fn build(
                 },
                 "chosen".to_owned(),
             )),
-            None => match_item(ctx, partner.id, line).await?,
+            None => match_item(ctx, partner, line).await?,
         };
         let Some((xref, how)) = matched else {
             findings.push(Finding::blocking(
@@ -580,7 +587,7 @@ pub async fn build(
         let units_per = if xref.partner_uom.as_deref() == Some(line.uom.as_str()) {
             Some(xref.units_per)
         } else {
-            let ours = our_uom(ctx, partner.id, &line.uom).await?;
+            let ours = our_uom(ctx, partner, &line.uom).await?;
             (ours.as_deref() == Some(uom.as_str()) || line.uom.eq_ignore_ascii_case(&uom))
                 .then_some(Decimal::ONE)
         };
@@ -602,7 +609,17 @@ pub async fn build(
         proposed.units_per = Some(units_per);
 
         match line.quantity {
-            Some(q) if q > Decimal::ZERO => proposed.qty = q.checked_mul(units_per),
+            Some(q) if q > Decimal::ZERO => match q.checked_mul(units_per).filter(|q| fits(*q)) {
+                Some(qty) => proposed.qty = Some(qty),
+                None => findings.push(Finding::blocking(
+                    "quantity_too_large",
+                    Some(id),
+                    format!(
+                        "Line {id} orders more than a sales order line holds (at most 14 \
+                         digits before the point and 6 after)."
+                    ),
+                )),
+            },
             _ => findings.push(Finding::blocking(
                 "quantity",
                 Some(id),
@@ -620,6 +637,21 @@ pub async fn build(
                 "price",
                 Some(id),
                 format!("Line {id} has a price below zero."),
+            )),
+            Some(p) if p.is_zero() && !choices.prices.contains_key(id) => {
+                findings.push(Finding::blocking(
+                    "price_zero",
+                    Some(id),
+                    format!(
+                        "Line {id} is priced at nothing: give the price meant (prices), or 0 \
+                         there to supply it free."
+                    ),
+                ))
+            }
+            Some(p) if !fits(p) => findings.push(Finding::blocking(
+                "price_too_large",
+                Some(id),
+                format!("Line {id} has a price larger than a sales order line holds."),
             )),
             Some(p) => match divide_price(p, units_per) {
                 Some(unit) => proposed.unit_price = Some(unit),

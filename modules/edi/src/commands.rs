@@ -538,3 +538,65 @@ impl Command for MarkSent {
         inbound::interchange_out(&mut *ctx.conn, input.id).await
     }
 }
+
+// ------------------------------------------------------------------- purge
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PurgeInput {
+    /// Files received at least this many days ago, 30 or more.
+    older_than_days: u32,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Purged {
+    /// How many files were deleted.
+    pub deleted: u64,
+}
+
+pub struct Purge;
+
+#[async_trait]
+impl Command for Purge {
+    type Input = PurgeInput;
+    type Output = Purged;
+
+    fn spec(&self) -> CommandSpec {
+        CommandSpec::action(
+            "edi_interchange.purge",
+            "Delete files received at least older_than_days ago (30 or more) that could not be \
+             read or routed to any partner: they belong to no company and nothing was done with \
+             them. Every other interchange is kept for good, as the record of what was \
+             exchanged. Takes edi_interchange:purge for all companies.",
+        )
+        .permission("edi_interchange:purge")
+        .label("Purge unread files")
+        .resource("edi_interchange")
+        .target(false)
+        .destructive()
+    }
+
+    async fn run(&self, ctx: &mut Ctx<'_>, input: PurgeInput) -> Result<Purged> {
+        ctx.actor.require_global("edi_interchange:purge")?;
+        if input.older_than_days < 30 {
+            return Err(Error::field("older_than_days", "must be 30 or more"));
+        }
+        sqlx::query("SELECT set_config('edi.purge', 'on', true)")
+            .execute(&mut *ctx.conn)
+            .await?;
+        let deleted = sqlx::query(
+            "DELETE FROM edi_interchange
+             WHERE direction = 'in' AND partner_id IS NULL
+               AND state IN ('unreadable', 'unroutable')
+               AND created_at < now() - make_interval(days => $1)",
+        )
+        .bind(input.older_than_days as i32)
+        .execute(&mut *ctx.conn)
+        .await?
+        .rows_affected();
+        sqlx::query("SELECT set_config('edi.purge', 'off', true)")
+            .execute(&mut *ctx.conn)
+            .await?;
+        Ok(Purged { deleted })
+    }
+}

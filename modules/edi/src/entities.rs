@@ -149,7 +149,12 @@ fn partner() -> EntityMeta {
 
 fn item_xref() -> EntityMeta {
     EntityMeta::new("edi_item_xref", "EDI item number")
-        .field(partner_field().help("Empty: every partner. Only a GTIN may be for every partner."))
+        .field(
+            FieldMeta::new("company_id", "Company", FieldType::link("company"))
+                .required()
+                .immutable(),
+        )
+        .field(partner_field().help("Empty: every partner of the company. Only a GTIN may be for every partner."))
         .field(
             FieldMeta::new("item_id", "Item", FieldType::link("item"))
                 .required(),
@@ -181,11 +186,17 @@ fn item_xref() -> EntityMeta {
         .search(&["value"])
         .display(&["kind", "value"])
         .plural("EDI item numbers")
+        .company_field("company_id")
 }
 
 fn uom_xref() -> EntityMeta {
     EntityMeta::new("edi_uom_xref", "EDI unit")
-        .field(partner_field().help("Empty: every partner."))
+        .field(
+            FieldMeta::new("company_id", "Company", FieldType::link("company"))
+                .required()
+                .immutable(),
+        )
+        .field(partner_field().help("Empty: every partner of the company."))
         .field(
             FieldMeta::new("partner_uom", "Partner's unit", FieldType::Text)
                 .required()
@@ -201,10 +212,16 @@ fn uom_xref() -> EntityMeta {
         .search(&["partner_uom", "uom"])
         .display(&["partner_uom", "uom"])
         .plural("EDI units")
+        .company_field("company_id")
 }
 
 fn location_xref() -> EntityMeta {
     EntityMeta::new("edi_location_xref", "EDI location")
+        .field(
+            FieldMeta::new("company_id", "Company", FieldType::link("company"))
+                .required()
+                .immutable(),
+        )
         .field(partner_field().required())
         .field(
             FieldMeta::new("qualifier", "Qualifier", FieldType::Text)
@@ -230,6 +247,7 @@ fn location_xref() -> EntityMeta {
         .search(&["code"])
         .display(&["qualifier", "code"])
         .plural("EDI locations")
+        .company_field("company_id")
 }
 
 fn interchange() -> EntityMeta {

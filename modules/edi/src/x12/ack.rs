@@ -138,7 +138,30 @@ pub struct SetAck {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AckForm {
     Ack997,
-    Ack999 { version: String },
+    /// The 999 names the version of the group it answers (GS08) in AK1,
+    /// and the implementation convention of each set (ST03, else GS08) in
+    /// AK2, in the order of the sets.
+    Ack999 {
+        version: String,
+        conventions: Vec<String>,
+    },
+}
+
+/// At most this many segment errors are reported per set, element errors
+/// per segment, and segment errors per acknowledgement: a set's status
+/// still says it is rejected, and an acknowledgement stays within what its
+/// reader takes.
+pub const MAX_SEGMENT_ERRORS: usize = 100;
+pub const MAX_ELEMENT_ERRORS: usize = 10;
+pub const MAX_ERRORS: usize = 50_000;
+
+/// A value echoed from what a partner sent, as it can be written with
+/// separators `d`: separators and control characters left out.
+fn clean(text: &str, d: &Delimiters, max: usize) -> String {
+    text.chars()
+        .filter(|ch| !ch.is_control() && !u8::try_from(*ch).is_ok_and(|b| d.is_separator(b)))
+        .take(max)
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +209,11 @@ impl FunctionalAck {
                 }
                 codes.dedup();
                 codes.truncate(5);
+                let mut segments = verdict.segments;
+                segments.truncate(MAX_SEGMENT_ERRORS);
+                for segment in &mut segments {
+                    segment.elements.truncate(MAX_ELEMENT_ERRORS);
+                }
                 SetAck {
                     id: set.id.clone(),
                     control: set.control.clone(),
@@ -195,10 +223,17 @@ impl FunctionalAck {
                         Status::Rejected
                     },
                     codes,
-                    segments: verdict.segments,
+                    segments,
                 }
             })
             .collect();
+        let mut sets = sets;
+        let mut budget = MAX_ERRORS;
+        for set in &mut sets {
+            let take = set.segments.len().min(budget);
+            set.segments.truncate(take);
+            budget -= take;
+        }
         let received = sets.len();
         let accepted = sets.iter().filter(|s| s.status == Status::Accepted).count();
         let codes: Vec<u8> = group.errors.iter().map(|e| e.code()).collect();
@@ -234,6 +269,23 @@ impl FunctionalAck {
         self.body_as(d, &AckForm::Ack997)
     }
 
+    /// The acknowledgement as it will be written with separators `d`:
+    /// what it echoes of the partner's file without those separators.
+    /// What a read-back is compared with.
+    pub fn cleaned(&self, d: &Delimiters) -> Self {
+        let mut out = self.clone();
+        out.functional_id = clean(&out.functional_id, d, 2);
+        out.group_control = clean(&out.group_control, d, 9);
+        for set in &mut out.sets {
+            set.id = clean(&set.id, d, 3);
+            set.control = clean(&set.control, d, 9);
+            for segment in &mut set.segments {
+                segment.tag = clean(&segment.tag, d, 3);
+            }
+        }
+        out
+    }
+
     /// The body in either form. The 999 says the same as the 997 with
     /// other tags for the set's errors (IK3, IK4, IK5), and names the
     /// version of the group it answers in AK1 and AK2. The codes this
@@ -243,24 +295,38 @@ impl FunctionalAck {
             AckForm::Ack997 => ("AK3", "AK4", "AK5"),
             AckForm::Ack999 { .. } => ("IK3", "IK4", "IK5"),
         };
-        let version = match form {
-            AckForm::Ack997 => None,
-            AckForm::Ack999 { version } => Some(version.as_str()),
+        let (version, conventions) = match form {
+            AckForm::Ack997 => (None, &[][..]),
+            AckForm::Ack999 {
+                version,
+                conventions,
+            } => (Some(clean(version, d, 12)), conventions.as_slice()),
         };
         let codes =
             |codes: &[u8]| -> Vec<Element> { codes.iter().map(|c| el(c.to_string())).collect() };
-        let mut ak1 = vec![self.functional_id.as_str(), &self.group_control];
-        ak1.extend(version);
+        let mut ak1 = vec![
+            clean(&self.functional_id, d, 2),
+            clean(&self.group_control, d, 9),
+        ];
+        ak1.extend(version.clone());
         let mut out = vec![Segment::new("AK1", &ak1)];
-        for set in &self.sets {
-            let mut ak2 = vec![set.id.as_str(), &set.control];
-            ak2.extend(version);
+        for (n, set) in self.sets.iter().enumerate() {
+            let mut ak2 = vec![clean(&set.id, d, 3), clean(&set.control, d, 9)];
+            if let Some(version) = &version {
+                ak2.push(
+                    conventions
+                        .get(n)
+                        .map(|c| clean(c, d, 35))
+                        .filter(|c| !c.is_empty())
+                        .unwrap_or_else(|| version.clone()),
+                );
+            }
             out.push(Segment::new("AK2", &ak2));
             for segment in &set.segments {
                 out.push(Segment::new(
                     ak3,
                     &[
-                        segment.tag.clone(),
+                        clean(&segment.tag, d, 3),
                         segment.position.to_string(),
                         String::new(),
                         segment.code.map(|c| c.to_string()).unwrap_or_default(),

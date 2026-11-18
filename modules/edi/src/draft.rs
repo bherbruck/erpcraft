@@ -291,8 +291,10 @@ async fn keep(
     let order = &proposal.order;
     sqlx::query(
         "INSERT INTO edi_document (doc_type, document_id, partner_id, message_id, order_number,
-             release, order_date, header)
-         VALUES ('sales_order', $1, $2, $3, $4, $5, $6, $7)",
+             release, order_date, header, sequence)
+         VALUES ('sales_order', $1, $2, $3, $4, $5, $6, $7,
+                 (SELECT count(*) + 1 FROM edi_document WHERE partner_id = $2
+                    AND order_number = $4))",
     )
     .bind(view.header.id)
     .bind(proposal.partner.id)
@@ -385,7 +387,8 @@ async fn remember(
         entity::create(
             ctx,
             "edi_item_xref",
-            json!({ "partner_id": partner.id, "item_id": item_id, "kind": kind, "value": value }),
+            json!({ "company_id": partner.company_id, "partner_id": partner.id,
+                    "item_id": item_id, "kind": kind, "value": value }),
         )
         .await?;
     }
@@ -412,8 +415,8 @@ async fn remember(
                 entity::create(
                     ctx,
                     "edi_location_xref",
-                    json!({ "partner_id": partner.id, "qualifier": qualifier, "code": code,
-                            "address_id": address }),
+                    json!({ "company_id": partner.company_id, "partner_id": partner.id,
+                            "qualifier": qualifier, "code": code, "address_id": address }),
                 )
                 .await?;
             }

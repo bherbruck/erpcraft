@@ -102,23 +102,23 @@ async fn setup(t: &TestApp) -> Fixture {
         .await;
     t.create(
         "edi_uom_xref",
-        json!({ "partner_uom": "EA", "uom": "each" }),
+        json!({ "company_id": c.id, "partner_uom": "EA", "uom": "each" }),
     )
     .await;
     t.create(
         "edi_item_xref",
-        json!({ "item_id": hammer, "kind": "gtin", "value": "040000100010" }),
+        json!({ "company_id": c.id, "item_id": hammer, "kind": "gtin", "value": "040000100010" }),
     )
     .await;
     t.create(
         "edi_item_xref",
-        json!({ "partner_id": partner, "item_id": tape, "kind": "gtin",
+        json!({ "company_id": c.id, "partner_id": partner, "item_id": tape, "kind": "gtin",
                 "value": "10400001000202", "partner_uom": "CA", "units_per": "6" }),
     )
     .await;
     t.create(
         "edi_location_xref",
-        json!({ "partner_id": partner, "qualifier": "92", "code": "0007", "address_id": dc07 }),
+        json!({ "company_id": c.id, "partner_id": partner, "qualifier": "92", "code": "0007", "address_id": dc07 }),
     )
     .await;
     Fixture {
@@ -1396,7 +1396,7 @@ async fn automation_drafts_approves_and_invoices_with_a_tax_group_and_a_credit()
     // in without a person, and approved.
     t.create(
         "edi_item_xref",
-        json!({ "partner_id": f.partner, "item_id": f.knife, "kind": "seller_item",
+        json!({ "company_id": f.c.id, "partner_id": f.partner, "item_id": f.knife, "kind": "seller_item",
                 "value": "CH-3310" }),
     )
     .await;
@@ -1480,5 +1480,346 @@ async fn automation_drafts_approves_and_invoices_with_a_tax_group_and_a_credit()
         bytes.contains("IT1*2*1*CA*31.2**UK*10400001000202"),
         "{bytes}"
     );
+    t.stop().await;
+}
+
+// ------------------------------------------------------- review of phase 1
+
+/// Review 7 (grid-builder): an ST01 the database's check refused failed
+/// the whole receive, leaving the bytes stored with no 997.
+#[tokio::test]
+async fn review7_a_set_without_its_type_is_rejected_not_an_error() {
+    let t = TestApp::start().await;
+    let _f = setup(&t).await;
+    let broken = PO850.replace("ST*850*0001~", "ST**0001~");
+    let (status, body) = receive(&t, &t.admin, &broken).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["messages"][0]["state"], "rejected", "{body}");
+    assert_eq!(body["acknowledgements"][0]["message"], "997", "{body}");
+    assert_eq!(
+        t.count("SELECT count(*) FROM edi_interchange WHERE state = 'stored'")
+            .await,
+        0
+    );
+    t.stop().await;
+}
+
+/// Review 7 (grid-builder): an interchange whose TA1 rejects it had its
+/// order proposed and its sets accepted by a 997.
+#[tokio::test]
+async fn review7_an_interchange_the_ta1_rejects_proposes_no_order() {
+    let t = TestApp::start().await;
+    let _f = setup(&t).await;
+    let broken = PO850.replace("IEA*1*000000417", "IEA*1*000000999");
+    let got = received(&t, &broken).await;
+    assert_eq!(got["messages"][0]["state"], "rejected", "{got}");
+    let acks: Vec<&str> = got["acknowledgements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| a["message"].as_str())
+        .collect();
+    assert_eq!(acks, ["TA1"], "{got}");
+    let ta1 = content(
+        &t,
+        &json!({ "id": got["acknowledgements"][0]["interchange_id"] }),
+    )
+    .await;
+    assert!(ta1.contains("*R*001~"), "{ta1}");
+    t.stop().await;
+}
+
+/// Review 7 (grid-builder): a preview of edi.receive kept the bytes.
+#[tokio::test]
+async fn review7_a_preview_of_receive_keeps_nothing() {
+    let t = TestApp::start().await;
+    let _f = setup(&t).await;
+    let before = t.count("SELECT count(*) FROM edi_interchange").await;
+    let (status, body) = t
+        .post(
+            &t.admin,
+            "/api/commands/edi.receive?preview=true",
+            json!({ "content": renumbered(PO850, 9001) }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        t.count("SELECT count(*) FROM edi_interchange").await,
+        before
+    );
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn one_control_number_is_worked_on_once_even_at_once() {
+    let t = TestApp::start().await;
+    let _f = setup(&t).await;
+    let other = PO850.replace("BEG*00*SA*4500018842", "BEG*00*SA*4500018845");
+    let (a, b) = tokio::join!(received(&t, PO850), received(&t, &other));
+    let mut states = vec![
+        a["messages"][0]["state"].as_str().unwrap().to_owned(),
+        b["messages"][0]["state"].as_str().unwrap().to_owned(),
+    ];
+    states.sort();
+    assert_eq!(states, ["proposed", "rejected"]);
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn what_a_partner_echoes_never_breaks_its_answer() {
+    let t = TestApp::start().await;
+    let _f = setup(&t).await;
+    // Bars between elements, so a star in the group's number is data to
+    // the partner and a separator to us; and a usage that is none.
+    let odd = PO850
+        .replace('*', "|")
+        .replace("|0|P|>~", "|0|#|>~")
+        .replace("|417|X|004010~", "|4*17|X|004010~")
+        .replace("GE|1|417~", "GE|1|4*17~");
+    let got = received(&t, &odd).await;
+    assert_eq!(got["messages"][0]["state"], "test", "{got}");
+    let ack = content(
+        &t,
+        &json!({ "id": got["acknowledgements"][0]["interchange_id"] }),
+    )
+    .await;
+    assert!(ack.contains("AK1*PO*417~"), "{ack}");
+    assert!(ack.contains("*0*P*>~"), "{ack}");
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn a_999_names_the_version_of_the_group_it_answers() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    sqlx::query("UPDATE edi_partner SET ack_form = '999', version = '005010' WHERE id = $1::uuid")
+        .bind(&f.partner)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let got = received(&t, PO850).await;
+    let ack = content(
+        &t,
+        &json!({ "id": got["acknowledgements"][0]["interchange_id"] }),
+    )
+    .await;
+    assert!(
+        ack.contains("AK1*PO*417*004010~AK2*850*0001*004010~"),
+        "{ack}"
+    );
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn an_answer_to_a_set_with_many_errors_stays_within_its_reader() {
+    let t = TestApp::start().await;
+    let _f = setup(&t).await;
+    let bad: String = (0..300).map(|_| "DTM*038*20261399~\n").collect();
+    let broken = PO850
+        .replace("DTM*037*20261201~\n", &format!("DTM*037*20261201~\n{bad}"))
+        .replace("SE*28*0001", "SE*328*0001");
+    let got = received(&t, &broken).await;
+    assert_eq!(got["messages"][0]["state"], "rejected", "{got}");
+    let ack = content(
+        &t,
+        &json!({ "id": got["acknowledgements"][0]["interchange_id"] }),
+    )
+    .await;
+    assert_eq!(
+        ack.matches("AK3*").count(),
+        100,
+        "at most 100 segment errors a set"
+    );
+    assert!(ack.contains("AK5*R*5~"), "{ack}");
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn a_free_line_and_a_quantity_too_large_are_for_a_person() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let odd = renumbered(
+        &PO850
+            .replace("PO1*1*48*EA*12.5*", "PO1*1*48*EA*0*")
+            .replace("PO1*2*120*CA*31.2*", "PO1*2*123456789012345678*CA*31.2*"),
+        620,
+    );
+    let got = received(&t, &odd).await;
+    let p = proposal(&t, &t.admin, &got["messages"][0]).await;
+    assert_eq!(findings(&p, "price_zero")[0]["line"], "1", "{p}");
+    assert_eq!(findings(&p, "quantity_too_large")[0]["line"], "2", "{p}");
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "edi.draft",
+            json!({ "message_id": got["messages"][0]["id"], "items": knife_choice(&f),
+                    "prices": { "1": "0" }, "accept_notes": true }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Line 2 orders more"),
+        "{body}"
+    );
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn partners_and_their_numbers_stay_inside_their_company() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    // A second company trades with the same partner, under the same ids.
+    let other = t.company("OT", "USD").await;
+    let warehouse = t
+        .create(
+            "warehouse",
+            json!({ "company_id": other.id, "code": "W", "name": "W" }),
+        )
+        .await;
+    t.create(
+        "edi_partner",
+        json!({
+            "company_id": other.id, "code": "NM", "name": "Northfield Mercantile",
+            "customer_id": f.customer, "warehouse_id": warehouse, "usage": "production",
+            "our_qualifier": "ZZ", "our_id": "CEDARHOLLOW",
+            "their_qualifier": "ZZ", "their_id": "NORTHFIELDMERC",
+        }),
+    )
+    .await;
+    let lost = received(&t, PO850).await;
+    assert_eq!(lost["interchange"]["state"], "unroutable", "{lost}");
+    assert!(
+        lost["interchange"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("company_id")
+    );
+    let (status, got) = t
+        .command(
+            &t.admin,
+            "edi.receive",
+            json!({ "content": renumbered(PO850, 640), "company_id": other.id }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{got}");
+    assert_eq!(got["interchange"]["company_id"], json!(other.id));
+    // The first company's numbers name nothing in the second.
+    let p = proposal(&t, &t.admin, &got["messages"][0]).await;
+    assert_eq!(findings(&p, "item_unknown").len(), 3, "{p}");
+    assert_eq!(findings(&p, "ship_to_unknown").len(), 1, "{p}");
+
+    // A caller of the second company cannot receive the first's
+    // interchange, whether it came before or not, and learns nothing.
+    let outsider = t
+        .user_with_role("outsider@example.com", &["edi:receive"], &other.id)
+        .await;
+    let theirs = renumbered(PO850, 641);
+    let (fresh, _) = t
+        .command(
+            &outsider,
+            "edi.receive",
+            json!({ "content": theirs, "company_id": f.c.id }),
+        )
+        .await;
+    received_for(&t, &theirs, &f.c.id).await;
+    let (again, _) = t
+        .command(
+            &outsider,
+            "edi.receive",
+            json!({ "content": theirs, "company_id": f.c.id }),
+        )
+        .await;
+    assert_eq!(
+        (fresh, again),
+        (StatusCode::FORBIDDEN, StatusCode::FORBIDDEN)
+    );
+    // Bytes nobody could route are each caller's own.
+    let garbage = "not an interchange at all";
+    let (_, mine) = t
+        .command(&t.admin, "edi.receive", json!({ "content": garbage }))
+        .await;
+    let (_, yours) = t
+        .command(&outsider, "edi.receive", json!({ "content": garbage }))
+        .await;
+    assert_eq!(yours["repeat"], false, "{yours}");
+    assert_ne!(yours["interchange"]["id"], mine["interchange"]["id"]);
+    t.stop().await;
+}
+
+async fn received_for(t: &TestApp, content: &str, company: &str) -> Value {
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "edi.receive",
+            json!({ "content": content, "company_id": company }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body
+}
+
+#[tokio::test]
+async fn old_unread_files_can_be_purged_and_nothing_else() {
+    let t = TestApp::start().await;
+    let _f = setup(&t).await;
+    received(&t, "not an interchange").await;
+    received(&t, PO850).await;
+    sqlx::query("UPDATE edi_interchange SET created_at = now() - interval '90 days'")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let (status, _) = t
+        .command(
+            &t.admin,
+            "edi_interchange.purge",
+            json!({ "older_than_days": 7 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let purged = run(
+        &t,
+        "edi_interchange.purge",
+        json!({ "older_than_days": 30 }),
+    )
+    .await;
+    assert_eq!(purged["deleted"], 1);
+    assert_eq!(
+        t.count("SELECT count(*) FROM edi_interchange WHERE partner_id IS NOT NULL")
+            .await,
+        2,
+        "the order and its 997 stay"
+    );
+    // Outside the command, the guard still holds.
+    assert!(
+        sqlx::query("DELETE FROM edi_interchange")
+            .execute(&t.pool)
+            .await
+            .is_err()
+    );
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn one_order_number_is_drafted_once_even_at_once() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let a = received(&t, &renumbered(PO850, 660)).await;
+    let b = received(&t, &renumbered(PO850, 661)).await;
+    let draft = |m: &Value| {
+        json!({ "message_id": m["messages"][0]["id"], "items": knife_choice(&f),
+                "accept_notes": true })
+    };
+    let (one, two) = tokio::join!(
+        t.command(&t.admin, "edi.draft", draft(&a)),
+        t.command(&t.admin, "edi.draft", draft(&b)),
+    );
+    let mut statuses = [one.0, two.0];
+    statuses.sort();
+    assert_eq!(statuses[0], StatusCode::OK, "{} {}", one.1, two.1);
+    assert_ne!(statuses[1], StatusCode::OK, "{} {}", one.1, two.1);
+    assert_eq!(t.count("SELECT count(*) FROM edi_document").await, 1);
     t.stop().await;
 }

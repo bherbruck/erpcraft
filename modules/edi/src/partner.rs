@@ -53,21 +53,24 @@ pub async fn load(conn: &mut PgConnection, id: Uuid) -> Result<Partner> {
 /// identifiers are the interchange's sender and receiver. A partner of the
 /// interchange's usage is preferred (a test interchange to the test
 /// partner), else the other. With `company_id`, only that company's.
+/// Partners of more than one company with those identifiers are no
+/// answer: the interchange must say which company it is for. The error is
+/// the sentence kept on an unroutable interchange.
 pub async fn route(
     conn: &mut PgConnection,
     isa: &Isa,
     company_id: Option<Uuid>,
-) -> Result<Option<Partner>> {
+) -> Result<std::result::Result<Partner, String>> {
     let usage = if isa.usage == 'P' {
         "production"
     } else {
         "test"
     };
-    Ok(sqlx::query_as(&format!(
+    let found: Vec<Partner> = sqlx::query_as(&format!(
         "SELECT {COLUMNS} FROM edi_partner
          WHERE active AND syntax = 'x12' AND their_qualifier = $1 AND their_id = $2
            AND our_qualifier = $3 AND our_id = $4 AND ($5::uuid IS NULL OR company_id = $5)
-         ORDER BY (usage = $6) DESC, created_at LIMIT 1"
+         ORDER BY (usage = $6) DESC, created_at"
     ))
     .bind(&isa.sender_qualifier)
     .bind(&isa.sender_id)
@@ -75,8 +78,25 @@ pub async fn route(
     .bind(&isa.receiver_id)
     .bind(company_id)
     .bind(usage)
-    .fetch_optional(&mut *conn)
-    .await?)
+    .fetch_all(&mut *conn)
+    .await?;
+    let route = format!(
+        "{}/{} to {}/{}",
+        isa.sender_qualifier, isa.sender_id, isa.receiver_qualifier, isa.receiver_id
+    );
+    let mut companies: Vec<Uuid> = found.iter().map(|p| p.company_id).collect();
+    companies.sort();
+    companies.dedup();
+    if companies.len() > 1 {
+        return Ok(Err(format!(
+            "partners of more than one company are from {route}: receive it with the \
+             company_id it is for"
+        )));
+    }
+    Ok(found
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("no active partner is from {route}")))
 }
 
 fn byte(text: &str, what: &str) -> Result<u8> {
