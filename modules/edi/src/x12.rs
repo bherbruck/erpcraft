@@ -24,6 +24,7 @@ use crate::segment::{
 
 pub mod ack;
 pub mod po850;
+pub mod ta1;
 
 /// Interchanges in one file. A mailbox pickup may hold several.
 pub const MAX_INTERCHANGES: usize = 100;
@@ -447,8 +448,89 @@ pub fn write(
     bodies: &[Vec<Segment>],
 ) -> Result<String, EdiError> {
     let d = envelope.delimiters;
+    let mut out = isa(envelope)?;
+    if envelope.group_control > 999_999_999 {
+        return Err(EdiError::at(
+            0,
+            "a control number has more than nine digits",
+        ));
+    }
+    write_segment(
+        &mut out,
+        &Segment::new(
+            "GS",
+            &[
+                envelope.functional_id.as_str(),
+                &envelope.group_sender,
+                &envelope.group_receiver,
+                &envelope.at.format("%Y%m%d").to_string(),
+                &envelope.at.format("%H%M").to_string(),
+                &envelope.group_control.to_string(),
+                "X",
+                &envelope.group_version,
+            ],
+        ),
+        &d,
+    )?;
+    for (i, body) in bodies.iter().enumerate() {
+        let control = format!("{:04}", i + 1);
+        write_segment(&mut out, &Segment::new("ST", &[set_id, &control]), &d)?;
+        for segment in body {
+            write_segment(&mut out, segment, &d)?;
+        }
+        let count = (body.len() + 2).to_string();
+        write_segment(&mut out, &Segment::new("SE", &[&count, &control]), &d)?;
+    }
+    write_segment(
+        &mut out,
+        &Segment::new(
+            "GE",
+            &[bodies.len().to_string(), envelope.group_control.to_string()],
+        ),
+        &d,
+    )?;
+    write_segment(
+        &mut out,
+        &Segment::new(
+            "IEA",
+            &[
+                "1".to_owned(),
+                format!("{:09}", envelope.interchange_control),
+            ],
+        ),
+        &d,
+    )?;
+    Ok(out)
+}
+
+/// Writes an interchange that holds TA1 segments and no group: the
+/// acknowledgement of an interchange. The group fields of the envelope
+/// are not used.
+pub fn write_ta1s(envelope: &Envelope, ta1s: &[Segment]) -> Result<String, EdiError> {
+    let d = envelope.delimiters;
+    let mut out = isa(envelope)?;
+    for segment in ta1s {
+        write_segment(&mut out, segment, &d)?;
+    }
+    write_segment(
+        &mut out,
+        &Segment::new(
+            "IEA",
+            &[
+                "0".to_owned(),
+                format!("{:09}", envelope.interchange_control),
+            ],
+        ),
+        &d,
+    )?;
+    Ok(out)
+}
+
+/// The ISA of an envelope, 106 characters, terminator included.
+fn isa(envelope: &Envelope) -> Result<String, EdiError> {
+    let d = envelope.delimiters;
     d.check(0)?;
-    if envelope.interchange_control > 999_999_999 || envelope.group_control > 999_999_999 {
+    if envelope.interchange_control > 999_999_999 {
         return Err(EdiError::at(
             0,
             "a control number has more than nine digits",
@@ -498,53 +580,9 @@ pub fn write(
         out.push_str(field);
     }
     out.push(d.terminator as char);
-    debug_assert_eq!(out.len(), ISA_LEN);
-
-    write_segment(
-        &mut out,
-        &Segment::new(
-            "GS",
-            &[
-                envelope.functional_id.as_str(),
-                &envelope.group_sender,
-                &envelope.group_receiver,
-                &envelope.at.format("%Y%m%d").to_string(),
-                &envelope.at.format("%H%M").to_string(),
-                &envelope.group_control.to_string(),
-                "X",
-                &envelope.group_version,
-            ],
-        ),
-        &d,
-    )?;
-    for (i, body) in bodies.iter().enumerate() {
-        let control = format!("{:04}", i + 1);
-        write_segment(&mut out, &Segment::new("ST", &[set_id, &control]), &d)?;
-        for segment in body {
-            write_segment(&mut out, segment, &d)?;
-        }
-        let count = (body.len() + 2).to_string();
-        write_segment(&mut out, &Segment::new("SE", &[&count, &control]), &d)?;
+    if out.len() != ISA_LEN {
+        return Err(EdiError::at(0, "the ISA did not come to 106 characters"));
     }
-    write_segment(
-        &mut out,
-        &Segment::new(
-            "GE",
-            &[bodies.len().to_string(), envelope.group_control.to_string()],
-        ),
-        &d,
-    )?;
-    write_segment(
-        &mut out,
-        &Segment::new(
-            "IEA",
-            &[
-                "1".to_owned(),
-                format!("{:09}", envelope.interchange_control),
-            ],
-        ),
-        &d,
-    )?;
     Ok(out)
 }
 

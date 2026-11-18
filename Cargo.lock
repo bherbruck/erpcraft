@@ -925,9 +925,19 @@ dependencies = [
 name = "erpcraft-edi"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "chrono",
+ "erpcraft-kernel",
+ "erpcraft-party",
  "rust_decimal",
+ "schemars",
  "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1177,6 +1187,7 @@ dependencies = [
  "erpcraft-auth",
  "erpcraft-banking",
  "erpcraft-db",
+ "erpcraft-edi",
  "erpcraft-einvoice",
  "erpcraft-gl",
  "erpcraft-inventory",

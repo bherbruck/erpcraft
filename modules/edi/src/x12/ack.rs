@@ -133,6 +133,14 @@ pub struct SetAck {
     pub segments: Vec<SegmentError>,
 }
 
+/// Which acknowledgement a partner expects: the 997, or from version
+/// 005010 the 999, which names the version it answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AckForm {
+    Ack997,
+    Ack999 { version: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionalAck {
     /// AK101: the functional identifier of the group answered (`PO`).
@@ -223,17 +231,34 @@ impl FunctionalAck {
     /// separators are those it will be written with: a copy of bad data
     /// must not contain one.
     pub fn body(&self, d: &Delimiters) -> Vec<Segment> {
+        self.body_as(d, &AckForm::Ack997)
+    }
+
+    /// The body in either form. The 999 says the same as the 997 with
+    /// other tags for the set's errors (IK3, IK4, IK5), and names the
+    /// version of the group it answers in AK1 and AK2. The codes this
+    /// crate raises mean the same in both.
+    pub fn body_as(&self, d: &Delimiters, form: &AckForm) -> Vec<Segment> {
+        let (ak3, ak4, ak5) = match form {
+            AckForm::Ack997 => ("AK3", "AK4", "AK5"),
+            AckForm::Ack999 { .. } => ("IK3", "IK4", "IK5"),
+        };
+        let version = match form {
+            AckForm::Ack997 => None,
+            AckForm::Ack999 { version } => Some(version.as_str()),
+        };
         let codes =
             |codes: &[u8]| -> Vec<Element> { codes.iter().map(|c| el(c.to_string())).collect() };
-        let mut out = vec![Segment::new(
-            "AK1",
-            &[&self.functional_id, &self.group_control],
-        )];
+        let mut ak1 = vec![self.functional_id.as_str(), &self.group_control];
+        ak1.extend(version);
+        let mut out = vec![Segment::new("AK1", &ak1)];
         for set in &self.sets {
-            out.push(Segment::new("AK2", &[&set.id, &set.control]));
+            let mut ak2 = vec![set.id.as_str(), &set.control];
+            ak2.extend(version);
+            out.push(Segment::new("AK2", &ak2));
             for segment in &set.segments {
                 out.push(Segment::new(
-                    "AK3",
+                    ak3,
                     &[
                         segment.tag.clone(),
                         segment.position.to_string(),
@@ -257,7 +282,7 @@ impl FunctionalAck {
                         .take(BAD_VALUE_LEN)
                         .collect();
                     out.push(segment_of(
-                        "AK4",
+                        ak4,
                         vec![
                             position,
                             el(""),
@@ -267,9 +292,9 @@ impl FunctionalAck {
                     ));
                 }
             }
-            let mut ak5 = vec![el(set.status.code())];
-            ak5.extend(codes(&set.codes));
-            out.push(segment_of("AK5", ak5));
+            let mut ak5_elements = vec![el(set.status.code())];
+            ak5_elements.extend(codes(&set.codes));
+            out.push(segment_of(ak5, ak5_elements));
         }
         let mut ak9 = vec![
             el(self.status.code()),
@@ -282,12 +307,20 @@ impl FunctionalAck {
         out
     }
 
-    /// Reads a 997 a partner sent: which group it answers, and what
-    /// became of each set in it.
+    /// Reads a 997 or 999 a partner sent: which group it answers, and
+    /// what became of each set in it. A 999's context segments (CTX) are
+    /// read past: they repeat what the error names.
     pub fn read(set: &TransactionSet) -> Result<Self, EdiError> {
-        if set.id != "997" {
-            return Err(EdiError::at(0, "the transaction set is not a 997"));
-        }
+        let nine = match set.id.as_str() {
+            "997" => false,
+            "999" => true,
+            _ => return Err(EdiError::at(0, "the transaction set is not a 997 or a 999")),
+        };
+        let (ak3, ak4, ak5) = if nine {
+            ("IK3", "IK4", "IK5")
+        } else {
+            ("AK3", "AK4", "AK5")
+        };
         let number = |s: &Segment, n: usize| s.get(n).parse::<usize>().ok();
         let code_list = |s: &Segment, from: usize| -> Vec<u8> {
             (from..from + 5)
@@ -297,9 +330,27 @@ impl FunctionalAck {
         let mut ack: Option<FunctionalAck> = None;
         let mut closed = false;
         for segment in &set.segments {
-            let bad = |what: &str| EdiError::at(segment.offset, format!("the 997 {what}"));
-            match (segment.tag.as_str(), ack.as_mut()) {
+            let bad = |what: &str| {
+                EdiError::at(
+                    segment.offset,
+                    format!("the {} {what}", if nine { "999" } else { "997" }),
+                )
+            };
+            let tag = segment.tag.as_str();
+            let tag = if tag == ak3 {
+                "AK3"
+            } else if tag == ak4 {
+                "AK4"
+            } else if tag == ak5 {
+                "AK5"
+            } else if (tag == "AK3" || tag == "AK4" || tag == "AK5") && nine {
+                "unexpected"
+            } else {
+                tag
+            };
+            match (tag, ack.as_mut()) {
                 ("ST" | "SE", _) => {}
+                ("CTX", Some(_)) if nine && !closed => {}
                 ("AK1", None) => {
                     ack = Some(FunctionalAck {
                         functional_id: segment.get(1).to_owned(),
@@ -375,7 +426,57 @@ impl FunctionalAck {
         }
         match ack {
             Some(ack) if closed => Ok(ack),
-            _ => Err(EdiError::at(0, "the 997 has no AK1 or no AK9")),
+            _ => Err(EdiError::at(0, "the acknowledgement has no AK1 or no AK9")),
         }
     }
+}
+
+/// What an acknowledgement says about a set, in sentences: for a person
+/// reading a rejection, sent or received. Only the codes this crate raises
+/// have words; any other is given by its number.
+pub fn describe(set: &SetAck) -> Vec<String> {
+    let mut out = Vec::new();
+    for code in &set.codes {
+        let what = match code {
+            1 => "is not a kind of transaction set the receiver reads".to_owned(),
+            2 => "has no trailer (SE)".to_owned(),
+            3 => "has a control number in its trailer that does not match its header".to_owned(),
+            4 => "has a segment count in its trailer that is not the number of its segments"
+                .to_owned(),
+            5 => "has segments in error".to_owned(),
+            other => format!("has error code {other}"),
+        };
+        out.push(format!("Set {} {} {what}.", set.id, set.control));
+    }
+    for segment in &set.segments {
+        let what = match segment.code {
+            Some(SEGMENT_UNEXPECTED) => "is where it is not allowed".to_owned(),
+            Some(SEGMENT_MISSING) => "is missing".to_owned(),
+            Some(SEGMENT_HAS_ELEMENT_ERRORS) | None => "has errors".to_owned(),
+            Some(other) => format!("has error code {other}"),
+        };
+        out.push(format!(
+            "Segment {} at position {} {what}.",
+            segment.tag, segment.position
+        ));
+        for element in &segment.elements {
+            let what = match element.code {
+                ELEMENT_MISSING => "is missing",
+                2 => "is missing although the element paired with it is there",
+                ELEMENT_INVALID_CHARACTER => "holds a character that does not belong there",
+                ELEMENT_INVALID_DATE => "is not a date",
+                _ => "is in error",
+            };
+            let value = if element.value.is_empty() {
+                String::new()
+            } else {
+                format!(" ('{}')", element.value)
+            };
+            out.push(format!(
+                "Element {} of {} {what}{value} (code {}).",
+                element.position, segment.tag, element.code
+            ));
+        }
+    }
+    out
 }

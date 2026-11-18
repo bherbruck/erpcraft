@@ -2,14 +2,10 @@
 
 Electronic data interchange: ANSI X12 and UN/EDIFACT read and written by the ERP itself, so that a company trades orders, ship notices and invoices with its partners without a value-added network or a translation service in between.
 
-What is built today is the format layer, a spike:
+What is built today (PLAN.md phase 1):
 
-- one tokenizer for both syntaxes, which takes the separators from the file (the ISA of X12, the UNA of EDIFACT);
-- X12 interchanges, functional groups and transaction sets, read and written;
-- the 850 purchase order as a typed structure;
-- the 997 functional acknowledgement, built for what was received and read back;
-- EDIFACT interchanges and messages, read (an ORDERS in the tests);
-- GS1 check digits and the SSCC of a carton.
+- the format layer: one tokenizer for both syntaxes, which takes the separators from the file (the ISA of X12, the UNA of EDIFACT); X12 interchanges, functional groups and transaction sets, read and written; the 850 purchase order as a typed structure; the 997 and the 999 functional acknowledgements, built for what was received and read back; the TA1 for an interchange; a sentence per segment (`explain`); EDIFACT interchanges and messages, read (an ORDERS in the tests); GS1 check digits and the SSCC of a carton;
+- the module (`edi`): trading partners and their numbers for items, units and places as entities; the log of every interchange with its bytes, stored before it is read and never changed; `edi.receive` (store, read, route, acknowledge), `edi.proposal`, `edi.draft` (a sales order through the normal document code), `edi.dismiss`, `edi.explain`, `edi_interchange.content` and `.mark_sent`; the policy points `edi.auto_draft` and `edi_order.duplicate`.
 
 ARCHITECTURE.md, "Electronic data interchange (EDI)", says what the module becomes. [PLAN.md](PLAN.md) is the order it is built in.
 
@@ -132,4 +128,14 @@ The RustCrypto `rsa` crate was not chosen for private-key operations: its timing
 
 Not checked by anything yet: a real partner's file. Before phase 1 is called done, read sample files from at least two partners' public guides through `x12::read` and `po850::read` by hand; do not commit them.
 
-A fuzzer is not set up (phase 1 adds `cargo-fuzz` targets). The mutation test is the cheap stand-in.
+## Fuzzing
+
+`fuzz/` holds two `cargo-fuzz` targets: `x12_read` (any bytes through the X12 reader, the 850 reader, the acknowledgement built for them and its writer) and `edifact_read`. They are not run in CI, and the fuzz crate is outside the workspace. To run one (it needs a nightly toolchain):
+
+```
+cargo install cargo-fuzz
+cd modules/edi/fuzz
+cargo +nightly fuzz run x12_read -- -max_len=65536 -max_total_time=600
+```
+
+Seed the corpus with `tests/fixtures/`. A crash is a bug in the reader: add the input it found to the mutation tests (`tests/spike.rs`, `tests/acknowledgements.rs`), which every build runs as the cheap stand-in, and fix it there.

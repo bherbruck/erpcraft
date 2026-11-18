@@ -886,6 +886,8 @@ async fn policy_points_are_described_for_interfaces_and_agents() {
             "bank_statement.amount_difference",
             CUSTOMER_INACTIVE,
             "document.send",
+            "edi.auto_draft",
+            "edi_order.duplicate",
             "fx.rate_differs",
             "payment.discount_tax",
             "payment.late_discount",

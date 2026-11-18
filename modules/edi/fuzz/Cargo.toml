@@ -1,0 +1,32 @@
+# Fuzz targets for the format layer. Not part of the workspace and not run
+# in CI: see "Fuzzing" in ../README.md.
+[package]
+name = "erpcraft-edi-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+erpcraft-edi = { path = ".." }
+
+# Kept out of the repository's workspace.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "x12_read"
+path = "fuzz_targets/x12_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "edifact_read"
+path = "fuzz_targets/edifact_read.rs"
+test = false
+doc = false
+bench = false

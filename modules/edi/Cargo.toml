@@ -6,9 +6,21 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# The spike is the format layer only: no database, no kernel, no network.
-# PLAN.md says what each later phase adds.
+# The format layer (`segment`, `x12`, `edifact`, `gs1`, `explain`) uses
+# only chrono, rust_decimal and serde, so it can be fuzzed and tested
+# without a database. The rest is the module: the kernel, the log and the
+# commands.
 [dependencies]
 chrono.workspace = true
 rust_decimal.workspace = true
 serde.workspace = true
+erpcraft-kernel.workspace = true
+erpcraft-party.workspace = true
+base64.workspace = true
+schemars.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true

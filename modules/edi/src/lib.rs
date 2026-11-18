@@ -2,26 +2,42 @@
 //! by the ERP itself, with no value-added network and no translator
 //! between the company and its trading partner.
 //!
-//! This crate is the first step: the format layer. It reads and writes
-//! the two syntaxes and knows nothing of the database, the kernel or the
-//! network.
+//! Two layers:
 //!
-//! - [`segment`]: the one tokenizer both syntaxes share, its limits, and
-//!   the writer.
-//! - [`x12`]: X12 interchanges, groups and transaction sets; the 850
-//!   purchase order as a typed structure ([`x12::po850`]); the 997
-//!   functional acknowledgement, built and read ([`x12::ack`]).
-//! - [`edifact`]: EDIFACT interchanges and messages.
-//! - [`gs1`]: check digits and the SSCC of a carton.
+//! - **The format layer**, free of the database and the kernel, so it can
+//!   be fuzzed and tested alone: [`segment`] (the one tokenizer both
+//!   syntaxes share, its limits, and the writer), [`x12`] (interchanges,
+//!   groups and sets; the 850 as a typed order; the 997 and 999; the
+//!   TA1), [`edifact`], [`gs1`] (check digits and the SSCC), and
+//!   [`explain`] (a sentence per segment).
+//! - **The module**: trading partners and cross-references as entities;
+//!   the log of every interchange with its bytes ([`store`]); control
+//!   numbers ([`control`]); receiving ([`inbound`]); proposals
+//!   ([`proposal`]) and drafts ([`draft`]) of sales orders.
 //!
 //! ARCHITECTURE.md ("Electronic data interchange") says what the module
-//! becomes, and PLAN.md in this directory the order it is built in.
-//! README.md names the sources and what was verified against them.
+//! is, PLAN.md in this directory the order it is built in, and README.md
+//! the sources and what was verified against them.
+
+use std::sync::Arc;
+
+use erpcraft_kernel::{DynCommand, EntityMeta, Migration, Module, PolicyPoint, command};
 
 pub mod edifact;
+pub mod explain;
 pub mod gs1;
 pub mod segment;
 pub mod x12;
+
+pub mod commands;
+pub mod control;
+pub mod draft;
+pub mod entities;
+pub mod inbound;
+pub mod partner;
+pub mod policy;
+pub mod proposal;
+pub mod store;
 
 pub use segment::{Delimiters, EdiError, Element, Segment};
 
@@ -43,5 +59,49 @@ pub fn syntax_of(bytes: &[u8]) -> Option<Syntax> {
         b"ISA" => Some(Syntax::X12),
         b"UNA" | b"UNB" => Some(Syntax::Edifact),
         _ => None,
+    }
+}
+
+pub struct EdiModule;
+
+impl Module for EdiModule {
+    fn name(&self) -> &'static str {
+        "edi"
+    }
+
+    fn label(&self) -> String {
+        "EDI".into()
+    }
+
+    fn depends_on(&self) -> Vec<&'static str> {
+        vec!["sales", "stock", "party"]
+    }
+
+    fn migrations(&self) -> Vec<Migration> {
+        vec![Migration {
+            version: 1,
+            name: "edi",
+            sql: include_str!("../migrations/0001_edi.sql"),
+        }]
+    }
+
+    fn entities(&self) -> Vec<EntityMeta> {
+        entities::all()
+    }
+
+    fn policies(&self) -> Vec<PolicyPoint> {
+        policy::points()
+    }
+
+    fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
+        vec![
+            command(commands::Receive),
+            command(commands::Propose),
+            command(commands::Draft),
+            command(commands::Dismiss),
+            command(commands::Explain),
+            command(commands::ContentOf),
+            command(commands::MarkSent),
+        ]
     }
 }
