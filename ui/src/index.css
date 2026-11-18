@@ -3,6 +3,11 @@
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/inter";
 
+/* Classes are only in the app's source: editing a script or retaking a screenshot reloads nothing. */
+@source not "../scripts";
+@source not "../docs";
+@source not "../e2e-failures";
+
 /*
  * Design tokens. This file is the only place where raw colors, sizes and font
  * names appear; components use the Tailwind names mapped below.

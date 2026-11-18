@@ -3,6 +3,7 @@ import { AppShell } from "@/components/app-shell";
 import { NO_COMPANY, paths } from "@/lib/paths";
 import { ApprovalPage, ApprovalsPage } from "@/pages/approvals";
 import { CommandPage } from "@/pages/command-page";
+import { SmtpEditPage } from "@/pages/company-settings";
 import { CompanySetupPage } from "@/pages/company-setup";
 import { DocumentListPage } from "@/pages/document-list";
 import { DocumentPage } from "@/pages/document-page";
@@ -44,6 +45,7 @@ export const createAppRouter = () =>
             { path: "e/:entity/new", element: <EntityRecordPage /> },
             { path: "e/:entity/:id", element: <EntityRecordPage /> },
             { path: "e/:entity/:id/party", element: <PartyEditPage /> },
+            { path: "e/company/:id/email", element: <SmtpEditPage /> },
             { path: "d/:docType", element: <DocumentListPage /> },
             { path: "d/:docType/new", element: <DocumentPage /> },
             { path: "d/:docType/:id", element: <DocumentPage /> },

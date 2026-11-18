@@ -10,7 +10,7 @@
 // seed (a receipt about to be posted, a payment about to be made); the script
 // drafts it through the API and deletes it again afterwards.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { type Browser, launchBrowser } from "./browser";
@@ -609,6 +609,46 @@ const shots: Shot[] = [
     height: 600,
     path: async () =>
       `${base}/e/customer/${asString((await first("entity.list", { entity: "customer", filters: { code: "C001" } })).id)}`,
+  },
+  {
+    name: "58-company-logo-and-mail",
+    height: 1400,
+    path: async () => {
+      // The demo's logo, put in for the picture when the company has none.
+      const logo = asObject(await session.run("company_logo.get", { company_id: companyId }));
+      if (logo.data === null) {
+        const png = readFileSync(resolve(import.meta.dir, "fixtures", "logo.png")).toString("base64");
+        await session.run("company_logo.set", { company_id: companyId, data: png });
+        undo.push(() => session.run("company_logo.remove", { company_id: companyId }));
+      }
+      return `${base}/e/company/${companyId}`;
+    },
+  },
+  {
+    name: "59-send-preview",
+    path: async () =>
+      `${base}/d/sales_invoice/${asString((await first("document.list", { doc_type: "sales_invoice", company_id: companyId, status: "posted" })).id)}`,
+    act: async (browser) => {
+      await browser.click("Send by email");
+      await browser.fill("#mail-to", "ap@buyer.example");
+      await browser.click("Show the message", "[role=dialog] button");
+    },
+  },
+  {
+    name: "60-edi-review",
+    height: 1300,
+    path: async () => {
+      const control = String(Date.now()).slice(-9);
+      const content = readFileSync(resolve(import.meta.dir, "fixtures", "po850.x12"), "utf8")
+        .replaceAll("{{CONTROL}}", control)
+        .replaceAll("{{GROUP}}", control.slice(-4))
+        .replaceAll("{{ORDER}}", `4500${control.slice(-6)}`);
+      const got = asObject(await session.run("edi.receive", { content, company_id: companyId }));
+      const message = asObject(asArray(got.messages)[0]);
+      const id = asString(message.id);
+      undo.push(() => session.run("edi.dismiss", { message_id: id, reason: "Received for a screenshot." }));
+      return `${base}/e/edi_message/${id}`;
+    },
   },
   {
     name: "48-sales-order-discounts",

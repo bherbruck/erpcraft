@@ -1,4 +1,4 @@
-import { Plus, Trash2 } from "lucide-react";
+import { ChevronDown, FileText, Plus, Trash2 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
@@ -16,6 +16,12 @@ import { FormField } from "@/components/form-field";
 import { History } from "@/components/history";
 import { LINE_PICKERS } from "@/components/line-pickers";
 import { PageHeader, Tabs } from "@/components/page";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { UnsavedDialog, useUnsavedGuard } from "@/components/unsaved-guard";
 import { t } from "@/i18n/t";
@@ -45,6 +51,8 @@ import { useAsync } from "@/lib/use-async";
 import { AttachedRecords } from "./attached-records";
 import { ChildRecords } from "./child-records";
 import { CommandCreatePage } from "./command-create";
+import { LogoPanel, SmtpPanel } from "./company-settings";
+import { EDI_MESSAGE, EdiProposalPanel } from "./edi";
 import { NotFoundPage } from "./not-found";
 import { isParty, PartyPanel } from "./party-details";
 import { policyRuleForm } from "./policy-rule";
@@ -123,6 +131,9 @@ const CUSTOM_FORMS: Partial<Record<EntityName, FormCustomization>> = {
   policy_rule: policyRuleForm,
   print_template: printTemplateForm,
 };
+
+/** More reports than this take the record: they are offered in one menu. */
+const MAX_REPORT_BUTTONS = 3;
 
 function EntityForm({ entity, id, custom }: { entity: EntityMeta; id: string | null; custom?: FormCustomization }) {
   const { meta, reloadCompanies } = useApp();
@@ -466,17 +477,39 @@ function EntityForm({ entity, id, custom }: { entity: EntityMeta; id: string | n
             ) : dirty ? (
               <output className="text-sm text-muted-foreground">{t("record.unsaved")}</output>
             ) : null}
-            {original
-              ? recordReports.map((report) => (
-                  <Button key={report.name} asChild variant="outline">
-                    <Link
-                      to={`${paths.report(code, report.name)}?${new URLSearchParams({ [entity.name]: original.id })}`}
-                    >
-                      {reportTitle(report)}
-                    </Link>
+            {original && recordReports.length > MAX_REPORT_BUTTONS ? (
+              // Many reports take this record (a company): one menu instead of a wall of buttons.
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline">
+                    <FileText aria-hidden="true" />
+                    {t("record.reports", { count: recordReports.length })}
+                    <ChevronDown aria-hidden="true" />
                   </Button>
-                ))
-              : null}
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  {recordReports.map((report) => (
+                    <DropdownMenuItem key={report.name} asChild>
+                      <Link
+                        to={`${paths.report(code, report.name)}?${new URLSearchParams({ [entity.name]: original.id })}`}
+                      >
+                        {reportTitle(report)}
+                      </Link>
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : original ? (
+              recordReports.map((report) => (
+                <Button key={report.name} asChild variant="outline">
+                  <Link
+                    to={`${paths.report(code, report.name)}?${new URLSearchParams({ [entity.name]: original.id })}`}
+                  >
+                    {reportTitle(report)}
+                  </Link>
+                </Button>
+              ))
+            ) : null}
             {original
               ? startedHere.map(({ docType, field, without }) => (
                   <Button key={docType.name} asChild variant="outline">
@@ -527,7 +560,7 @@ function EntityForm({ entity, id, custom }: { entity: EntityMeta; id: string | n
       ) : null}
 
       {/* The form stays mounted under the History tab, so nothing typed is lost by looking. */}
-      <div hidden={tab !== "details"}>
+      <div hidden={tab !== "details"} className="space-y-8">
         <div className="flex flex-col gap-5 xl:flex-row xl:items-start">
           <form
             noValidate
@@ -655,7 +688,12 @@ function EntityForm({ entity, id, custom }: { entity: EntityMeta; id: string | n
           ) : null}
         </div>
         {original && entity.name === USER ? <UserRoles userId={original.id} /> : null}
+        {original && entity.name === COMPANY ? (
+          <LogoPanel companyId={original.id} companyName={typeof original.name === "string" ? original.name : ""} />
+        ) : null}
+        {original && entity.name === COMPANY ? <SmtpPanel companyId={original.id} /> : null}
         {original && isParty(entity.name) ? <PartyPanel partyType={entity.name} id={original.id} /> : null}
+        {original && entity.name === EDI_MESSAGE ? <EdiProposalPanel messageId={original.id} /> : null}
         {original ? <AttachedRecords entity={entity} id={original.id} /> : null}
         {original && children.length > 0
           ? children.map((child) => (

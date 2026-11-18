@@ -7,12 +7,14 @@ import { useParams } from "react-router";
 import { useApp } from "@/app/context";
 import { canRun, findCommand } from "@/lib/meta";
 import { BANK_IMPORT, BankImportPage } from "./bank-import";
+import { EDI_RECEIVE, EdiReceivePage } from "./edi";
 import { EINVOICE_IMPORT, EinvoiceImportPage } from "./einvoice-import";
 import { NotFoundPage } from "./not-found";
 
 const PAGES: Record<string, () => ReactNode> = {
   [BANK_IMPORT]: BankImportPage,
   [EINVOICE_IMPORT]: EinvoiceImportPage,
+  [EDI_RECEIVE]: EdiReceivePage,
 };
 
 /** Whether a command has a screen of its own. */

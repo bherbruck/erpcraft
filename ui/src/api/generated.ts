@@ -4,11 +4,11 @@
 /** Any JSON value. Used where a command's schema leaves a value open. */
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
-export type EntityName = "account" | "account_rule" | "asset" | "asset_class" | "asset_settings" | "bank_account_number" | "bank_csv_mapping" | "bom" | "bom_activity" | "bom_line" | "bom_operation" | "charge" | "company" | "cost_activity" | "cost_activity_rate" | "currency" | "customer" | "einvoice_import" | "exchange_rate" | "fiscal_period" | "gl_entry" | "item" | "payment_terms" | "payment_terms_instalment" | "payment_terms_step" | "policy_rule" | "print_template" | "purchasing_settings" | "reorder_rule" | "role" | "sales_settings" | "sso_provider" | "stock_entry" | "tax_code" | "tax_code_component" | "tax_rule" | "tax_settings" | "user" | "vendor" | "warehouse" | "webhook" | "work_center";
+export type EntityName = "account" | "account_rule" | "asset" | "asset_class" | "asset_settings" | "bank_account_number" | "bank_csv_mapping" | "bom" | "bom_activity" | "bom_line" | "bom_operation" | "charge" | "company" | "cost_activity" | "cost_activity_rate" | "currency" | "customer" | "dimension" | "dimension_rule" | "dimension_set" | "dimension_value" | "edi_interchange" | "edi_item_xref" | "edi_location_xref" | "edi_message" | "edi_partner" | "edi_uom_xref" | "einvoice_import" | "exchange_rate" | "fiscal_period" | "gl_entry" | "intercompany_document" | "intercompany_party" | "intercompany_rule" | "item" | "payment_terms" | "payment_terms_instalment" | "payment_terms_step" | "policy_rule" | "print_template" | "purchasing_settings" | "reorder_rule" | "role" | "sales_settings" | "site" | "sso_provider" | "stock_entry" | "tax_code" | "tax_code_component" | "tax_rule" | "tax_settings" | "user" | "vendor" | "warehouse" | "webhook" | "work_center";
 
-export type DocTypeName = "asset_disposal" | "bank_statement" | "depreciation_run" | "fx_revaluation" | "journal_entry" | "payment" | "production_order" | "purchase_order" | "purchase_receipt" | "purchase_return" | "sales_credit" | "sales_credit_note" | "sales_delivery" | "sales_invoice" | "sales_order" | "sales_return" | "stock_adjustment" | "stock_transfer" | "vendor_credit" | "vendor_credit_note" | "vendor_invoice" | "year_end_close";
+export type DocTypeName = "asset_disposal" | "bank_statement" | "depreciation_run" | "fx_revaluation" | "journal_entry" | "payment" | "production_order" | "purchase_order" | "purchase_receipt" | "purchase_return" | "sales_credit" | "sales_credit_note" | "sales_delivery" | "sales_invoice" | "sales_order" | "sales_return" | "stock_adjustment" | "stock_transfer" | "stock_transfer_receipt" | "vendor_credit" | "vendor_credit_note" | "vendor_invoice" | "year_end_close";
 
-export type ModuleName = "accounting" | "assets" | "auth" | "banking" | "einvoice" | "gl" | "inventory" | "kernel" | "manufacturing" | "open_items" | "party" | "payments" | "planning" | "printing" | "purchasing" | "sales" | "setup" | "stock" | "tax" | "webhooks";
+export type ModuleName = "accounting" | "assets" | "auth" | "banking" | "edi" | "einvoice" | "gl" | "intercompany" | "inventory" | "kernel" | "mail" | "manufacturing" | "open_items" | "party" | "payments" | "planning" | "printing" | "purchasing" | "sales" | "setup" | "stock" | "tax" | "webhooks";
 
 /**
  * Approve a pending request. Its requester never can. When as many distinct people as the rule asks have approved, the command runs, once, as the person who asked, with exactly the input they gave, and its result is kept on the request. If what it was about has changed since it was asked for, it does not run and the request is stale.
@@ -21,7 +21,7 @@ export type ApprovalApproveInput = {
 };
 
 /**
- * Let someone else decide, from one day to another, the approval requests the caller could decide: while away, for example. They decide in the caller's place and their decision says so; it counts as the caller's, so one person is never counted twice. They never decide a request of their own, and what they could decide in their own right they decide as themselves. Anyone may delegate their own approvals.
+ * Let someone else decide, from one day to another, the approval requests the caller could decide: while away, for example. They decide in the caller's place and their decision says so; it counts as the caller's, so one person is never counted twice. They never decide a request of their own, and what they could decide in their own right they decide as themselves. Takes approval:delegate (in any company), and a token limited to some permissions cannot delegate: what is handed on is the caller's whole standing as an approver. A delegation counts only while the caller still holds approval:delegate.
  */
 export type ApprovalDelegateInput = {
   /** Who decides in the caller's place. */
@@ -325,6 +325,32 @@ export type BankReconciliationInput = {
 };
 
 /**
+ * The company's logo, in base64, if it has one. Takes the right to read the company.
+ */
+export type CompanyLogoGetInput = {
+  /** The company. */
+  company_id: string;
+};
+
+/**
+ * Remove the company's logo from its letterhead. Takes the right to change the company.
+ */
+export type CompanyLogoRemoveInput = {
+  /** The company. */
+  company_id: string;
+};
+
+/**
+ * Upload the company's logo, printed on its letterhead: a PNG or JPEG of at most 512 KiB, in base64. It replaces the one before. Takes the right to change the company.
+ */
+export type CompanyLogoSetInput = {
+  /** The company. */
+  company_id: string;
+  /** The image, a PNG or JPEG of at most 512 KiB, in base64. */
+  data: string;
+};
+
+/**
  * Create a company ready to work, from a template (see setup.templates): the company, its chart of accounts, its fiscal years, a warehouse, the purchasing, sales and tax settings, its tax codes, and the account rules for inventory and stock variance. All of it or nothing. Takes the permission company:setup for all companies, and the right to create each kind of record it creates.
  */
 export type CompanySetupInput = {
@@ -453,6 +479,16 @@ export type DocumentListInput = {
 };
 
 /**
+ * The emails a document was sent with: to whom, the subject and text, who sent it, when it left, the Message-ID, and whether it is still waiting or was given up. Takes the right to read the document.
+ */
+export type DocumentMessagesInput = {
+  /** Document type. */
+  doc_type: string;
+  /** The document. */
+  id: string;
+};
+
+/**
  * The seller and the buyer of a document, with the address, VAT identifier, register entry and contact each has on record, as far as the caller may read them: the company and the customer for a sales document, the vendor and the company for a purchase document. Print templates receive it as `parties`. Takes the right to read the document.
  */
 export type DocumentPartiesInput = {
@@ -486,6 +522,47 @@ export type DocumentRenderInput = {
 };
 
 /**
+ * Render a document as a PDF on the server (PDF/A-3b, A4), from the same print template and with the same data as document.render: the letterhead, the parties, the lines, the totals. The layout follows the built-in stylesheet; styles a template sets on its own elements show in the HTML page only. The PDF is returned in base64.
+ */
+export type DocumentRenderPdfInput = {
+  /** Document type, for example `sales_invoice`. */
+  doc_type: string;
+  /** Id of the document. */
+  id: string;
+  /** The print template to use. Omit for the default of the document's
+   * company, else the default for all companies, else the built-in one. */
+  template_id?: string | null;
+};
+
+/**
+ * Send a document by email as a PDF (the one document.render_pdf makes), to the contact email its party has on record unless other addresses are given, through the company's SMTP server (smtp_settings.set). The message is recorded on the document and leaves once the command commits; the outbox tries again while the server cannot be reached. The company's policy document.send decides who may send what; by default a draft is not sent. Takes the right to read the document.
+ */
+export type DocumentSendInput = {
+  /** Addresses it is copied to. */
+  cc?: Array<string>;
+  /** Document type, such as `sales_invoice`. */
+  doc_type: string;
+  /** For a sales invoice or credit note: `pdf`, `zugferd` (a ZUGFeRD /
+   * Factur-X PDF), `xrechnung_ubl` or `xrechnung_cii` (the XML alone).
+   * The customer's choice in its party data when omitted. Other
+   * documents go as a PDF. */
+  format?: string | null;
+  /** The document. */
+  id: string;
+  /** The text of the message; a short note when omitted. */
+  message?: string | null;
+  /** The subject; the document's type, number and the company's name
+   * when omitted. */
+  subject?: string | null;
+  /** The print template the PDF is made with; the default when omitted. */
+  template_id?: string | null;
+  /** The addresses it goes to. The contact email the document's party
+   * has on record when omitted (the customer of a sales document, the
+   * vendor of a purchase document). */
+  to?: Array<string> | null;
+};
+
+/**
  * Change a document that is still editable.
  */
 export type DocumentUpdateInput = {
@@ -505,6 +582,91 @@ export type DocumentUpdateInput = {
 };
 
 /**
+ * The bytes of an interchange, base64-encoded and as text: what to hand to the partner while no transport carries it (a 997 to send, say), and the evidence of what was exchanged.
+ */
+export type EdiInterchangeContentInput = {
+  /** The interchange. */
+  id: string;
+};
+
+/**
+ * Record that an interchange ready to send was delivered to the partner by hand. Its messages count as sent from now, and the partner's acknowledgement is due within the partner's hours.
+ */
+export type EdiInterchangeMarkSentInput = {
+  /** The interchange. */
+  id: string;
+};
+
+/**
+ * End a message received that nobody will draft, saying why. It stays on record with its bytes.
+ */
+export type EdiDismissInput = {
+  /** A message received and not drafted. */
+  message_id: string;
+  /** Why nobody will draft it. */
+  reason: string;
+};
+
+/**
+ * Draft the sales order a partner's order proposes, as a person entering it would: under the caller's permissions and every check of a sales order, with the choices given for whatever the proposal could not resolve. Refused while a blocking finding stands, and while notes stand without accept_notes; an order number drafted before is decided by the policy edi_order.duplicate. The partner's order number, line ids, item numbers, units, quantities and prices are kept as sent, to be quoted back. The draft is approved like any sales order.
+ */
+export type EdiDraftInput = {
+  /** The proposal's notes were read: draft anyway. They are written into
+   * the draft's memo. */
+  accept_notes?: boolean;
+  /** The item for a line, by the partner's line id (PO101), where the
+   * proposal found none or the wrong one. */
+  items?: {
+    [key: string]: string;
+  } | null;
+  /** A proposed order. */
+  message_id: string;
+  /** The price per the partner's unit for a line, by its line id, where
+   * the order states none or one that does not divide into the item's
+   * unit. The partner is answered with it (855). */
+  prices?: {
+    [key: string]: string | number;
+  } | null;
+  /** Save the items and ship-to chosen as the partner's cross-references. */
+  remember?: boolean;
+  /** One of the customer's addresses, where the order's ship-to is not
+   * known here. */
+  shipping_address_id?: string | null;
+  /** The warehouse the goods leave from, where the partner names none. */
+  warehouse_id?: string | null;
+};
+
+/**
+ * Each segment of a message on record, or of a file given as text, with what it says in a sentence: for a person or an agent reading what a partner sent or what is about to be sent. Segments this module does not act on are shown by their tag.
+ */
+export type EdiExplainInput = {
+  /** Or a file as text: every segment of it. */
+  content?: string | null;
+  /** A message on record: its set is explained. */
+  message_id?: string | null;
+};
+
+/**
+ * What a partner's order would become, without changing anything: the order as it was sent, the customer, the ship-to and for each line the item, quantity and price in the item's own unit, each with how it was found; and the findings. A blocking finding (an item, unit or ship-to nobody knows, a price that does not divide into the item's unit, an order number drafted before, test traffic) stops edi.draft until a person decides; a note is for reading. Read with the caller's rights: a customer or item the caller may not read is left out.
+ */
+export type EdiProposalInput = {
+  /** A message received. */
+  message_id: string;
+};
+
+/**
+ * Receive an X12 interchange from a trading partner, as a transport or a person hands it over. The bytes are stored first and never change; then they are read, routed to the partner their envelope names, and each functional group is acknowledged by syntax alone (a 997 or 999, ready to fetch with edi_interchange.content; a TA1 where the interchange asks for one). Each order becomes a message proposed for drafting (edi.proposal, edi.draft). A file nobody is found for is kept as unroutable, one that cannot be read as unreadable. The same bytes again return the first result and do nothing twice.
+ */
+export type EdiReceiveInput = {
+  /** Only a partner of this company may receive it. */
+  company_id?: string | null;
+  /** The interchange as text. Give this or `content_base64`. */
+  content?: string | null;
+  /** The file, base64-encoded: for bytes that are not UTF-8. */
+  content_base64?: string | null;
+};
+
+/**
  * Write a posted sales invoice or sales credit note as an EN 16931 electronic invoice: XRechnung 3.0 by default, in UBL 2.1 or CII syntax. The XML is read back and checked against the rules this module checks (mandatory terms, line and VAT arithmetic, totals, XRechnung's German rules) before it is returned. Refused with what is missing and where to set it when the company's or the customer's party records (address, tax identifier, contact, electronic address) or a tax code's VAT category lack something the invoice needs. Takes einvoice:export and the right to read the document.
  */
 export type EinvoiceExportInput = {
@@ -518,6 +680,19 @@ export type EinvoiceExportInput = {
   /** `ubl` (UBL 2.1, the default) or `cii` (UN/CEFACT CII, the syntax
    * ZUGFeRD / Factur-X embed). */
   syntax?: "ubl" | "cii" | null;
+};
+
+/**
+ * Write a posted sales invoice or sales credit note as a ZUGFeRD / Factur-X invoice: the printed PDF (PDF/A-3b) with the invoice's CII XML inside as factur-x.xml and the Factur-X XMP metadata, profile EN 16931 by default or XRechnung. Refused, with what is missing, when the invoice does not hold, as einvoice.export would say. Takes einvoice:export and the right to read the document.
+ */
+export type EinvoiceExportPdfInput = {
+  /** What to send: `sales_invoice` or `sales_credit_note`. */
+  doc_type: "sales_invoice" | "sales_credit_note";
+  /** The posted document. */
+  id: string;
+  /** `en16931` (the default: Factur-X's EN 16931 profile) or `xrechnung`
+   * (for a German public buyer). */
+  profile?: "xrechnung" | "en16931" | null;
 };
 
 /**
@@ -696,16 +871,22 @@ export type FxRevaluationReverseInput = {
 };
 
 /**
- * The entries of one account of a company, optionally from one posting date to another (both included), ordered by posting date, in the accounting currency. Each entry has its debit, credit, memo, its posting and the document that caused it (id, type and number; left out, with the posting's memo, when the caller may not read that document), and the account's running balance after it (debit minus credit). opening_balance is the balance before `from`, closing_balance the balance after the last entry of the whole range, total the number of entries in the range. Page with limit (default 50, at most 500) and offset; the running balance is correct on every page.
+ * The entries of one account of a company, optionally from one posting date to another (both included), ordered by posting date, in the accounting currency. Each entry has its debit, credit, memo, its posting and the document that caused it (id, type and number; left out, with the posting's memo, when the caller may not read that document), and the account's running balance after it (debit minus credit). opening_balance is the balance before `from`, closing_balance the balance after the last entry of the whole range, total the number of entries in the range. Page with limit (default 50, at most 500) and offset; the running balance is correct on every page. Each entry shows its dimension values; dimension_value_ids lists only entries with those values (the opening balance counts the same ones), and group_by_dimension_id totals the range per value of that dimension in `groups`.
  */
 export type GlAccountLedgerInput = {
   /** The account whose entries to list. */
   account_id: string;
   /** The company the account belongs to. */
   company_id: string;
+  /** List only entries with these dimension values: for each dimension
+   * among them, one of its values given. The opening balance counts the
+   * same entries. Empty or absent: all entries. */
+  dimension_value_ids?: Array<string>;
   /** First posting date to list. Entries before it make up the opening
    * balance. Defaults to the beginning. */
   from?: string | null;
+  /** Total the range per value of this dimension, in `groups`. */
+  group_by_dimension_id?: string | null;
   /** Entries per page: 50 by default, 500 at most. */
   limit?: number | null;
   /** Entries to skip, for paging. */
@@ -715,35 +896,68 @@ export type GlAccountLedgerInput = {
 };
 
 /**
- * Balance sheet of a company as of a date (default: all entries), in its accounting currency: asset, liability and equity accounts with their balances and section totals, each shown as a positive number in the section's natural direction. net_income is income minus expenses up to that date, not yet closed to equity: the result of a year closed with a year-end close is inside the equity section; total_assets equals total_liabilities_and_equity, which includes net_income. Accounts with a zero balance are left out.
+ * Balance sheet of a company as of a date (default: all entries), in its accounting currency: asset, liability and equity accounts with their balances and section totals, each shown as a positive number in the section's natural direction. net_income is income minus expenses up to that date, not yet closed to equity: the result of a year closed with a year-end close is inside the equity section; total_assets equals total_liabilities_and_equity, which includes net_income. Accounts with a zero balance are left out. dimension_value_ids counts only entries with those values (for each dimension among them, one of its values); the ledger balances per posting, not per dimension, so a part of the company need not balance. group_by_dimension_id shows each account per value of that dimension, with the totals of each value in `groups`.
  */
 export type GlBalanceSheetInput = {
   /** Include entries up to and including this date. Defaults to all. */
   as_of?: string | null;
   /** The company to report on. */
   company_id: string;
+  /** Count only entries with these dimension values: for each dimension
+   * among them, one of its values given. Empty or absent: all entries. */
+  dimension_value_ids?: Array<string>;
+  /** Show each account per value of this dimension, with totals per value. */
+  group_by_dimension_id?: string | null;
 };
 
 /**
- * Income statement (profit and loss) of a company for the entries dated from `from` to `to`, both days included, in its accounting currency: income accounts and expense accounts with their amounts for the range as positive numbers, the total of each, and net_income, which is total income minus total expenses. Accounts with a zero amount are left out. The entries of a year-end close are not counted, so a closed year still shows its income and expenses.
+ * Income statement (profit and loss) of a company for the entries dated from `from` to `to`, both days included, in its accounting currency: income accounts and expense accounts with their amounts for the range as positive numbers, the total of each, and net_income, which is total income minus total expenses. Accounts with a zero amount are left out. The entries of a year-end close are not counted, so a closed year still shows its income and expenses. dimension_value_ids counts only entries with those values (for each dimension among them, one of its values), such as one site's; group_by_dimension_id shows each account per value of that dimension, with the totals of each value in `groups`.
  */
 export type GlIncomeStatementInput = {
   /** The company to report on. */
   company_id: string;
+  /** Count only entries with these dimension values: for each dimension
+   * among them, one of its values given. Empty or absent: all entries. */
+  dimension_value_ids?: Array<string>;
   /** First day of the range. */
   from: string;
+  /** Show each account per value of this dimension, with totals per value. */
+  group_by_dimension_id?: string | null;
   /** Last day of the range, included. */
   to: string;
 };
 
 /**
- * Total debit, credit and balance of every account of a company, in its accounting currency.
+ * Total debit, credit and balance of every account of a company, in its accounting currency. dimension_value_ids counts only entries with those values (for each dimension among them, one of its values); the ledger balances per posting, not per dimension, so the totals of a part of the company need not be equal. group_by_dimension_id gives an account a row per value of that dimension.
  */
 export type GlTrialBalanceInput = {
   /** Include entries up to and including this date. Defaults to all. */
   as_of?: string | null;
   /** The company to report on. */
   company_id: string;
+  /** Count only entries with these dimension values: for each dimension
+   * among them, one of its values given. Empty or absent: all entries. */
+  dimension_value_ids?: Array<string>;
+  /** Show each account per value of this dimension. */
+  group_by_dimension_id?: string | null;
+};
+
+/**
+ * What companies of this database owe each other, from both sides, as of a day: for each intercompany rule where the company sells or buys, and each currency, what the seller has open on the customer that stands for the buyer and what the buyer has open on the vendor that stands for the seller, with the difference, and each at the value its own books carry it in their accounting currency. Also the sales invoices whose vendor invoice is not posted yet, which usually explain a difference. A rule is left out unless the caller may read open items in both companies.
+ */
+export type IntercompanyBalancesInput = {
+  /** Count what was posted by this day. Today when omitted. */
+  as_of?: string | null;
+  /** Rules where this company sells or buys. */
+  company_id: string;
+};
+
+/**
+ * Draft in the buying company what another company of this database sold to it: for an approved sales order a purchase order, for a posted sales invoice a vendor invoice (against the mirrored purchase order where there is one), both of the vendor the intercompany rule names, as a draft for the buyer to check and post. Run by the outbox as the rule's user when the order is approved or the invoice posted; run it by hand to try again once a refusal is fixed. A document mirrored already returns its mirror.
+ */
+export type IntercompanyMirrorInput = {
+  /** The approved sales order or posted sales invoice to mirror. */
+  source_id: string;
 };
 
 /**
@@ -909,6 +1123,12 @@ export type PartySetInput = {
   party_type: "company" | "customer" | "vendor";
   /** The legal particulars, replacing what is on record. Left out: kept. */
   profile?: {
+    /** For a customer: how its invoices are sent by email: `pdf`,
+     * `zugferd` (a ZUGFeRD / Factur-X PDF), `xrechnung_ubl` or
+     * `xrechnung_cii` (the XML alone). Left out: a Leitweg-ID or an
+     * electronic address other than an email means XRechnung in UBL,
+     * anything else a PDF. */
+    einvoice_format?: string | null;
     /** For a customer: the reference it asks its invoices to quote; for a
      * German public buyer its Leitweg-ID. */
     invoice_reference?: string | null;
@@ -1425,6 +1645,44 @@ export type SetupTemplatesInput = {
 };
 
 /**
+ * The SMTP server a company sends documents through, without its password: whether one is on record is all that is said. Nothing when none is set. Takes the right to read the company.
+ */
+export type SmtpSettingsGetInput = {
+  /** The company. */
+  company_id: string;
+};
+
+/**
+ * Set the SMTP server a company sends documents through: host, port, security, the user and password to sign in with, and the address and name messages come from. The password is kept and never returned; leave it out to keep the one on record. Takes the right to change the company.
+ */
+export type SmtpSettingsSetInput = {
+  /** An address every message is copied to, unseen: the company's own
+   * record of what it sent. */
+  bcc?: string | null;
+  /** The company that sends. */
+  company_id: string;
+  /** The address messages come from. */
+  from_address: string;
+  /** The name they come from; the company's when omitted. */
+  from_name?: string | null;
+  /** The SMTP server, such as smtp.example.com. */
+  host: string;
+  /** The password. Kept, never returned. Left out: the one on record
+   * stays; empty: none. */
+  password?: string | null;
+  /** 587 for STARTTLS, 465 for TLS; the usual one for the security when
+   * omitted. */
+  port?: number | null;
+  /** Where replies go, when not to the sender. */
+  reply_to?: string | null;
+  /** `starttls` (the default), `tls`, or `none` for a relay on the same
+   * host or network, which takes no password. */
+  security?: string | null;
+  /** The user name to sign in with. */
+  username?: string | null;
+};
+
+/**
  * Undo a user's binding to an identity at a single sign-on provider. The next sign-in through a provider that names the domain of the user's email address binds them again. Tokens issued before stay valid. Takes the permission sso_provider:manage for all companies; for an administrator, an administrator. Recorded in auth.events.
  */
 export type SsoIdentityDeleteInput = {
@@ -1592,7 +1850,53 @@ export type StockAdjustmentReverseInput = {
 };
 
 /**
- * Post a draft stock transfer: each item leaves the source warehouse at its average cost there and arrives at the destination with exactly that value. The general ledger hears of it only where the account rules give the item a different inventory account in the two warehouses: then the value moves between them. Posting a transfer that is already posted returns it unchanged.
+ * Post a draft transfer receipt: what arrived leaves the transfer's transit warehouse at its average cost there and comes into the destination with exactly that value; the general ledger moves it from the account for `inventory_in_transit` to the destination's inventory account. No line may receive more than is still on its way. The transfer is received once everything has arrived. Posting a receipt that is already posted returns it unchanged.
+ */
+export type StockTransferReceiptPostInput = {
+  /** Stock adjustment id. */
+  id: string;
+};
+
+/**
+ * Cancel a posted transfer receipt by a second posting that takes the goods back from the destination into the transit warehouse at the value they came for; they are on their way again and the transfer is in transit. Refused if the goods have since left the destination.
+ */
+export type StockTransferReceiptReverseInput = {
+  /** Document id. */
+  id: string;
+  /** Memo of the reversing posting. Defaults to "Reversal of" and the
+   * document number. */
+  memo?: string | null;
+  /** Accounting date of the reversal. Defaults to the date of the
+   * original posting. */
+  posting_date?: string | null;
+};
+
+/**
+ * Close a shipped transfer whose goods will not all arrive: what is still on its way leaves the transit warehouse at its average cost there and is written off to the account for `transit_loss` (by item or warehouse, else the company's), and the transfer is closed: nothing more can be received on it, and it no longer counts as coming in. Asks the policy stock_transfer.close_short. Receipts already posted stay. A transfer closed short is not reversed.
+ */
+export type StockTransferCloseShortInput = {
+  /** Stock transfer id. */
+  id: string;
+  /** Memo of the posting. */
+  memo?: string | null;
+  /** Accounting date of the write-off. Today when omitted. */
+  posting_date?: string | null;
+};
+
+/**
+ * Goods on their way between warehouses: every line of a shipped transfer not received in full, with what was shipped, what has arrived and what is left, and what is left is worth at the transit warehouse's average cost of the item. Optionally for one destination warehouse or one item.
+ */
+export type StockTransferInTransitInput = {
+  /** The company to report on. */
+  company_id: string;
+  /** Only this item. */
+  item_id?: string | null;
+  /** Only goods going to this warehouse. */
+  to_warehouse_id?: string | null;
+};
+
+/**
+ * Post a draft stock transfer: each item leaves the source warehouse at its average cost there and arrives at the destination with exactly that value. The general ledger hears of it only where the account rules give the item a different inventory account in the two warehouses, or other dimension values (another site): then the value moves between them. A transfer that names a transit warehouse is shipped instead: the goods go into the transit warehouse, carried on the account for `inventory_in_transit`, and the transfer is in transit until transfer receipts (stock_transfer.receive) take them on to the destination. A transfer between two sites in one step asks the policy stock_transfer.between_sites. Posting a transfer that is already posted returns it unchanged.
  */
 export type StockTransferPostInput = {
   /** Stock adjustment id. */
@@ -1600,7 +1904,17 @@ export type StockTransferPostInput = {
 };
 
 /**
- * Cancel a posted stock transfer by a second posting that moves the stock back at the value it came for. Refused if the stock has since left the destination.
+ * Draft a transfer receipt for a shipped transfer, with a line for everything still on its way. Nothing is posted: change the quantities to what arrived and post the receipt with stock_transfer_receipt.post.
+ */
+export type StockTransferReceiveInput = {
+  /** Date of the receipt. Today when omitted. */
+  doc_date?: string | null;
+  /** Stock transfer id. */
+  id: string;
+};
+
+/**
+ * Cancel a posted stock transfer by a second posting that moves the stock back at the value it came for. Refused if the stock has since left the destination. A shipped transfer is taken back from the transit warehouse, only while none of it has been received: reverse its receipts first.
  */
 export type StockTransferReverseInput = {
   /** Document id. */
@@ -1614,7 +1928,7 @@ export type StockTransferReverseInput = {
 };
 
 /**
- * For each item and warehouse of a company: what is on hand, what open sales orders still have to deliver (committed), what released production orders still have to consume, what can still be promised (available), what open purchase orders and released production orders will bring in, and what is left once every open order is done (projected; below zero the item falls short); and apart from that, what draft purchase and production orders would bring in (planned). Quantities are in each item's unit. Takes the right to read stock entries, sales orders, purchase orders and production orders of the company.
+ * For each item and warehouse of a company: what is on hand, how much of it is reserved for particular orders and what is free of reservations, what open sales orders still have to deliver (committed), what released production orders still have to consume, what can still be promised (available), what open purchase orders and released production orders will bring in, what transfers shipped to it have on their way (in_transit; goods in a transit warehouse count there, not where they wait), and what is left once every open order is done (projected; below zero the item falls short); and apart from that, what draft purchase and production orders would bring in (planned). Quantities are in each item's unit. Takes the right to read stock entries, sales orders, purchase orders and production orders of the company.
  */
 export type StockAvailabilityInput = {
   /** The company whose stock and orders are counted. */
@@ -1629,14 +1943,19 @@ export type StockAvailabilityInput = {
 };
 
 /**
- * Quantity, value and average cost of every item on hand in a company's warehouses, in its accounting currency. Items with nothing on hand are left out. An item that the company's policy let go below zero is listed with a negative quantity and a negative value: the estimate its missing goods left stock at, so that the total still equals the inventory accounts. Values are left out for a caller from whom the value of stock entries is withheld.
+ * Quantity, value and average cost of every item on hand in a company's warehouses, in its accounting currency. Items with nothing on hand are left out. An item that the company's policy let go below zero is listed with a negative quantity and a negative value: the estimate its missing goods left stock at, so that the total still equals the inventory accounts. Values are left out for a caller from whom the value of stock entries is withheld. warehouse_id takes the locations inside the warehouse with it; site_id gives one site's warehouses; transit true gives the goods on their way between sites.
  */
 export type StockOnHandInput = {
   /** The company to report on. */
   company_id: string;
   /** Only this item. */
   item_id?: string | null;
-  /** Only this warehouse. */
+  /** Only the warehouses of this site. */
+  site_id?: string | null;
+  /** Only warehouses that hold goods in transit (true), or none of them
+   * (false). */
+  transit?: boolean | null;
+  /** Only this warehouse and the locations inside it. */
   warehouse_id?: string | null;
 };
 
@@ -2056,6 +2375,10 @@ export type PostingView = {
       currency: string | null;
       /** Debit in the accounting currency. */
       debit: string | null;
+      /** The entry's dimension set, if it has dimensions. */
+      dimension_set_id: string | null;
+      /** Its values as DIMENSION:VALUE codes, such as `COSTCENTER:ASSY, SITE:OHIO`. */
+      dimensions: string | null;
       /** Accounting-currency units per unit of the transaction currency. */
       fx_rate: string | null;
       /** Entry id. */
@@ -2381,6 +2704,30 @@ export type Document = {
   version: number;
 };
 
+export type MessageView = {
+  attachment_name: string;
+  attachment_type: string;
+  attempts: number;
+  body: string;
+  cc_addresses: Array<string>;
+  created_at: string;
+  doc_type: string;
+  document_id: string;
+  /** `pdf`, `zugferd`, `xrechnung_ubl` or `xrechnung_cii`. */
+  format: string;
+  id: string;
+  last_error: string | null;
+  /** The Message-ID it left with. */
+  message_id: string;
+  sent_at: string | null;
+  sent_by: string;
+  sent_by_name: string | null;
+  /** `queued`, `sent` or `failed`. */
+  status: string;
+  subject: string;
+  to_addresses: Array<string>;
+};
+
 export type PartyView = {
   additional_street: string | null;
   /** For a customer: the reference it asks invoices to quote. */
@@ -2403,7 +2750,108 @@ export type PartyView = {
   vat_id: string | null;
 };
 
+export type ExplainedSegment = {
+  /** For a message, the position in its set (the ST is 1), as an
+   * acknowledgement names it; for a file, the place in the file. */
+  position: number;
+  /** What it says, in a sentence. */
+  says: string;
+  tag: string;
+  /** The segment as it stands in the file. */
+  text: string;
+};
+
+export type CustomerRef = {
+  code: string;
+  id: string;
+  name: string;
+};
+
+export type Severity = "blocking" | "note";
+
 export type Finding = {
+  /** What kind of finding, for a program: `item_unknown`, `unit_unknown`,
+   * `price_does_not_divide`, `ship_to_unknown`, `duplicate_order`, ... */
+  code: string;
+  /** The partner's line id, when it is about a line. */
+  line: string | null;
+  message: string;
+  severity: Severity;
+};
+
+export type ProposedLine = {
+  description: string | null;
+  /** How the item was found: `gtin 040000100010`, `seller_item CH-1001`,
+   * `chosen`. */
+  how_matched: string | null;
+  item_code: string | null;
+  item_id: string | null;
+  item_name: string | null;
+  /** PO101: the partner's line id, echoed in every answer. */
+  line_id: string;
+  partner_price: string | null;
+  partner_qty: string | null;
+  partner_uom: string;
+  /** The item numbers as sent: `[{qualifier, value}]`. */
+  product_ids: Json;
+  /** In the item's own unit, as the sales order will carry them. */
+  qty: string | null;
+  unit_price: string | null;
+  /** How many of the item's own unit one of the partner's is. */
+  units_per: string | null;
+  /** The item's own unit. */
+  uom: string | null;
+};
+
+export type PartnerRef = {
+  code: string;
+  id: string;
+  name: string;
+};
+
+export type ShipTo = {
+  /** One of the customer's addresses; none for the customer's default. */
+  address_id: string | null;
+  /** `location` (by a location cross-reference), `chosen`, `default`
+   * (the order names no place), or `unknown`. */
+  how: string;
+  /** The ship-to as the order names it: role, name, qualifier and code. */
+  sent: Json;
+};
+
+export type MessageOut = {
+  ack_message_id: string | null;
+  /** The partner's order number. */
+  business_key: string | null;
+  control: string | null;
+  direction: string;
+  doc_type: string | null;
+  document_id: string | null;
+  /** `[{severity, code, line, message}]`. */
+  findings: Json;
+  group_control: string | null;
+  id: string;
+  /** None for a message to send that failed its checks. */
+  interchange_id: string | null;
+  message: string;
+  position: number | null;
+  state: string;
+};
+
+export type InterchangeOut = {
+  company_id: string | null;
+  control: string | null;
+  direction: string;
+  error: string | null;
+  id: string;
+  partner_id: string | null;
+  sha256: string;
+  size: number;
+  state: string;
+  usage: string | null;
+};
+
+export type EinvoiceExportFinding = {
   /** A fatal rule makes the invoice invalid; the others are advice. */
   fatal: boolean;
   message: string;
@@ -2412,6 +2860,14 @@ export type Finding = {
 };
 
 export type Syntax = "ubl" | "cii";
+
+export type EinvoiceExportPdfFinding = {
+  /** A fatal rule makes the invoice invalid; the others are advice. */
+  fatal: boolean;
+  message: string;
+  /** The rule's identifier, as the standard or XRechnung names it. */
+  rule: string;
+};
 
 export type Candidate = {
   code: string | null;
@@ -2426,6 +2882,14 @@ export type DraftTotals = {
   gross: string;
   net: string;
   tax: string;
+};
+
+export type EinvoiceReadFinding = {
+  /** A fatal rule makes the invoice invalid; the others are advice. */
+  fatal: boolean;
+  message: string;
+  /** The rule's identifier, as the standard or XRechnung names it. */
+  rule: string;
 };
 
 export type AllowanceCharge = {
@@ -2636,6 +3100,8 @@ export type AccountLedgerRow = {
   balance: string;
   credit: string;
   debit: string;
+  /** The entry's dimension values as DIMENSION:VALUE codes. */
+  dimensions: string | null;
   document_id: string | null;
   document_number: string | null;
   document_type: string | null;
@@ -2648,17 +3114,52 @@ export type AccountLedgerRow = {
   posting_memo: string | null;
 };
 
+export type AccountLedgerGroup = {
+  /** Debit minus credit over the range. */
+  balance: string;
+  credit: string;
+  debit: string;
+  dimension_value_code: string | null;
+  dimension_value_id: string | null;
+  dimension_value_name: string | null;
+  entries: number;
+};
+
 export type ReportRow = {
   account_id: string;
   /** Positive in the natural direction of the section. */
   balance: string;
   code: string;
+  dimension_value_code: string | null;
+  /** With `group_by_dimension_id`: the value of that dimension this row
+   * is for; null for entries without one. */
+  dimension_value_id: string | null;
+  dimension_value_name: string | null;
   name: string;
 };
 
 export type Section = {
   rows: Array<ReportRow>;
   total: string;
+};
+
+export type BalanceSheetGroup = {
+  dimension_value_code: string | null;
+  dimension_value_id: string | null;
+  dimension_value_name: string | null;
+  net_income: string;
+  total_assets: string;
+  total_equity: string;
+  total_liabilities: string;
+};
+
+export type IncomeStatementGroup = {
+  dimension_value_code: string | null;
+  dimension_value_id: string | null;
+  dimension_value_name: string | null;
+  net_income: string;
+  total_expenses: string;
+  total_income: string;
 };
 
 export type TrialBalanceRow = {
@@ -2669,7 +3170,47 @@ export type TrialBalanceRow = {
   code: string;
   credit: string;
   debit: string;
+  dimension_value_code: string | null;
+  /** With `group_by_dimension_id`: the value of that dimension this row
+   * is for; null for entries without one, and for an account without
+   * entries. */
+  dimension_value_id: string | null;
+  dimension_value_name: string | null;
   name: string;
+};
+
+export type BalanceRow = {
+  buyer_code: string;
+  buyer_company_id: string;
+  buyer_currency: string;
+  /** What the buyer has open on the seller's vendor, in `currency`. */
+  buyer_payable: string;
+  /** The payable at the value the buyer carries it, in the buyer's
+   * accounting currency. */
+  buyer_value: string;
+  currency: string;
+  /** Receivable less payable: zero when both books agree. */
+  difference: string;
+  rule_id: string;
+  seller_code: string;
+  seller_company_id: string;
+  seller_currency: string;
+  /** What the seller has open on the buyer's customer, in `currency`. */
+  seller_receivable: string;
+  /** The receivable at the value the seller carries it, in the seller's
+   * accounting currency. */
+  seller_value: string;
+};
+
+export type Unmatched = {
+  company_id: string;
+  message: string | null;
+  mirror_id: string | null;
+  mirror_number: string | null;
+  mirror_status: string | null;
+  source_id: string;
+  source_number: string | null;
+  status: string;
 };
 
 export type Reach = "all" | "some" | "none";
@@ -3032,7 +3573,7 @@ export type PolicyDefault = {
   effect: Effect;
 };
 
-export type FactType = "text" | "bool" | "number";
+export type FactType = "text" | "bool" | "number" | "list";
 
 export type FactMeta = {
   /** The fact depends on when it is asked (days from today), not only on
@@ -3207,6 +3748,12 @@ export type ElectronicAddressRecord = {
 };
 
 export type Profile = {
+  /** For a customer: how its invoices are sent by email: `pdf`,
+   * `zugferd` (a ZUGFeRD / Factur-X PDF), `xrechnung_ubl` or
+   * `xrechnung_cii` (the XML alone). Left out: a Leitweg-ID or an
+   * electronic address other than an email means XRechnung in UBL,
+   * anything else a PDF. */
+  einvoice_format: string | null;
   /** For a customer: the reference it asks its invoices to quote; for a
    * German public buyer its Leitweg-ID. */
   invoice_reference: string | null;
@@ -3349,6 +3896,20 @@ export type TemplateInfo = {
   tax_codes: Array<string>;
 };
 
+export type Settings = {
+  bcc: string | null;
+  company_id: string;
+  from_address: string;
+  from_name: string | null;
+  /** Whether a password is on record. */
+  has_password: boolean;
+  host: string;
+  port: number;
+  reply_to: string | null;
+  security: string;
+  username: string | null;
+};
+
 export type Binding = {
   created_at: string;
   /** The user's email address here. */
@@ -3384,14 +3945,37 @@ export type ProviderView = {
   trusted_for_admins: boolean;
 };
 
+export type InTransitRow = {
+  from_warehouse_id: string;
+  item_code: string | null;
+  item_id: string;
+  /** Shipped and not received. */
+  qty_left: string;
+  qty_received: string;
+  qty_shipped: string;
+  shipped_on: string;
+  to_warehouse_id: string;
+  transfer_id: string;
+  transfer_number: string | null;
+  transit_warehouse_id: string;
+  /** What is left at the transit warehouse's average cost of the item:
+   * what it would arrive for now. */
+  value: string | null;
+};
+
 export type AvailabilityRow = {
   /** On hand less what is committed and needed: what can still be
    * promised from stock. */
   available: string;
   /** Still to be delivered on open sales orders. */
   committed: string;
+  /** On hand less what is reserved: what can be taken now without
+   * touching another order's reservation. */
+  free: string;
   /** Still to be made by released production orders. */
   in_production: string;
+  /** Shipped to this warehouse on transfers and not yet received. */
+  in_transit: string;
   /** Absent for a caller who may not read items. */
   item_code: string | null;
   item_id: string;
@@ -3406,9 +3990,13 @@ export type AvailabilityRow = {
    * in: not on order yet, and not in `projected`, but planned, so that
    * planning does not suggest it again. */
   planned: string;
-  /** Available plus what is on order and in production: what is left
+  /** Available plus what is on order, in production and in transit: what is left
    * once every open order is done. Below zero, the item falls short. */
   projected: string;
+  /** Of what is on hand, what is set aside for particular open sales
+   * order lines and released production orders (stock reservations).
+   * It is part of what is committed and needed, not on top of it. */
+  reserved: string;
   /** Absent for a caller who may not read warehouses. */
   warehouse_code: string | null;
   warehouse_id: string;
@@ -3423,6 +4011,9 @@ export type OnHandRow = {
   item_id: string;
   item_name: string | null;
   qty: string;
+  site_id: string | null;
+  /** Whether the warehouse holds goods in transit. */
+  transit: boolean;
   uom: string;
   /** Absent for a caller from whom the value of stock entries is withheld. */
   value: string | null;
@@ -3911,6 +4502,36 @@ export type BankReconciliationOutput = {
   unmatched_total: string;
 };
 
+export type CompanyLogoGetOutput = {
+  company_id: string;
+  /** `image/png` or `image/jpeg`; absent when the company has no logo. */
+  content_type: string | null;
+  /** The image in base64; absent when the company has no logo. */
+  data: string | null;
+  /** Its size in bytes. */
+  size: number | null;
+};
+
+export type CompanyLogoRemoveOutput = {
+  company_id: string;
+  /** `image/png` or `image/jpeg`; absent when the company has no logo. */
+  content_type: string | null;
+  /** The image in base64; absent when the company has no logo. */
+  data: string | null;
+  /** Its size in bytes. */
+  size: number | null;
+};
+
+export type CompanyLogoSetOutput = {
+  company_id: string;
+  /** `image/png` or `image/jpeg`; absent when the company has no logo. */
+  content_type: string | null;
+  /** The image in base64; absent when the company has no logo. */
+  data: string | null;
+  /** Its size in bytes. */
+  size: number | null;
+};
+
 export type CompanySetupOutput = {
   /** How many accounts were created. */
   accounts: number;
@@ -4053,6 +4674,11 @@ export type DocumentListOutput = {
   total: number;
 };
 
+export type DocumentMessagesOutput = {
+  /** The messages the document was sent with, the latest first. */
+  items: Array<MessageView>;
+};
+
 export type DocumentPartiesOutput = {
   buyer: PartyView | null;
   seller: PartyView | null;
@@ -4077,6 +4703,40 @@ export type DocumentRenderOutput = {
   template_id: string | null;
   /** What the page is called: the document type and number. */
   title: string;
+};
+
+export type DocumentRenderPdfOutput = {
+  content_type: string;
+  /** The PDF, in base64: PDF/A-3b, A4, with its fonts embedded. */
+  data: string;
+  /** A file name for it: the document's type and number. */
+  filename: string;
+  template_id: string | null;
+  title: string;
+};
+
+export type DocumentSendOutput = {
+  attachment_name: string;
+  attachment_type: string;
+  attempts: number;
+  body: string;
+  cc_addresses: Array<string>;
+  created_at: string;
+  doc_type: string;
+  document_id: string;
+  /** `pdf`, `zugferd`, `xrechnung_ubl` or `xrechnung_cii`. */
+  format: string;
+  id: string;
+  last_error: string | null;
+  /** The Message-ID it left with. */
+  message_id: string;
+  sent_at: string | null;
+  sent_by: string;
+  sent_by_name: string | null;
+  /** `queued`, `sent` or `failed`. */
+  status: string;
+  subject: string;
+  to_addresses: Array<string>;
 };
 
 export type DocumentUpdateOutput = {
@@ -4107,12 +4767,109 @@ export type DocumentUpdateOutput = {
   version: number;
 };
 
+export type EdiInterchangeContentOutput = {
+  /** The bytes as text: UTF-8, else ISO 8859-1. */
+  content: string;
+  /** The bytes, base64-encoded. */
+  content_base64: string;
+  control: string | null;
+  direction: string;
+  id: string;
+  sha256: string;
+  size: number;
+};
+
+export type EdiInterchangeMarkSentOutput = {
+  company_id: string | null;
+  control: string | null;
+  direction: string;
+  error: string | null;
+  id: string;
+  partner_id: string | null;
+  sha256: string;
+  size: number;
+  state: string;
+  usage: string | null;
+};
+
+export type EdiDismissOutput = {
+  id: string;
+  reason: string;
+  state: string;
+};
+
+export type EdiDraftOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
+};
+
+export type EdiExplainOutput = {
+  segments: Array<ExplainedSegment>;
+};
+
+export type EdiProposalOutput = {
+  company_id: string;
+  /** The order's currency; the company's when it names none. */
+  currency: string | null;
+  /** Left out for a caller who may not read the customer. */
+  customer: CustomerRef | null;
+  /** The date the draft takes: the order's own. */
+  doc_date: string | null;
+  findings: Array<Finding>;
+  lines: Array<ProposedLine>;
+  message_id: string;
+  /** The order as it was sent, every value as read. */
+  order: Json;
+  partner: PartnerRef;
+  ship_to: ShipTo;
+  state: string;
+  /** The lines at the partner's prices, without tax. */
+  total_net: string | null;
+  warehouse_id: string | null;
+  /** No blocking finding stands. */
+  would_draft: boolean;
+};
+
+export type EdiReceiveOutput = {
+  /** What was made to answer it: a 997 or 999 per group, a TA1.
+   * Fetch their bytes with `edi_interchange.content`. */
+  acknowledgements: Array<MessageOut>;
+  interchange: InterchangeOut;
+  /** The sets of the interchange, one message each. */
+  messages: Array<MessageOut>;
+  /** These bytes were received before; this is what became of them then. */
+  repeat: boolean;
+};
+
 export type EinvoiceExportOutput = {
   /** A file name for the XML: the document number and the syntax. */
   filename: string;
   /** Advice: rules that do not make the invoice invalid, such as a
    * missing delivery date. */
-  findings: Array<Finding>;
+  findings: Array<EinvoiceExportFinding>;
   /** `application/xml`. */
   media_type: string;
   /** The specification identifier (BT-24) the invoice claims. */
@@ -4123,6 +4880,20 @@ export type EinvoiceExportOutput = {
   valid: boolean;
   /** The invoice itself. */
   xml: string;
+};
+
+export type EinvoiceExportPdfOutput = {
+  /** The Factur-X conformance level: `EN 16931` or `XRECHNUNG`. */
+  conformance_level: string;
+  content_type: string;
+  /** The PDF, in base64. */
+  data: string;
+  filename: string;
+  /** Advice on the embedded invoice that does not make it invalid. */
+  findings: Array<EinvoiceExportPdfFinding>;
+  /** The specification identifier (BT-24) the embedded invoice claims. */
+  specification: string;
+  title: string;
 };
 
 export type EinvoiceImportOutput = {
@@ -4166,7 +4937,7 @@ export type EinvoiceReadOutput = {
   differences: Array<string>;
   /** What the draft will come to, once the vendor is known. */
   draft: DraftTotals | null;
-  findings: Array<Finding>;
+  findings: Array<EinvoiceReadFinding>;
   /** The vendor invoice this invoice was imported as before. */
   imported_as: string | null;
   invoice: Invoice;
@@ -4267,6 +5038,8 @@ export type GlAccountLedgerOutput = {
   currency: string;
   entries: Array<AccountLedgerRow>;
   from: string | null;
+  /** With `group_by_dimension_id`: the range per value of that dimension. */
+  groups: Array<AccountLedgerGroup>;
   limit: number;
   name: string;
   offset: number;
@@ -4285,6 +5058,8 @@ export type GlBalanceSheetOutput = {
   currency: string;
   /** Balances are credit minus debit. */
   equity: Section;
+  /** With `group_by_dimension_id`: the totals of each value. */
+  groups: Array<BalanceSheetGroup>;
   /** Balances are credit minus debit. */
   liabilities: Section;
   /** Income minus expenses over all entries up to `as_of`, closing
@@ -4292,7 +5067,9 @@ export type GlBalanceSheetOutput = {
    * account. A closed year adds nothing to it. */
   net_income: string;
   total_assets: string;
-  /** Liabilities plus equity plus `net_income`. Equal to `total_assets`. */
+  /** Liabilities plus equity plus `net_income`. Equal to `total_assets`
+   * for the whole company; for some dimension values it need not be,
+   * since the ledger does not balance per dimension. */
   total_liabilities_and_equity: string;
 };
 
@@ -4302,6 +5079,8 @@ export type GlIncomeStatementOutput = {
   /** Balances are debit minus credit. */
   expenses: Section;
   from: string;
+  /** With `group_by_dimension_id`: the totals of each value. */
+  groups: Array<IncomeStatementGroup>;
   /** Balances are credit minus debit. */
   income: Section;
   /** Total income minus total expenses. */
@@ -4316,6 +5095,46 @@ export type GlTrialBalanceOutput = {
   rows: Array<TrialBalanceRow>;
   total_credit: string;
   total_debit: string;
+};
+
+export type IntercompanyBalancesOutput = {
+  as_of: string;
+  company_id: string;
+  /** Rules left out because the caller may not read open items in both
+   * companies. */
+  omitted: number;
+  rows: Array<BalanceRow>;
+  /** Sales invoices posted by then whose vendor invoice is not posted:
+   * what usually explains a difference. */
+  unmatched: Array<Unmatched>;
+};
+
+export type IntercompanyMirrorOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
 };
 
 export type JournalEntryPostOutput = {
@@ -5550,6 +6369,22 @@ export type SetupTemplatesOutput = {
   items: Array<TemplateInfo>;
 };
 
+export type SmtpSettingsGetOutput = Settings | null;
+
+export type SmtpSettingsSetOutput = {
+  bcc: string | null;
+  company_id: string;
+  from_address: string;
+  from_name: string | null;
+  /** Whether a password is on record. */
+  has_password: boolean;
+  host: string;
+  port: number;
+  reply_to: string | null;
+  security: string;
+  username: string | null;
+};
+
 export type SsoIdentityDeleteOutput = Json;
 
 export type SsoIdentityListOutput = {
@@ -5682,7 +6517,126 @@ export type StockAdjustmentReverseOutput = {
   version: number;
 };
 
+export type StockTransferReceiptPostOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
+};
+
+export type StockTransferReceiptReverseOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
+};
+
+export type StockTransferCloseShortOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
+};
+
+export type StockTransferInTransitOutput = {
+  company_id: string;
+  currency: string;
+  rows: Array<InTransitRow>;
+  total_value: string;
+};
+
 export type StockTransferPostOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
+};
+
+export type StockTransferReceiveOutput = {
   /** The content the document's type defines. See the fields and
    * collections of the type in `meta.describe`. */
   body: Json;
@@ -6176,6 +7130,9 @@ export interface CommandOutputs {
   "bank_statement.post": BankStatementPostOutput;
   "bank_statement.proposals": BankStatementProposalsOutput;
   "bank.reconciliation": BankReconciliationOutput;
+  "company_logo.get": CompanyLogoGetOutput;
+  "company_logo.remove": CompanyLogoRemoveOutput;
+  "company_logo.set": CompanyLogoSetOutput;
   "company.setup": CompanySetupOutput;
   "depreciation_run.post": DepreciationRunPostOutput;
   "depreciation_run.reverse": DepreciationRunReverseOutput;
@@ -6183,11 +7140,22 @@ export interface CommandOutputs {
   "document.delete": DocumentDeleteOutput;
   "document.get": DocumentGetOutput;
   "document.list": DocumentListOutput;
+  "document.messages": DocumentMessagesOutput;
   "document.parties": DocumentPartiesOutput;
   "document.refresh_summaries": DocumentRefreshSummariesOutput;
   "document.render": DocumentRenderOutput;
+  "document.render_pdf": DocumentRenderPdfOutput;
+  "document.send": DocumentSendOutput;
   "document.update": DocumentUpdateOutput;
+  "edi_interchange.content": EdiInterchangeContentOutput;
+  "edi_interchange.mark_sent": EdiInterchangeMarkSentOutput;
+  "edi.dismiss": EdiDismissOutput;
+  "edi.draft": EdiDraftOutput;
+  "edi.explain": EdiExplainOutput;
+  "edi.proposal": EdiProposalOutput;
+  "edi.receive": EdiReceiveOutput;
   "einvoice.export": EinvoiceExportOutput;
+  "einvoice.export_pdf": EinvoiceExportPdfOutput;
   "einvoice.import": EinvoiceImportOutput;
   "einvoice.read": EinvoiceReadOutput;
   "entity.create": EntityCreateOutput;
@@ -6203,6 +7171,8 @@ export interface CommandOutputs {
   "gl.balance_sheet": GlBalanceSheetOutput;
   "gl.income_statement": GlIncomeStatementOutput;
   "gl.trial_balance": GlTrialBalanceOutput;
+  "intercompany.balances": IntercompanyBalancesOutput;
+  "intercompany.mirror": IntercompanyMirrorOutput;
   "journal_entry.post": JournalEntryPostOutput;
   "journal_entry.reverse": JournalEntryReverseOutput;
   "meta.describe": MetaDescribeOutput;
@@ -6257,6 +7227,8 @@ export interface CommandOutputs {
   "sales_return.reverse": SalesReturnReverseOutput;
   "search.records": SearchRecordsOutput;
   "setup.templates": SetupTemplatesOutput;
+  "smtp_settings.get": SmtpSettingsGetOutput;
+  "smtp_settings.set": SmtpSettingsSetOutput;
   "sso_identity.delete": SsoIdentityDeleteOutput;
   "sso_identity.list": SsoIdentityListOutput;
   "sso_identity.set": SsoIdentitySetOutput;
@@ -6267,7 +7239,12 @@ export interface CommandOutputs {
   "sso_provider.update": SsoProviderUpdateOutput;
   "stock_adjustment.post": StockAdjustmentPostOutput;
   "stock_adjustment.reverse": StockAdjustmentReverseOutput;
+  "stock_transfer_receipt.post": StockTransferReceiptPostOutput;
+  "stock_transfer_receipt.reverse": StockTransferReceiptReverseOutput;
+  "stock_transfer.close_short": StockTransferCloseShortOutput;
+  "stock_transfer.in_transit": StockTransferInTransitOutput;
   "stock_transfer.post": StockTransferPostOutput;
+  "stock_transfer.receive": StockTransferReceiveOutput;
   "stock_transfer.reverse": StockTransferReverseOutput;
   "stock.availability": StockAvailabilityOutput;
   "stock.on_hand": StockOnHandOutput;
@@ -6326,6 +7303,9 @@ export interface CommandInputs {
   "bank_statement.post": BankStatementPostInput;
   "bank_statement.proposals": BankStatementProposalsInput;
   "bank.reconciliation": BankReconciliationInput;
+  "company_logo.get": CompanyLogoGetInput;
+  "company_logo.remove": CompanyLogoRemoveInput;
+  "company_logo.set": CompanyLogoSetInput;
   "company.setup": CompanySetupInput;
   "depreciation_run.post": DepreciationRunPostInput;
   "depreciation_run.reverse": DepreciationRunReverseInput;
@@ -6333,11 +7313,22 @@ export interface CommandInputs {
   "document.delete": DocumentDeleteInput;
   "document.get": DocumentGetInput;
   "document.list": DocumentListInput;
+  "document.messages": DocumentMessagesInput;
   "document.parties": DocumentPartiesInput;
   "document.refresh_summaries": DocumentRefreshSummariesInput;
   "document.render": DocumentRenderInput;
+  "document.render_pdf": DocumentRenderPdfInput;
+  "document.send": DocumentSendInput;
   "document.update": DocumentUpdateInput;
+  "edi_interchange.content": EdiInterchangeContentInput;
+  "edi_interchange.mark_sent": EdiInterchangeMarkSentInput;
+  "edi.dismiss": EdiDismissInput;
+  "edi.draft": EdiDraftInput;
+  "edi.explain": EdiExplainInput;
+  "edi.proposal": EdiProposalInput;
+  "edi.receive": EdiReceiveInput;
   "einvoice.export": EinvoiceExportInput;
+  "einvoice.export_pdf": EinvoiceExportPdfInput;
   "einvoice.import": EinvoiceImportInput;
   "einvoice.read": EinvoiceReadInput;
   "entity.create": EntityCreateInput;
@@ -6353,6 +7344,8 @@ export interface CommandInputs {
   "gl.balance_sheet": GlBalanceSheetInput;
   "gl.income_statement": GlIncomeStatementInput;
   "gl.trial_balance": GlTrialBalanceInput;
+  "intercompany.balances": IntercompanyBalancesInput;
+  "intercompany.mirror": IntercompanyMirrorInput;
   "journal_entry.post": JournalEntryPostInput;
   "journal_entry.reverse": JournalEntryReverseInput;
   "meta.describe": MetaDescribeInput;
@@ -6407,6 +7400,8 @@ export interface CommandInputs {
   "sales_return.reverse": SalesReturnReverseInput;
   "search.records": SearchRecordsInput;
   "setup.templates": SetupTemplatesInput;
+  "smtp_settings.get": SmtpSettingsGetInput;
+  "smtp_settings.set": SmtpSettingsSetInput;
   "sso_identity.delete": SsoIdentityDeleteInput;
   "sso_identity.list": SsoIdentityListInput;
   "sso_identity.set": SsoIdentitySetInput;
@@ -6417,7 +7412,12 @@ export interface CommandInputs {
   "sso_provider.update": SsoProviderUpdateInput;
   "stock_adjustment.post": StockAdjustmentPostInput;
   "stock_adjustment.reverse": StockAdjustmentReverseInput;
+  "stock_transfer_receipt.post": StockTransferReceiptPostInput;
+  "stock_transfer_receipt.reverse": StockTransferReceiptReverseInput;
+  "stock_transfer.close_short": StockTransferCloseShortInput;
+  "stock_transfer.in_transit": StockTransferInTransitInput;
   "stock_transfer.post": StockTransferPostInput;
+  "stock_transfer.receive": StockTransferReceiveInput;
   "stock_transfer.reverse": StockTransferReverseInput;
   "stock.availability": StockAvailabilityInput;
   "stock.on_hand": StockOnHandInput;
@@ -6452,4 +7452,4 @@ export interface CommandInputs {
 export type CommandName = keyof CommandInputs;
 
 /** Commands that only read. */
-export type ReadOnlyCommandName = "approval.delegations" | "approval.get" | "approval.list" | "asset.cost_lines" | "asset.register" | "asset.schedule" | "audit.history" | "audit.list" | "auth.events" | "bank_statement.proposals" | "bank.reconciliation" | "document.get" | "document.list" | "document.parties" | "document.render" | "einvoice.export" | "einvoice.read" | "entity.get" | "entity.list" | "gl.account_ledger" | "gl.balance_sheet" | "gl.income_statement" | "gl.trial_balance" | "meta.describe" | "open_item.aging" | "open_item.list" | "outbox.list" | "party.get" | "planning.suggestions" | "print_template.builtin" | "print_template.preview" | "purchase_order.awaiting_credit" | "sales_order.awaiting_credit" | "search.records" | "setup.templates" | "sso_identity.list" | "sso_provider.list" | "stock.availability" | "stock.on_hand" | "stock.reservations" | "tax.report" | "user.get" | "user.list" | "webhook.deliveries" | "work_center.load";
+export type ReadOnlyCommandName = "approval.delegations" | "approval.get" | "approval.list" | "asset.cost_lines" | "asset.register" | "asset.schedule" | "audit.history" | "audit.list" | "auth.events" | "bank_statement.proposals" | "bank.reconciliation" | "company_logo.get" | "document.get" | "document.list" | "document.messages" | "document.parties" | "document.render" | "document.render_pdf" | "edi_interchange.content" | "edi.explain" | "edi.proposal" | "einvoice.export" | "einvoice.export_pdf" | "einvoice.read" | "entity.get" | "entity.list" | "gl.account_ledger" | "gl.balance_sheet" | "gl.income_statement" | "gl.trial_balance" | "intercompany.balances" | "meta.describe" | "open_item.aging" | "open_item.list" | "outbox.list" | "party.get" | "planning.suggestions" | "print_template.builtin" | "print_template.preview" | "purchase_order.awaiting_credit" | "sales_order.awaiting_credit" | "search.records" | "setup.templates" | "smtp_settings.get" | "sso_identity.list" | "sso_provider.list" | "stock_transfer.in_transit" | "stock.availability" | "stock.on_hand" | "stock.reservations" | "tax.report" | "user.get" | "user.list" | "webhook.deliveries" | "work_center.load";

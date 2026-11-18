@@ -628,4 +628,88 @@ await setParty({
 });
 log("party data of the company, the customer and the vendor", "done");
 
+// ------------------------------------------------------------ mail
+
+// A mail server for the demo company, so documents offer "Send by email". The host does not exist:
+// a message sent from the demo is queued and then fails, which the Sent tab shows.
+if ((await session.run("smtp_settings.get", { company_id: company })) === null) {
+  await session.run("smtp_settings.set", {
+    company_id: company,
+    host: "smtp.example.test",
+    security: "none",
+    from_address: "accounts@ohio-widgets.example",
+    from_name: "Ohio Widgets accounts",
+  });
+  log("smtp_settings of the company", "created");
+}
+
+// ------------------------------------------------------------ EDI
+
+// A retailer that orders by X12 850: the partner, its customer with a distribution centre to ship
+// to, the items it orders and how its numbers and units map to ours. `scripts/fixtures/po850.x12`
+// is an order from it (the e2e run receives one).
+const retailer = await ensure("customer", { code: "NM" }, { name: "Northfield Mercantile" });
+await setParty({
+  party_type: "customer",
+  party_id: retailer,
+  addresses: [
+    {
+      kind: "billing",
+      is_default: true,
+      street: "PO Box 4410",
+      city: "Dayton",
+      region: "OH",
+      postcode: "45401",
+      country_code: "US",
+    },
+    {
+      kind: "shipping",
+      is_default: true,
+      attention: "DC 07",
+      street: "2200 Logistics Pkwy",
+      city: "Columbus",
+      region: "OH",
+      postcode: "43217",
+      country_code: "US",
+    },
+  ],
+});
+const hammer = await ensure("item", { code: "CH-1001" }, { name: "Claw hammer", uom: "ea" });
+const tape = await ensure("item", { code: "CH-2040" }, { name: "Tape measure", uom: "ea" });
+await ensure("item", { code: "CH-3310" }, { name: "Utility knife", uom: "ea" });
+const partner = await ensure(
+  "edi_partner",
+  { company_id: company, code: "NM" },
+  {
+    name: "Northfield Mercantile",
+    customer_id: retailer,
+    warehouse_id: warehouse,
+    usage: "production",
+    our_qualifier: "ZZ",
+    our_id: "CEDARHOLLOW",
+    their_qualifier: "ZZ",
+    their_id: "NORTHFIELDMERC",
+  },
+);
+await ensure("edi_uom_xref", { partner_uom: "EA" }, { uom: "ea" });
+await ensure("edi_item_xref", { item_id: hammer, kind: "gtin" }, { value: "040000100010" });
+await ensure(
+  "edi_item_xref",
+  { partner_id: partner, item_id: tape, kind: "gtin" },
+  { value: "10400001000202", partner_uom: "CA", units_per: "6" },
+);
+const dc07 = asArray(
+  asObject(await session.run("party.get", { party_type: "customer", party_id: retailer, address_kind: "shipping" }))
+    .addresses,
+)
+  .map(asObject)
+  .find((address) => address.street === "2200 Logistics Pkwy");
+if (dc07) {
+  await ensure(
+    "edi_location_xref",
+    { partner_id: partner, qualifier: "92", code: "0007" },
+    { address_id: asString(dc07.id) },
+  );
+}
+
 console.log(`\n${created} created, ${found} already there.`);

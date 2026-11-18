@@ -94,6 +94,32 @@ export async function sweepLeftovers(session: Session): Promise<void> {
     }
   }
 
+  // EDI orders an e2e run received and did not get to draft.
+  for (const message of await list(session, "entity.list", { entity: "edi_message", filters: { state: "proposed" } })) {
+    if (
+      isE2E(message.business_key) ||
+      (typeof message.business_key === "string" && message.business_key.startsWith("E2E"))
+    ) {
+      await count(`edi_message ${String(message.business_key)}`, () =>
+        session.run("edi.dismiss", { message_id: asString(message.id), reason: "Left by an e2e run that stopped." }),
+      );
+    }
+  }
+
+  // What the EDI checks teach the partner (the knife of the 850, chosen by hand and remembered):
+  // without this the next run's order would have nothing left to choose.
+  const knife = (await list(session, "entity.list", { entity: "item", filters: { code: "CH-3310" } }))[0];
+  if (knife) {
+    for (const xref of await list(session, "entity.list", {
+      entity: "edi_item_xref",
+      filters: { item_id: asString(knife.id) },
+    })) {
+      await count(`edi_item_xref for CH-3310`, () =>
+        session.run("entity.delete", { entity: "edi_item_xref", id: asString(xref.id) }),
+      );
+    }
+  }
+
   // Contacts the party checks add to the seed's customer.
   const customer = (await list(session, "entity.list", { entity: "customer", filters: { code: "C001" } }))[0];
   if (customer) {

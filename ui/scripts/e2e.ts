@@ -1400,6 +1400,110 @@ async function reportChecks(): Promise<void> {
   check("a report without a page of its own gets the generic one", (await textOf("tbody")).length > 0);
 }
 
+/** Printing and mail: the company's logo and mail server, a document's PDF, and sending it by email. */
+async function mailChecks(): Promise<void> {
+  const company = await first("company", { code: "OHIO" });
+  if (!company) throw new Error("no company OHIO; run `bun run seed` first");
+  const companyId = asString(company.id);
+  const before = asObject(await session.run("company_logo.get", { company_id: companyId }));
+  cleanup.push(async () => {
+    const data = before.data;
+    if (typeof data === "string") await session.run("company_logo.set", { company_id: companyId, data });
+    else await session.run("company_logo.remove", { company_id: companyId }).catch(() => null);
+  });
+
+  await open(`/c/OHIO/e/company/${companyId}`);
+  check("a company shows its logo and its email settings", (await textOf("main")).includes("Email settings"));
+  await browser.setFile("#logo-file", resolve(import.meta.dir, "fixtures", "logo.png"));
+  await browser.settle();
+  check(
+    "a logo is uploaded and shown as it prints",
+    (await browser.evaluate(
+      `document.querySelector('main img[alt^="The logo of"]')?.getAttribute("src")?.startsWith("data:image/png") === true`,
+    )) === true,
+  );
+
+  // The mail server: a page of its own; the password is written, never shown.
+  await browser.click("Edit email settings", "a");
+  check(
+    "email settings are edited on a page of their own",
+    (await browser.location()).endsWith(`/e/company/${companyId}/email`),
+  );
+  await browser.fill("#smtp-host", "smtp.example.test");
+  await browser.select("#smtp-security", "none");
+  await browser.fill("#smtp-from_address", "e2e@ohio-widgets.example");
+  await browser.key("s", CTRL);
+  await browser.settle();
+  const smtp = asObject(await session.run("smtp_settings.get", { company_id: companyId }));
+  check(
+    "Ctrl+S saves the email settings and returns to the company",
+    smtp.host === "smtp.example.test" && (await browser.location()).endsWith(`/e/company/${companyId}`),
+    JSON.stringify(smtp),
+  );
+
+  // A posted invoice: its PDF, and the message it would go out with.
+  const invoice = asObject(
+    asArray(
+      asObject(
+        await session.run("document.list", {
+          doc_type: "sales_invoice",
+          company_id: companyId,
+          status: "posted",
+          limit: 1,
+        }),
+      ).items,
+    )[0],
+  );
+  await open(`/c/OHIO/d/sales_invoice/${asString(invoice.id)}`);
+  await browser.click("PDF");
+  check("the PDF is made without an error", !(await textOf("main")).includes("could not be made"));
+  await browser.click("Send by email");
+  await browser.fill("#mail-to", "buyer@example.test");
+  await dialogClick("Show the message");
+  const preview = await textOf("[role=dialog]");
+  check(
+    "sending shows the message as it will go out before anything is sent",
+    preview.includes("buyer@example.test") && preview.includes(".pdf"),
+    preview.slice(0, 400),
+  );
+  await dialogClick("Back");
+  check("going back keeps what was typed", (await value("#mail-to")) === "buyer@example.test");
+  await dialogClick("Cancel");
+  await browser.click("Sent", "[role=tab]");
+  check("the Sent tab lists the messages, or says there are none", (await textOf("main")).length > 0);
+}
+
+/** EDI: an 850 received through its page, reviewed, an unknown item chosen, and drafted as a sales order. */
+async function ediChecks(): Promise<void> {
+  const control = String(Date.now()).slice(-9);
+  const file = fixture("po850.x12", { CONTROL: control, GROUP: control.slice(-4), ORDER: `E2E${stamp}` });
+  await open("/c/OHIO/e/edi_message");
+  await browser.click("Receive", "a");
+  check("the EDI messages lead to receiving a file", (await browser.location()) === "/c/OHIO/run/edi.receive");
+  await browser.setFile("#edi-file", file);
+  await browser.click("Receive");
+  const received = await textOf("main");
+  check("a received order is listed with its state", received.includes(`850 E2E${stamp}`), received.slice(0, 600));
+  await browser.click(`850 E2E${stamp}`, "a");
+  const review = await textOf("main");
+  check(
+    "the proposal says what could not be matched",
+    review.includes("Proposed sales order") && review.includes("Must be resolved") && review.includes("Line 3"),
+    review.slice(0, 800),
+  );
+  await pickInLookup('[aria-label="Our item for line 3"]', "CH-3310");
+  await browser.choose("Draft anyway");
+  await browser.click("Draft order");
+  const location = await browser.location();
+  check("drafting opens the new sales order", /\/d\/sales_order\/[0-9a-f-]{36}$/.test(location), location);
+  const orderId = location.split("/").pop() ?? "";
+  cleanup.push(() => session.run("document.delete", { doc_type: "sales_order", id: orderId }).catch(() => null));
+  // The knife was remembered for the partner; forget it so the next run chooses it again.
+  cleanup.push(() => sweepLeftovers(session));
+  const order = asObject(await session.run("document.get", { doc_type: "sales_order", id: orderId }));
+  check("the order has the three lines of the 850", asArray(asObject(order.body).lines).length === 3);
+}
+
 async function shellChecks(): Promise<void> {
   await open("/c/OHIO/d/journal_entry?status=posted");
   await browser.key("k", CTRL);
@@ -1483,6 +1587,8 @@ const groups: [string, () => Promise<void>][] = [
   ["invoices", invoiceChecks],
   ["policy rules", policyChecks],
   ["reports", reportChecks],
+  ["printing and mail", mailChecks],
+  ["edi", ediChecks],
   ["shell", shellChecks],
 ];
 const only = process.argv.slice(2);

@@ -25,7 +25,9 @@ import {
 import { paths } from "@/lib/paths";
 import { pageFromUrl, useUrlState } from "@/lib/url-state";
 import { useAsync } from "@/lib/use-async";
+import { hasCommandPage } from "./command-page";
 import { SETUP_COMMAND } from "./company-setup";
+import { EDI_MESSAGE, EDI_RECEIVE } from "./edi";
 import { NotFoundPage } from "./not-found";
 import { SSO_PROVIDER, SsoProviderListPage } from "./sso-providers";
 
@@ -109,6 +111,19 @@ function EntityList({ entity }: { entity: EntityMeta }) {
         <Link to={paths.setup(code)}>{t("setup.new_company")}</Link>
       </Button>
     ) : null;
+  // Commands with a screen of their own that make records of this list: receiving an EDI file makes
+  // the interchange and its messages, so both lists offer it.
+  const makers = meta.commands.filter(
+    (command) =>
+      hasCommandPage(command.name) &&
+      canRun(meta, command.name) &&
+      (command.resource === entity.name || (command.name === EDI_RECEIVE && entity.name === EDI_MESSAGE)),
+  );
+  const makerButtons = makers.map((command) => (
+    <Button key={command.name} asChild variant="outline">
+      <Link to={paths.run(code, command.name)}>{command.label}</Link>
+    </Button>
+  ));
   const newButton = canCreate ? (
     <Button asChild>
       <Link to={paths.entityNew(code, entity.name)}>
@@ -125,6 +140,7 @@ function EntityList({ entity }: { entity: EntityMeta }) {
         actions={
           <>
             {setupButton}
+            {makerButtons}
             {newButton}
           </>
         }

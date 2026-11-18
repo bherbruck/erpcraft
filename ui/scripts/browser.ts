@@ -20,6 +20,9 @@ const KEY_CODES: Record<string, number> = {
 
 export const CTRL = 2;
 
+/** How long a page may take to render before that counts as a failure. */
+const RENDER_PATIENCE = 90_000;
+
 export interface Browser {
   /** Messages of uncaught exceptions and console errors since the start. */
   errors: string[];
@@ -176,15 +179,18 @@ export async function launchBrowser(port: number): Promise<Browser> {
     // Settled means: no request of the page's is still waiting for its answer, the page has run
     // every task it had queued (renders, effects) and changed nothing while doing so, and nothing
     // on it says it is loading. Each of those is observed, not waited out. A fresh page from the
-    // development server can take several seconds to render at all; past 30 seconds that is an error.
-    const deadline = Date.now() + 30_000;
+    // development server can take several seconds to render at all, and much longer while the
+    // machine is busy compiling something else; past 90 seconds that is an error.
+    const deadline = Date.now() + RENDER_PATIENCE;
     let last = -1;
     let stable = 0;
     while (stable < 2) {
       if (Date.now() > deadline) {
         const rendered = await evaluate("document.getElementById('root')?.childElementCount > 0");
         if (rendered !== true)
-          throw new Error(`the page did not render within 30 seconds (${await evaluate("location.href")})`);
+          throw new Error(
+            `the page did not render within ${RENDER_PATIENCE / 1000} seconds (${await evaluate("location.href")})`,
+          );
         return;
       }
       const state = asObject(JSON.parse(String((await evaluate(PAGE_STATE)) ?? "{}")) as JsonObject);

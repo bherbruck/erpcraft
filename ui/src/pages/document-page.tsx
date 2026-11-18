@@ -14,6 +14,7 @@ import { ActionButtons, ActionDialog, useFollowOn } from "@/components/command-a
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { DateInput } from "@/components/date-input";
 import { plainSource, useDecimalHeader } from "@/components/decimal-value";
+import { PdfButton, SendButton, SentMessages } from "@/components/document-mail";
 import { FieldInput, type FieldValues, initialValues, toEditable } from "@/components/field-input";
 import { FieldValue, isNumeric } from "@/components/field-value";
 import { FormField } from "@/components/form-field";
@@ -30,7 +31,7 @@ import { UnsavedDialog, useUnsavedGuard } from "@/components/unsaved-guard";
 import { t } from "@/i18n/t";
 import { formatCalendarDate, formatTimestamp, todayCalendarDate } from "@/lib/dates";
 import { forgetDocuments, rememberDocument } from "@/lib/doc-labels";
-import { canDoc, canRun, findDocType, recordActions } from "@/lib/meta";
+import { canDoc, canRun, findCommand, findDocType, recordActions } from "@/lib/meta";
 import { paths } from "@/lib/paths";
 import { newKey } from "@/lib/text";
 import { useUrlState } from "@/lib/url-state";
@@ -604,7 +605,14 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
   const navigate = useNavigate();
   const url = useUrlState();
   const isNew = id === null;
-  const tab = url.get("tab") === "history" && !isNew ? "history" : "document";
+  const requested = url.get("tab");
+  const tab = isNew
+    ? "document"
+    : requested === "history"
+      ? "history"
+      : requested === "sent" && canRun(meta, "document.messages")
+        ? "sent"
+        : "document";
   const headerMeta = (name: string): FieldMeta | undefined => meta.document_header.find((f) => f.name === name);
   const label = (name: string, fallback: string): string => headerMeta(name)?.label ?? fallback;
 
@@ -888,6 +896,10 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
               />
             ) : null}
             {doc ? <EinvoiceExportButton docType={docType.name} id={doc.id} locked={locked} /> : null}
+            {doc && locked ? (
+              <SendButton docType={docType.name} id={doc.id} onSent={() => url.set({ tab: "sent" })} />
+            ) : null}
+            {doc ? <PdfButton docType={docType.name} id={doc.id} /> : null}
             {doc && canRun(meta, "document.render") ? (
               <Button asChild variant="outline">
                 <Link to={paths.print(code, docType.name, doc.id)}>
@@ -922,6 +934,15 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
           tabs={[
             { id: "document", label: t("document.tab"), to: "?" },
             { id: "history", label: t("history.title"), to: "?tab=history" },
+            ...(canRun(meta, "document.messages")
+              ? [
+                  {
+                    id: "sent",
+                    label: findCommand(meta, "document.messages")?.label ?? t("mail.sent_title"),
+                    to: "?tab=sent",
+                  },
+                ]
+              : []),
           ]}
         />
       ) : null}
@@ -1198,6 +1219,7 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
       </div>
 
       {tab === "history" && doc ? <History resource={docType.name} id={doc.id} version={history} /> : null}
+      {tab === "sent" && doc ? <SentMessages docType={docType.name} id={doc.id} version={history} /> : null}
 
       <UnsavedDialog blocker={blocker} />
       <ConfirmDialog
