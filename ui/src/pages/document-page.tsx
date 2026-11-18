@@ -869,8 +869,14 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
             t("record.new", { label: docType.label })
           ) : (
             <>
-              {docType.label}{" "}
-              <span className={cn("tabular-nums", !number && "font-normal text-muted-foreground")}>
+              {/* The document's number is what people look for and say aloud: it carries the header. */}
+              <span className="font-normal text-muted-foreground">{docType.label}</span>{" "}
+              <span
+                className={cn(
+                  "tabular-nums tracking-tight",
+                  number ? "text-2xl font-semibold" : "font-normal text-muted-foreground",
+                )}
+              >
                 {number ?? t("document.unnumbered")}
               </span>
             </>

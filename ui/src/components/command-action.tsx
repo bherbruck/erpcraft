@@ -359,7 +359,7 @@ export function ActionDialog({
           </div>
         ) : null}
         <section aria-live="polite" className="space-y-2">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("preview.heading")}</h3>
+          <h3 className="text-sm font-semibold">{t("preview.heading")}</h3>
           {requested ? (
             <ApprovalNotice approval={requested} preview={false} />
           ) : preview.error ? (

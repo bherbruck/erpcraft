@@ -109,8 +109,8 @@ export function DataTable<Row>({
         </div>
       ) : null}
       <Table aria-label={caption} aria-busy={loading || undefined}>
-        <TableHeader>
-          <TableRow>
+        <TableHeader className="bg-muted/50">
+          <TableRow className="hover:bg-transparent">
             {selection ? (
               <TableHead className="w-10 px-3">
                 <span className="sr-only">{t("list.select")}</span>

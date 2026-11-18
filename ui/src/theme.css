@@ -1,0 +1,76 @@
+/*
+ * erpcraft's theme over shadcn/ui's neutral one (in index.css).
+ *
+ * The subject is the books and stock of a small manufacturer, read and entered all day by the
+ * people who keep them. So: the blue-black of ledger ink on white paper, one ink blue for what is
+ * to be done (the primary button, the focus ring, the current screen), cool grey rules, and IBM
+ * Plex Sans, an engineer's typeface whose figures line up in columns. Everything else is shadcn's.
+ *
+ * To return to shadcn's neutral look, remove the `@import "./theme.css"` line in index.css:
+ * every value here only overrides a token defined there. The selector is `html:root` so that it
+ * wins over index.css's `:root`, whatever the order the two files end up in.
+ */
+@import "@fontsource-variable/ibm-plex-sans";
+
+html:root {
+  --font-ui: "IBM Plex Sans Variable", ui-sans-serif, system-ui, sans-serif;
+
+  --background: oklch(1 0 0);
+  /* Ledger ink: blue-black, not grey-black. */
+  --foreground: oklch(0.27 0.03 255);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.27 0.03 255);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.27 0.03 255);
+  /* Ink blue: what is to be done. */
+  --primary: oklch(0.43 0.1 252);
+  --primary-foreground: oklch(0.985 0.005 255);
+  --secondary: oklch(0.965 0.008 255);
+  --secondary-foreground: oklch(0.3 0.03 255);
+  --muted: oklch(0.967 0.007 255);
+  /* 6:1 on white, 5.5:1 on muted: secondary text that stays readable. */
+  --muted-foreground: oklch(0.5 0.025 255);
+  --accent: oklch(0.955 0.015 252);
+  --accent-foreground: oklch(0.3 0.06 252);
+  --border: oklch(0.9 0.01 255);
+  --input: oklch(0.87 0.012 255);
+  --ring: oklch(0.55 0.12 252);
+  --sidebar: oklch(0.975 0.006 255);
+  --sidebar-foreground: oklch(0.3 0.03 255);
+  --sidebar-primary: oklch(0.43 0.1 252);
+  --sidebar-primary-foreground: oklch(0.985 0.005 255);
+  --sidebar-accent: oklch(0.93 0.025 252);
+  --sidebar-accent-foreground: oklch(0.3 0.08 252);
+  --sidebar-border: oklch(0.9 0.01 255);
+  --sidebar-ring: oklch(0.55 0.12 252);
+}
+
+@media (prefers-color-scheme: dark) {
+  html:root {
+    --background: oklch(0.18 0.012 255);
+    --foreground: oklch(0.95 0.006 255);
+    --card: oklch(0.215 0.014 255);
+    --card-foreground: oklch(0.95 0.006 255);
+    --popover: oklch(0.23 0.015 255);
+    --popover-foreground: oklch(0.95 0.006 255);
+    --primary: oklch(0.76 0.1 252);
+    --primary-foreground: oklch(0.2 0.03 255);
+    --secondary: oklch(0.27 0.015 255);
+    --secondary-foreground: oklch(0.95 0.006 255);
+    --muted: oklch(0.26 0.014 255);
+    --muted-foreground: oklch(0.74 0.02 255);
+    --accent: oklch(0.29 0.03 252);
+    --accent-foreground: oklch(0.95 0.01 252);
+    --border: oklch(1 0 0 / 11%);
+    --input: oklch(1 0 0 / 16%);
+    --ring: oklch(0.7 0.1 252);
+    --sidebar: oklch(0.2 0.013 255);
+    --sidebar-foreground: oklch(0.92 0.008 255);
+    --sidebar-primary: oklch(0.76 0.1 252);
+    --sidebar-primary-foreground: oklch(0.2 0.03 255);
+    --sidebar-accent: oklch(0.29 0.03 252);
+    --sidebar-accent-foreground: oklch(0.95 0.01 252);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.7 0.1 252);
+  }
+}

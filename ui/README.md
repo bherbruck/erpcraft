@@ -81,7 +81,9 @@ src/components/        The shared components that carry the rules, built from sr
                        Postings (ledger entries), DecimalValue, references.
 src/hooks/, src/lib/utils.ts  Written by the shadcn CLI.
 src/pages/             One generic page per kind of screen, and the reports with a page of their own.
-src/index.css          shadcn's neutral theme (light and dark) plus status tones. The only file with raw colors and sizes.
+src/index.css          shadcn's neutral theme (light and dark) plus status tones.
+src/theme.css          erpcraft's colours and typeface (IBM Plex Sans, self-hosted) over it; remove its import in
+                       index.css to go back to shadcn's neutral look. These two are the only files with raw colors.
 scripts/               generate-api-types.ts, seed.ts, screenshots.ts, e2e.ts, check-dist.ts, browser.ts.
 ```
 
