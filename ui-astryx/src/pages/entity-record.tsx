@@ -387,3 +387,5 @@ function EntityForm({ entity, id }: { entity: EntityMeta; id: string | null }) {
     </Page>
   );
 }
+
+export default EntityRecordPage;

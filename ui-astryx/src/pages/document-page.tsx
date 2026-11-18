@@ -781,3 +781,5 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
     </Page>
   );
 }
+
+export default DocumentPage;

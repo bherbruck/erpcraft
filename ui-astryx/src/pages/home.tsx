@@ -15,3 +15,5 @@ export function HomePage() {
   if (entity) return <Navigate to={paths.entityList(code, entity.name)} replace />;
   return <NotFoundPage />;
 }
+
+export default HomePage;

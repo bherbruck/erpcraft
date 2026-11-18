@@ -150,3 +150,5 @@ function EntityList({ entity }: { entity: EntityMeta }) {
     </Page>
   );
 }
+
+export default EntityListPage;

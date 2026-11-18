@@ -236,3 +236,5 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
     </Page>
   );
 }
+
+export default DocumentListPage;

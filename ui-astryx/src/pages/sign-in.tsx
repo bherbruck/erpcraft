@@ -75,3 +75,5 @@ export function SignInPage() {
     </Center>
   );
 }
+
+export default SignInPage;
