@@ -11,91 +11,112 @@ const OUT = resolve(import.meta.dir, "../docs/screenshots");
 mkdirSync(OUT, { recursive: true });
 
 const ORDER = process.env.ORDER_ID ?? "01a1ea99-5a5b-7361-a3ee-ce746505d37e";
-const COMPANY = "OHIO";
+const SMALL = "OHIO"; // the demo company, with the draft order
 const BIG = "AWC"; // the company with thousands of orders
 const { email, password } = adminCredentials();
 
 const browser = await launchBrowser(9344);
 const shot = async (name: string) => {
-  await Bun.sleep(300);
+  await Bun.sleep(400);
   await browser.screenshot(`${OUT}/${name}.png`);
   console.log("wrote", name);
 };
+/** Focuses the input an Astryx label names. */
+const focusLabelled = (prefix: string) =>
+  browser.evaluate(
+    `(() => { const l = [...document.querySelectorAll("label")].find((x) => x.textContent.startsWith(${JSON.stringify(prefix)})); const e = l && document.getElementById(l.htmlFor); e?.focus(); e?.select?.(); e?.click?.(); return Boolean(e); })()`,
+  );
 
 try {
   await browser.viewport(1440, 900);
   await browser.goto(`${BASE}/sign-in`);
   await browser.fill("input[type=email]", email);
-  await browser.evaluate("document.fonts.ready.then(() => true)");
-  await Bun.sleep(1000);
+  await Bun.sleep(800);
   await shot("01-sign-in");
   await browser.fill("input[type=password]", password);
   await browser.click("Sign in");
   await browser.settle();
 
-  await browser.goto(`${BASE}/c/${BIG}/sales-orders`);
+  // Generated lists: the same component for every document type and entity.
+  await browser.goto(`${BASE}/c/${BIG}/d/sales_order`);
   await shot("02-sales-orders");
-
-  await browser.goto(`${BASE}/c/${BIG}/sales-orders?q=SO-2023-012&sort=-summary.total_net&status=closed`);
+  await browser.goto(`${BASE}/c/${BIG}/d/sales_order?q=SO-2023-012&sort=-summary.total_net&status=closed`);
   await shot("03-sales-orders-search-sort");
+  await browser.goto(`${BASE}/c/${BIG}/d/purchase_order`);
+  await shot("04-purchase-orders");
+  await browser.goto(`${BASE}/c/${BIG}/d/journal_entry`);
+  await shot("04b-journal-entries");
 
-  await browser.goto(`${BASE}/c/${BIG}/sales-orders?page=3&size=50&sort=summary.customer_name`);
-  await shot("04-sales-orders-page3");
-
-  await browser.goto(`${BASE}/c/${COMPANY}/sales-orders/${ORDER}`);
+  // A generated document page.
+  await browser.goto(`${BASE}/c/${SMALL}/d/sales_order/${ORDER}`);
   await shot("05-sales-order");
-
-  // The customer combobox: server-side search as the user types.
-  await browser.evaluate(`(() => { const l = [...document.querySelectorAll("label")].find((x) => x.textContent.startsWith("Customer")); const i = l && document.getElementById(l.htmlFor); i?.focus(); i?.click(); })()`);
+  await focusLabelled("Customer");
   await Bun.sleep(300);
   await browser.insert("adv");
-  await Bun.sleep(800);
+  await Bun.sleep(1000);
   await browser.settle();
   await shot("06-sales-order-customer-combobox");
   await browser.key("Escape");
   await browser.key("Escape");
   await browser.evaluate("document.activeElement?.blur()");
-  await Bun.sleep(300);
-  await shot("06b-sales-order-combobox-escaped");
-
-  // Edit a quantity; the totals come back from the server's preview.
-  await browser.evaluate(`(() => { const l = [...document.querySelectorAll("label")].find((x) => x.textContent.startsWith("Quantity, 1")); const e = l && document.getElementById(l.htmlFor); e?.focus(); e?.select(); })()`);
+  await focusLabelled("Quantity, Line 1");
   await browser.insert("15");
-  await Bun.sleep(1200);
+  await Bun.sleep(1500);
   await browser.settle();
   await shot("07-sales-order-edited");
+  await browser.evaluate(`[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Approve")?.click()`);
+  await Bun.sleep(1200);
+  await shot("07b-sales-order-action-blocked-while-dirty");
 
-  await browser.goto(`${BASE}/c/${COMPANY}/sales-orders/new`);
+  await browser.goto(`${BASE}/c/${SMALL}/d/sales_order/new`);
   await shot("08-sales-order-new");
-  // Saving without a customer: the server refuses, the error sits by the field, nothing typed is lost.
-  await browser.evaluate(`(() => { const l = [...document.querySelectorAll("label")].find((x) => x.textContent.startsWith("Description, 1")); const e = l && document.getElementById(l.htmlFor); e?.focus(); })()`);
+  await focusLabelled("Description, Line 1");
   await browser.insert("Consulting");
   await browser.key("s", 2);
-  await Bun.sleep(800);
+  await Bun.sleep(1000);
   await browser.settle();
   await shot("08b-sales-order-save-error");
 
-  await browser.goto(`${BASE}/c/${COMPANY}/customers`);
-  await shot("09-customers");
+  // A posted document with its postings.
+  const posted = await browser.evaluate(
+    `fetch("/api/commands/document.list", { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + sessionStorage.getItem("erpcraft.token") }, body: JSON.stringify({ doc_type: "journal_entry", status: "posted", limit: 1 }) }).then((r) => r.json()).then((p) => p.items[0] ? p.items[0].company_id + "|" + p.items[0].id : "")`,
+  );
+  if (typeof posted === "string" && posted) {
+    const [companyId, id] = posted.split("|");
+    const companyCode = await browser.evaluate(
+      `fetch("/api/commands/entity.get", { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + sessionStorage.getItem("erpcraft.token") }, body: JSON.stringify({ entity: "company", id: ${JSON.stringify(companyId)} }) }).then((r) => r.json()).then((c) => c.code)`,
+    );
+    await browser.goto(`${BASE}/c/${String(companyCode)}/d/journal_entry/${id}`);
+    await shot("09-journal-entry-posted");
+  }
 
+  // Generated entity screens.
+  await browser.goto(`${BASE}/c/${BIG}/e/customer`);
+  await shot("10-customers");
   const firstCustomer = await browser.evaluate(`document.querySelector("table a")?.getAttribute("href")`);
   if (typeof firstCustomer === "string") {
     await browser.goto(`${BASE}${firstCustomer}`);
-    await shot("10-customer");
+    await shot("11-customer");
+    await browser.goto(`${BASE}${firstCustomer}?tab=history`);
+    await shot("11b-customer-history");
   }
+  await browser.goto(`${BASE}/c/${BIG}/e/item`);
+  await shot("12-items");
+  await browser.goto(`${BASE}/c/${BIG}/e/account`);
+  await shot("12b-accounts");
 
   await browser.dark(true);
-  await browser.goto(`${BASE}/c/${COMPANY}/sales-orders/${ORDER}`);
-  await shot("11-sales-order-dark");
-  await browser.goto(`${BASE}/c/${BIG}/sales-orders`);
-  await shot("12-sales-orders-dark");
+  await browser.goto(`${BASE}/c/${SMALL}/d/sales_order/${ORDER}`);
+  await shot("13-sales-order-dark");
+  await browser.goto(`${BASE}/c/${BIG}/d/sales_order`);
+  await shot("14-sales-orders-dark");
   await browser.dark(false);
 
   await browser.viewport(820, 1180);
-  await browser.goto(`${BASE}/c/${COMPANY}/sales-orders/${ORDER}`);
-  await shot("13-sales-order-tablet");
+  await browser.goto(`${BASE}/c/${SMALL}/d/sales_order/${ORDER}`);
+  await shot("15-sales-order-tablet");
 
-  if (browser.errors.length) console.log("page errors:\n" + browser.errors.join("\n"));
+  if (browser.errors.length) console.log(`page errors:\n${browser.errors.join("\n")}`);
 } finally {
   await browser.close();
 }

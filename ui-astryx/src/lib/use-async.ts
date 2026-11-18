@@ -1,32 +1,76 @@
-import { type DependencyList, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiError } from "@/api/client";
+import { t } from "@/i18n/t";
 
-export type Async<T> =
-  | { state: "loading"; data: T | null }
-  | { state: "ready"; data: T }
-  | { state: "error"; data: T | null; error: Error };
+export interface AsyncState<T> {
+  /** The last result. Kept while a reload runs, so the screen does not jump. */
+  data: T | undefined;
+  error: ApiError | null;
+  loading: boolean;
+  reload: () => void;
+}
 
-/** Runs a load whenever the dependencies change. Keeps the last data while reloading so nothing jumps. */
-export function useAsync<T>(load: (signal: AbortSignal) => Promise<T>, deps: DependencyList): Async<T> & { reload: () => void } {
-  const [result, setResult] = useState<Async<T>>({ state: "loading", data: null });
-  const [tick, setTick] = useState(0);
+/**
+ * Load something from the server and load it again whenever `key` changes.
+ * Pass `null` as the key to load nothing.
+ */
+export function useAsync<T>(key: string | null, load: (signal: AbortSignal) => Promise<T>): AsyncState<T> {
+  const [state, setState] = useState<{
+    data: T | undefined;
+    error: ApiError | null;
+    loading: boolean;
+    key: string | null;
+  }>({
+    data: undefined,
+    error: null,
+    loading: key !== null,
+    key,
+  });
+  const [generation, setGeneration] = useState(0);
+  const loadRef = useRef(load);
+  loadRef.current = load;
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `generation` forces a reload
   useEffect(() => {
+    if (key === null) {
+      setState({ data: undefined, error: null, loading: false, key });
+      return;
+    }
     const controller = new AbortController();
-    setResult((previous) => ({ state: "loading", data: previous.data }));
-    load(controller.signal).then(
+    setState((previous) => ({
+      data: previous.key === key ? previous.data : undefined,
+      error: null,
+      loading: true,
+      key,
+    }));
+    // A read that never reached the server (a dropped connection) is tried once
+    // more before the screen says so; reading twice changes nothing.
+    const attempt = (): Promise<T> =>
+      loadRef.current(controller.signal).catch(async (cause: unknown) => {
+        if (!(cause instanceof ApiError) || cause.status !== 0 || controller.signal.aborted) throw cause;
+        await new Promise((done) => setTimeout(done, 300));
+        if (controller.signal.aborted) throw cause;
+        return loadRef.current(controller.signal);
+      });
+    attempt().then(
       (data) => {
-        if (!controller.signal.aborted) setResult({ state: "ready", data });
+        if (!controller.signal.aborted) setState({ data, error: null, loading: false, key });
       },
-      (error: unknown) => {
+      (cause: unknown) => {
         if (controller.signal.aborted) return;
-        setResult((previous) => ({
-          state: "error",
-          data: previous.data,
-          error: error instanceof Error ? error : new Error(String(error)),
-        }));
+        const error = cause instanceof ApiError ? cause : new ApiError(0, "error", t("error.unexpected"));
+        setState((previous) => ({ data: previous.data, error, loading: false, key }));
       },
     );
     return () => controller.abort();
-    // biome-ignore lint/correctness/useExhaustiveDependencies: the caller names the dependencies.
-  }, [...deps, tick]);
-  return { ...result, reload: () => setTick((n) => n + 1) };
+  }, [key, generation]);
+
+  const reload = useCallback(() => setGeneration((n) => n + 1), []);
+  const current = state.key === key;
+  return {
+    data: current ? state.data : undefined,
+    error: current ? state.error : null,
+    loading: current ? state.loading : key !== null,
+    reload,
+  };
 }

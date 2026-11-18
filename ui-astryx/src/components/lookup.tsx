@@ -1,167 +1,161 @@
-import { HStack } from "@astryxdesign/core/HStack";
-import { Icon } from "@astryxdesign/core/Icon";
-import { Link } from "@astryxdesign/core/Link";
-import { type SearchableItem, type SearchSource, Typeahead, TypeaheadItem } from "@astryxdesign/core/Typeahead";
-import { ExternalLink } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import { api } from "@/api/client";
 import type { EntityRecord } from "@/api/types";
+import { useApp, useCompany } from "@/app/context";
 import { t } from "@/i18n/t";
+import { quote, recordLabel, rememberRecord, useLinkInfo } from "@/lib/link-labels";
+import { canEntity, findEntity, isCompanyScoped } from "@/lib/meta";
+import { paths } from "@/lib/paths";
+import { recentChoices, rememberChoice } from "@/lib/recent";
+import { Picker, type PickerOption } from "./picker";
+import { QuickCreateDialog } from "./quick-create";
 
-export interface LookupItem extends SearchableItem<{ code: string; name: string }> {}
+const PAGE = 20;
 
-interface LookupProps {
+export interface LookupProps {
   label: string;
-  entity: string;
-  /** The field the stored value refers to: `id` for most, `code` for a currency. */
-  keyField?: string;
-  value: string | null;
-  onChange: (value: string | null) => void;
-  /** Where the selected record opens, if it has a page in this app. */
-  recordHref?: (id: string) => string;
-  isRequired?: boolean;
   isLabelHidden?: boolean;
-  isDisabled?: boolean;
-  size?: "sm" | "md";
+  /** The entity whose records are offered. */
+  entity: string;
+  /** The field of that entity whose value is stored: `id`, or `code` for a currency. */
+  keyField: string;
+  value: string | null;
+  onChange: (value: string | null, record: EntityRecord | null) => void;
+  /** Limits the choice to this company's records, where the entity belongs to a company. */
+  companyId?: string | null;
+  /** Further limits the field declares, as `entity.list` takes them. */
+  filters?: Record<string, string>;
+  required?: boolean;
+  disabled?: boolean;
   error?: string | null;
-  width?: number | string;
-}
-
-const RECENT_LIMIT = 5;
-
-function recentKey(entity: string): string {
-  return `astryx-spike.recent.${entity}`;
-}
-
-function readRecent(entity: string): LookupItem[] {
-  try {
-    const raw = window.localStorage.getItem(recentKey(entity));
-    const parsed: unknown = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? (parsed as LookupItem[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function rememberRecent(entity: string, item: LookupItem): void {
-  try {
-    const next = [item, ...readRecent(entity).filter((r) => r.id !== item.id)].slice(0, RECENT_LIMIT);
-    window.localStorage.setItem(recentKey(entity), JSON.stringify(next));
-  } catch {
-    // Recent choices are a convenience; without storage there are none.
-  }
-}
-
-function toItem(record: EntityRecord, keyField: string): LookupItem {
-  const code = String(record.code ?? "");
-  const name = String(record.name ?? code);
-  return { id: String(record[keyField] ?? record.id), label: name, auxiliaryData: { code, name } };
-}
-
-const cache = new Map<string, LookupItem>();
-
-/** Resolves a stored value to its name and code, once per value. */
-async function resolve(entity: string, keyField: string, value: string): Promise<LookupItem | null> {
-  const cacheKey = `${entity}:${keyField}:${value}`;
-  const hit = cache.get(cacheKey);
-  if (hit) return hit;
-  const page = await api.run("entity.list", { entity, filters: { [keyField]: value }, limit: 1 });
-  const record = page.items[0];
-  if (!record) return null;
-  const item = toItem(record, keyField);
-  cache.set(cacheKey, item);
-  return item;
+  description?: string;
+  labelTooltip?: string;
+  /** Show a link to the selected record beside the field. Off in grid cells. */
+  recordLink?: boolean;
+  /** Offer "New …" as the last entry. */
+  allowCreate?: boolean;
+  size?: "sm" | "md";
 }
 
 /**
- * A searchable combobox over an entity. Search runs on the server; before typing it
- * shows the user's recent choices, then the first records.
+ * A searchable combobox for a value that comes from the database. The search runs
+ * on the server. Before anything is typed, the user's recent choices come first.
+ * The last entry creates a new record in a dialog and selects it, without leaving
+ * the form underneath.
  */
 export function Lookup(props: LookupProps) {
-  const keyField = props.keyField ?? "id";
-  const { entity, value } = props;
-  const [selected, setSelected] = useState<LookupItem | null>(null);
+  const { meta, me } = useApp();
+  const { code } = useCompany();
+  const { entity, keyField, value } = props;
+  const target = findEntity(meta, entity);
+  const readable = target !== undefined && canEntity(meta, entity, "read");
+  const searchable = (target?.search.length ?? 0) > 0;
+  const creatable =
+    (props.allowCreate ?? true) && target !== undefined && !target.read_only && canEntity(meta, entity, "create");
+  const plural = target?.plural ?? entity;
+  const info = useLinkInfo(entity, keyField, readable ? value : null);
+  const [creating, setCreating] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!value) {
-      setSelected(null);
-      return;
-    }
-    if (selected?.id === value) return;
-    let live = true;
-    resolve(entity, keyField, value).then(
-      (item) => {
-        if (live) setSelected(item ?? { id: value, label: value });
-      },
-      () => {
-        if (live) setSelected({ id: value, label: value });
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [entity, keyField, value, selected?.id]);
+  const scope = target && isCompanyScoped(target) && props.companyId ? props.companyId : null;
+  const filters: Record<string, string> = { ...props.filters, ...(scope ? { company_id: scope } : {}) };
+  const filterKey = JSON.stringify(filters);
 
-  const source = useMemo<SearchSource<LookupItem>>(() => {
-    let controller: AbortController | null = null;
-    const query = async (q: string): Promise<LookupItem[]> => {
-      controller?.abort();
-      controller = new AbortController();
-      const page = await api.run(
-        "entity.list",
-        { entity, q: q || null, active_only: true, limit: 20 },
-        { signal: controller.signal },
-      );
-      return page.items.map((r) => toItem(r, keyField));
-    };
-    return {
-      search: (q) => query(q),
-      bootstrap: async () => {
-        const recent = readRecent(entity);
-        const first = await query("");
-        return [...recent, ...first.filter((f) => !recent.some((r) => r.id === f.id))].slice(0, 10);
-      },
-      cancel: () => controller?.abort(),
-    };
-  }, [entity, keyField]);
-
-  const change = (item: LookupItem | null) => {
-    setSelected(item);
-    if (item) {
-      cache.set(`${entity}:${keyField}:${item.id}`, item);
-      rememberRecent(entity, item);
-    }
-    props.onChange(item?.id ?? null);
+  const option = (record: EntityRecord, group?: string): PickerOption => {
+    const code = typeof record.code === "string" ? record.code : undefined;
+    const label = recordLabel(entity, record);
+    return { key: String(record[keyField] ?? record.id), label, detail: code && !label.includes(code) ? code : undefined, group };
   };
 
-  const field = (
-    <Typeahead<LookupItem>
-      label={props.label}
-      isLabelHidden={props.isLabelHidden}
-      isRequired={props.isRequired}
-      isDisabled={props.isDisabled}
-      size={props.size ?? "md"}
-      width={props.width ?? "100%"}
-      value={selected}
-      onChange={change}
-      searchSource={source}
-      hasEntriesOnFocus
-      minQueryLength={0}
-      debounceMs={200}
-      placeholder={t("lookup.search")}
-      emptySearchText={t("lookup.none")}
-      status={props.error ? { type: "error", message: props.error } : undefined}
-      renderItem={(item) => <TypeaheadItem item={item} description={item.auxiliaryData?.code} />}
-    />
-  );
+  const pick = (next: string | null, picked: EntityRecord | null) => {
+    if (next !== null && picked) {
+      rememberRecord(entity, keyField, picked);
+      rememberChoice(me.user_id, entity, keyField, next);
+    }
+    props.onChange(next, picked);
+  };
 
-  if (!props.recordHref || !selected || selected.id !== value) return field;
+  // The records behind the options, so a choice can be remembered with its label.
+  const seen = new Map<string, EntityRecord>();
+
   return (
-    <HStack gap={1} vAlign="end">
-      {field}
-      <Link href={props.recordHref(selected.id)} label={t("lookup.open", { label: selected.label })}>
-        <Icon icon={ExternalLink} size="sm" />
-      </Link>
-    </HStack>
+    <>
+      <Picker
+        label={props.label}
+        isLabelHidden={props.isLabelHidden}
+        description={props.description}
+        labelTooltip={props.labelTooltip}
+        noun={plural}
+        value={value}
+        selectedLabel={value === null ? null : info === undefined ? undefined : (info?.label ?? value)}
+        onChange={(next) => pick(next, next ? (seen.get(next) ?? null) : null)}
+        required={props.required}
+        disabled={props.disabled || !readable}
+        error={props.error}
+        size={props.size}
+        searchable={searchable}
+        href={info && (props.recordLink ?? true) ? paths.entityRecord(code, entity, info.id) : null}
+        extra={(query) =>
+          creatable
+            ? [
+                {
+                  key: "__create__",
+                  label: query.trim()
+                    ? t("lookup.new_named", { label: target?.label ?? entity, name: query.trim() })
+                    : t("lookup.new", { label: target?.label ?? entity }),
+                  onPick: (typed) => setCreating(typed.trim()),
+                },
+              ]
+            : []
+        }
+        load={{
+          key: readable ? `${entity}|${filterKey}` : null,
+          run: async (search, signal) => {
+            const text = searchable && search ? search : null;
+            const recentKeys = text ? [] : recentChoices(me.user_id, entity, keyField);
+            const [page, recent] = await Promise.all([
+              api.run("entity.list", { entity, q: text, filters, limit: PAGE, active_only: true }, { signal }),
+              recentKeys.length > 0
+                ? api
+                    .run(
+                      "entity.list",
+                      {
+                        entity,
+                        filters,
+                        where: `record.${keyField} in [${recentKeys.map(quote).join(", ")}]`,
+                        limit: recentKeys.length,
+                      },
+                      { signal },
+                    )
+                    .catch(() => ({ items: [] as EntityRecord[], total: 0 }))
+                : { items: [] as EntityRecord[], total: 0 },
+            ]);
+            const recents = recentKeys.flatMap((key) => recent.items.filter((record) => record[keyField] === key));
+            const recentIds = new Set(recents.map((record) => record.id));
+            for (const record of [...recents, ...page.items]) seen.set(String(record[keyField] ?? record.id), record);
+            const others = page.items.filter((record) => !recentIds.has(record.id));
+            return {
+              total: page.total,
+              options: [
+                ...recents.map((record) => option(record, t("lookup.recent"))),
+                ...others.map((record) => option(record, recents.length > 0 ? t("lookup.all", { label: plural }) : undefined)),
+              ],
+            };
+          },
+        }}
+      />
+      {creating !== null && target ? (
+        <QuickCreateDialog
+          entity={target}
+          companyId={scope}
+          suggestedName={creating}
+          onClose={() => setCreating(null)}
+          onCreated={(record) => {
+            setCreating(null);
+            const next = record[keyField];
+            if (typeof next === "string") pick(next, record);
+          }}
+        />
+      ) : null}
+    </>
   );
 }

@@ -3,58 +3,51 @@
 @import "@astryxdesign/theme-neutral/theme.css";
 @import "@astryxdesign/theme-neutral/fonts.css";
 
-/* Only layout glue lives here; colors, sizes and fonts come from the theme's tokens. */
-.num {
-  font-variant-numeric: tabular-nums;
-  text-align: end;
-}
-.cell-input {
-  min-inline-size: 0;
-}
-.sticky-head {
-  position: sticky;
-  inset-block-start: 0;
-  z-index: 2;
-  background: var(--color-background-surface);
-}
-.header-grid {
+/* Layout glue only. Colors, type and spacing come from the theme's tokens. */
+
+.page-fill { block-size: 100%; min-block-size: 0; }
+.nowrap { white-space: nowrap; }
+.grow { flex: 1 1 auto; min-inline-size: 0; }
+.min-w-0 { min-inline-size: 0; }
+.push-end { margin-inline-start: auto; }
+.filter-lookup { inline-size: 16rem; max-inline-size: 100%; }
+.open-link { padding-block-end: var(--spacing-2); }
+
+.num, .num input { text-align: end; font-variant-numeric: tabular-nums; }
+.num-block { display: block; text-align: end; font-variant-numeric: tabular-nums; }
+.cell-value { display: block; padding-inline: var(--spacing-1); }
+
+.form-grid {
   display: grid;
-  gap: var(--spacing-4, 1rem);
+  gap: var(--spacing-4);
   grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
   align-items: start;
 }
-.span-2 {
-  grid-column: span 2;
-}
-@media (max-width: 40rem) {
-  .span-2 {
-    grid-column: auto;
-  }
-}
+.span-2 { grid-column: span 2; }
+.span-all { grid-column: 1 / -1; }
+@media (max-width: 40rem) { .span-2 { grid-column: auto; } }
+
+.table-scroll { flex: 1 1 auto; min-block-size: 0; overflow: auto; }
+.table-footer { border-block-start: 1px solid var(--color-border); padding: var(--spacing-2) var(--spacing-3); }
+.reloading { opacity: 0.6; }
+
+.lines-scroll { overflow-x: auto; }
+.lines-table { table-layout: fixed; inline-size: 100%; min-inline-size: 60rem; }
 .col-no { inline-size: 2.5rem; }
-.col-ref { inline-size: 22%; }
-.col-num { inline-size: 7.5rem; }
-.col-pct { inline-size: 6rem; }
-.col-net { inline-size: 9rem; }
+.col-kind { inline-size: 24rem; }
+.col-ref { inline-size: 14rem; }
+.col-text { inline-size: auto; }
+.col-date { inline-size: 9rem; }
+.col-num { inline-size: 8rem; }
 .col-act { inline-size: 3rem; }
+
+.totals { display: flex; justify-content: flex-end; }
+.totals > * { inline-size: min(100%, 26rem); }
+
 .visually-hidden {
-  position: absolute;
-  inline-size: 1px;
-  block-size: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
+  position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
 }
-.lines-table {
-  table-layout: fixed;
-  inline-size: 100%;
-  min-inline-size: 56rem;
-}
-.num input {
-  text-align: end;
-  font-variant-numeric: tabular-nums;
-}
-.page-fill {
-  block-size: 100%;
-  min-block-size: 0;
-}
+/* Astryx's table bleeds into its container's padding; inside a card or padded page the lines keep to the edge. */
+.lines-scroll > .astryx-table-scroll-wrapper { margin: 0; }
+.kind-cell { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: var(--spacing-1); align-items: start; }

@@ -8,12 +8,12 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { VStack } from "@astryxdesign/core/VStack";
 import { type FormEvent, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { ApiError, api } from "@/api/client";
 import { t } from "@/i18n/t";
 
 export function SignInPage() {
-  const [params] = useSearchParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -27,8 +27,9 @@ export function SignInPage() {
     setError(null);
     try {
       await api.login(email, password);
-      const next = params.get("next");
-      navigate(next?.startsWith("/") && !next.startsWith("//") ? next : "/", { replace: true });
+      // Back to where the user was sent away from, if anywhere.
+      const from = (location.state as { from?: unknown } | null)?.from;
+      navigate(typeof from === "string" && from.startsWith("/") && !from.startsWith("//") ? from : "/", { replace: true });
     } catch (cause) {
       // The typed email and password stay; only the message changes.
       setError(cause instanceof ApiError ? cause.message : String(cause));
@@ -43,13 +44,13 @@ export function SignInPage() {
         <form onSubmit={submit} noValidate>
           <VStack gap={5}>
             <VStack gap={1}>
-              <Heading level={1}>{t("signIn.title")}</Heading>
-              <Text type="supporting">{t("signIn.subtitle")}</Text>
+              <Heading level={1}>{t("auth.title")}</Heading>
+              <Text type="supporting">{t("auth.subtitle")}</Text>
             </VStack>
-            {error ? <Banner status="error" title={t("signIn.failed")} description={error} /> : null}
+            {error ? <Banner status="error" title={t("auth.failed")} description={error} /> : null}
             <FormLayout>
               <TextInput
-                label={t("signIn.email")}
+                label={t("auth.email")}
                 type="email"
                 value={email}
                 onChange={setEmail}
@@ -58,7 +59,7 @@ export function SignInPage() {
                 hasAutoFocus
               />
               <TextInput
-                label={t("signIn.password")}
+                label={t("auth.password")}
                 type="password"
                 value={password}
                 onChange={setPassword}
@@ -67,7 +68,7 @@ export function SignInPage() {
                 onEnter={() => void submit()}
               />
             </FormLayout>
-            <Button label={t("signIn.submit")} type="submit" variant="primary" isLoading={busy} width="100%" />
+            <Button label={t("auth.sign_in")} type="submit" variant="primary" isLoading={busy} width="100%" />
           </VStack>
         </form>
       </Card>
