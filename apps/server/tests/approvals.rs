@@ -1004,3 +1004,79 @@ async fn delegating_approvals_takes_its_own_right() {
     assert_ne!(status, StatusCode::OK, "{body}");
     t.stop().await;
 }
+
+/// Ending a delegation keeps it on record, marked ended, whether it began
+/// before today, today or not yet; once ended it counts no more.
+#[tokio::test]
+async fn an_ended_delegation_stays_on_record() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let (deputy, deputy_id) = t
+        .user_with_rules(
+            "deputy@example.com",
+            json!(["purchase_order:read"]),
+            Some(&f.c.id),
+        )
+        .await;
+    let (status, today_one) = t
+        .command(
+            &f.controller,
+            "approval.delegate",
+            json!({ "delegate_id": deputy_id, "ends_on": "2099-12-31" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{today_one}");
+    let today: String = sqlx::query_scalar("SELECT (now() AT TIME ZONE 'UTC')::date::text")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(today_one["starts_on"], today.as_str());
+    let (status, later) = t
+        .command(
+            &f.controller,
+            "approval.delegate",
+            json!({ "delegate_id": deputy_id, "starts_on": "2099-01-01", "ends_on": "2099-12-31" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{later}");
+    // In force today: the deputy may decide.
+    let order = f.order(&t, "100").await;
+    let request = f.pending(&t, &order).await;
+    let (_, list) = t.command(&deputy, "approval.list", json!({})).await;
+    assert_eq!(list["items"].as_array().unwrap().len(), 1, "{list}");
+
+    for d in [&today_one, &later] {
+        let (status, ended) = t
+            .command(
+                &f.controller,
+                "approval.end_delegation",
+                json!({ "id": d["id"] }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{ended}");
+        assert!(ended["ended_at"].is_string(), "{ended}");
+        assert_eq!(ended["ends_on"], d["starts_on"], "{ended}");
+    }
+    assert_eq!(
+        t.count("SELECT count(*) FROM approval_delegation WHERE ended_at IS NOT NULL")
+            .await,
+        2,
+        "both are still on record"
+    );
+    let (status, body) = t
+        .command(&deputy, "approval.approve", json!({ "id": request }))
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    let (_, mine) = t.command(&deputy, "approval.delegations", json!({})).await;
+    assert_eq!(mine["items"].as_array().unwrap().len(), 0, "{mine}");
+    // Ending again changes nothing.
+    let (status, again) = t
+        .command(
+            &f.controller,
+            "approval.end_delegation",
+            json!({ "id": today_one["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    t.stop().await;
+}

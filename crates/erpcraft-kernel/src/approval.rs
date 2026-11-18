@@ -485,12 +485,14 @@ async fn standing(ctx: &mut Ctx<'_>, request: &ApprovalRequest) -> Result<Option
     let delegators: Vec<Uuid> = sqlx::query_scalar(
         "SELECT DISTINCT d.user_id FROM approval_delegation d
          JOIN app_user u ON u.id = d.user_id AND u.active
-         WHERE d.delegate_id = $1 AND current_date BETWEEN d.starts_on AND d.ends_on
-           AND d.user_id <> $2
+         WHERE d.delegate_id = $1 AND $3 BETWEEN d.starts_on AND d.ends_on
+           AND d.ended_at IS NULL AND d.user_id <> $2
          ORDER BY d.user_id",
     )
     .bind(ctx.actor.user_id)
     .bind(request.requested_by)
+    // Days are UTC days, as a delegation's first and last days are given.
+    .bind(Utc::now().date_naive())
     .fetch_all(&mut *ctx.conn)
     .await?;
     for delegator in delegators {
@@ -1062,10 +1064,12 @@ pub struct DelegationView {
     pub starts_on: chrono::NaiveDate,
     pub ends_on: chrono::NaiveDate,
     pub reason: Option<String>,
+    /// When it was ended, if it was: it counts no more.
+    pub ended_at: Option<DateTime<Utc>>,
 }
 
 const DELEGATION: &str = "SELECT d.id, d.user_id, u.name AS user_name, d.delegate_id,
-        v.name AS delegate_name, d.starts_on, d.ends_on, d.reason
+        v.name AS delegate_name, d.starts_on, d.ends_on, d.reason, d.ended_at
     FROM approval_delegation d
     JOIN app_user u ON u.id = d.user_id
     JOIN app_user v ON v.id = d.delegate_id";
@@ -1188,10 +1192,11 @@ impl Command for Delegations {
         Ok(DelegationsOutput {
             items: sqlx::query_as(&format!(
                 "{DELEGATION} WHERE (d.user_id = $1 OR d.delegate_id = $1)
-                   AND d.ends_on >= current_date
+                   AND d.ends_on >= $2 AND d.ended_at IS NULL
                  ORDER BY d.starts_on, d.id"
             ))
             .bind(ctx.actor.user_id)
+            .bind(Utc::now().date_naive())
             .fetch_all(&mut *ctx.conn)
             .await?,
         })
@@ -1215,8 +1220,9 @@ impl Command for EndDelegation {
     fn spec(&self) -> CommandSpec {
         CommandSpec::action(
             "approval.end_delegation",
-            "End a delegation of the caller's approvals today; one that has not started is \
-             ended before it starts. Decisions already made in their place stand.",
+            "End a delegation of the caller's approvals now; one that has not started never \
+             will. The delegation stays on record, marked ended. Decisions already made in their \
+             place stand. Days are UTC days.",
         )
         .label("End delegation")
         .resource("approval")
@@ -1233,25 +1239,26 @@ impl Command for EndDelegation {
         .fetch_optional(&mut *ctx.conn)
         .await?;
         let mut view = found.ok_or_else(|| Error::not_found("delegation"))?;
-        if view.starts_on >= today {
-            // Not begun: it never will.
-            sqlx::query("DELETE FROM approval_delegation WHERE id = $1")
-                .bind(view.id)
-                .execute(&mut *ctx.conn)
-                .await?;
-            view.ends_on = view.starts_on;
-        } else if view.ends_on >= today {
-            // In force: its last day was yesterday.
-            let yesterday = today.pred_opt().unwrap_or(today);
-            sqlx::query("UPDATE approval_delegation SET ends_on = $2 WHERE id = $1")
-                .bind(view.id)
-                .bind(yesterday)
-                .execute(&mut *ctx.conn)
-                .await?;
-            view.ends_on = yesterday;
-        } else {
+        if view.ended_at.is_some() || view.ends_on < today {
+            // Ended already, or over.
             ctx.no_change();
+            return Ok(view);
         }
+        // Kept, marked ended: it counts no more from now. One in force
+        // since before today lasted until yesterday; one that begins today
+        // or later never lasted.
+        let yesterday = today.pred_opt().unwrap_or(today);
+        let ends_on = yesterday.clamp(view.starts_on, view.ends_on);
+        let ended_at: DateTime<Utc> = sqlx::query_scalar(
+            "UPDATE approval_delegation SET ends_on = $2, ended_at = now() WHERE id = $1
+             RETURNING ended_at",
+        )
+        .bind(view.id)
+        .bind(ends_on)
+        .fetch_one(&mut *ctx.conn)
+        .await?;
+        view.ends_on = ends_on;
+        view.ended_at = Some(ended_at);
         Ok(view)
     }
 }

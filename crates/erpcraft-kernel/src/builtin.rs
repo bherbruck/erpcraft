@@ -91,6 +91,11 @@ impl Module for KernelModule {
                 name: "intercompany_link",
                 sql: include_str!("../migrations/0012_intercompany_link.sql"),
             },
+            Migration {
+                version: 13,
+                name: "delegation_ended",
+                sql: include_str!("../migrations/0013_delegation_ended.sql"),
+            },
         ]
     }
 
