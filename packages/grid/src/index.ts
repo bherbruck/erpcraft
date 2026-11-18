@@ -3,6 +3,7 @@
 export * from "./types";
 export { Grid, applyChanges, type GridProps, type LineEditing } from "./react/Grid";
 export * from "./react/slots";
+export * from "./react/filters";
 export * from "./core/columns";
 export * from "./core/dates";
 export * from "./core/decimal";

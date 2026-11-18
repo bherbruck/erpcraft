@@ -18,7 +18,6 @@ import {
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import {
   type CSSProperties,
-  type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   memo,
   type MouseEvent as ReactMouseEvent,
@@ -45,7 +44,7 @@ import {
 } from "../core/columns";
 import { formatDecimal, sumDecimals, toDecimal } from "../core/decimal";
 import { copyRange, EditHistory, type HistoryEntry, planClear, planEdit, planPaste, type Sheet } from "../core/editing";
-import { DEFAULT_LABELS, describeFilter, emptyCondition, isComplete, matches } from "../core/filters";
+import { DEFAULT_LABELS, describeFilter, filterKind, isComplete, matches } from "../core/filters";
 import { defaultLayout, moveColumn, reconcileLayout } from "../core/layout";
 import {
   type Cell,
@@ -73,10 +72,11 @@ import type {
   Option,
   RejectedCell,
 } from "../types";
+import { type ChecklistOptions, useChecklistFilter, useConditionFilter } from "./filters";
 import {
   DEFAULT_GRID_LABELS,
+  type ElementProps,
   type FilterChip,
-  type GridClassNames,
   type GridLabels,
   type GridSlots,
   type SortInfo,
@@ -121,15 +121,15 @@ export interface GridProps<Row> {
   /** "Today" for relative date filters. */
   today?: Date;
   labels?: Partial<GridLabels>;
+  /** The design system: every visible element. See ./slots.ts and the README's skinning checklist. */
   slots: GridSlots<Row>;
-  classNames?: Partial<GridClassNames>;
   /** Height of the scrolling area. */
   height?: number | string;
   rowHeight?: number;
   "aria-label": string;
   /** Show the toolbar (search, filter chips, columns). Default true. */
   toolbar?: boolean;
-  /** Content put at the end of the toolbar slot's row, by the consumer. */
+  /** The consumer's own content for the toolbar (buttons, a "new" action). */
   toolbarExtra?: ReactNode;
 }
 
@@ -214,7 +214,6 @@ export function Grid<Row>(props: GridProps<Row>) {
     locale,
     today,
     slots,
-    classNames = {},
     height = 480,
     rowHeight = 32,
     toolbar = true,
@@ -431,7 +430,9 @@ export function Grid<Row>(props: GridProps<Row>) {
     navRef.current = next;
     setNavState(next);
   }, []);
-  const [menuColumn, setMenuColumn] = useState<string | null>(null);
+  /** The open column menu or filter popover. */
+  const [menu, setMenu] = useState<{ columnId: string; kind: "column" | "filter" } | null>(null);
+  const menuColumn = menu?.columnId ?? null;
   const [editError, setEditError] = useState<{ row: number; col: number; message: string } | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const history = useRef(new EditHistory()).current;
@@ -440,6 +441,15 @@ export function Grid<Row>(props: GridProps<Row>) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLInputElement & HTMLSelectElement & HTMLTextAreaElement>(null);
   const hasFocus = useRef(false);
+  // Callback refs: a slot may render any element (a div, a table), so the grid takes whichever it gets.
+  const setRootRef = useCallback((el: HTMLElement | null) => {
+    rootRef.current = el as HTMLDivElement | null;
+  }, []);
+  const setScrollerRef = useCallback((el: HTMLElement | null) => {
+    scrollerRef.current = el as HTMLDivElement | null;
+  }, []);
+  const menuRef = useRef(menu);
+  menuRef.current = menu;
 
   const editable = onEdit !== undefined;
   const sheet: Sheet<Row> = useMemo(
@@ -522,15 +532,20 @@ export function Grid<Row>(props: GridProps<Row>) {
   // ------------------------------------------------------------ virtual rows
   const [headerHeight, setHeaderHeight] = useState(rowHeight);
   const headerRef = useRef<HTMLDivElement>(null);
+  const [headerElement, setHeaderElement] = useState<HTMLElement | null>(null);
+  const setHeaderRef = useCallback((el: HTMLElement | null) => {
+    headerRef.current = el as HTMLDivElement | null;
+    setHeaderElement(el);
+  }, []);
   useLayoutEffect(() => {
-    const el = headerRef.current;
+    const el = headerElement;
     if (!el) return undefined;
     const measure = () => setHeaderHeight(el.offsetHeight || rowHeight);
     measure();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
     observer?.observe(el);
     return () => observer?.disconnect();
-  }, [rowHeight]);
+  }, [rowHeight, headerElement]);
 
   const keepRows = useRef<number[]>([]);
   keepRows.current = [active.row, nav.extent.row].filter((r) => r >= 0 && r < rowCount);
@@ -663,7 +678,10 @@ export function Grid<Row>(props: GridProps<Row>) {
           }
           case "openMenu": {
             const column = shown[effect.col];
-            if (column) setMenuColumn(column.id);
+            if (!column) break;
+            // A column that cannot be filtered opens its menu instead.
+            const kind = effect.menu === "filter" && column.filterable === false ? "column" : effect.menu;
+            setMenu({ columnId: column.id, kind });
             break;
           }
           case "beginEdit":
@@ -720,9 +738,23 @@ export function Grid<Row>(props: GridProps<Row>) {
     el?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
   }, [scrollKey]);
 
-  const onFocusIn = useCallback(() => {
-    hasFocus.current = true;
-  }, []);
+  const onFocusIn = useCallback(
+    (event: React.FocusEvent) => {
+      hasFocus.current = true;
+      // A control inside a cell (a header's sort or menu button, focused by a
+      // click or by a menu closing) hands focus to the active cell, so the
+      // grid keeps one tab stop and its keys.
+      const target = event.target as HTMLElement;
+      if (menuRef.current !== null || target.matches(EDITOR_SELECTOR)) return;
+      const owner = target.closest<HTMLElement>("[data-grid-cell]");
+      if (!owner || owner === target || !rootRef.current?.contains(owner)) return;
+      const { active: at } = navRef.current;
+      const cell =
+        scrollerRef.current?.querySelector<HTMLElement>(`[data-row="${at.row}"][data-col="${at.col}"]`) ?? owner;
+      cell.focus({ preventScroll: true });
+    },
+    [],
+  );
   const onFocusOut = useCallback(
     (event: React.FocusEvent) => {
       const next = event.relatedTarget as Node | null;
@@ -834,7 +866,6 @@ export function Grid<Row>(props: GridProps<Row>) {
   useEffect(() => {
     const stop = () => {
       dragging.current = false;
-      resizeStarted.current = false;
     };
     window.addEventListener("mouseup", stop);
     return () => window.removeEventListener("mouseup", stop);
@@ -884,6 +915,25 @@ export function Grid<Row>(props: GridProps<Row>) {
     [setNav],
   );
 
+  /** For an editor whose own list keeps the keys (a select, a combobox): commit as Enter would. */
+  const commitEdit = useCallback(
+    (text?: string) => {
+      const state = navRef.current;
+      if (!state.editing) return;
+      const edit = text === undefined ? state.editing : { ...state.editing, draft: text };
+      const outcome = handleKey({ ...state, editing: edit }, { key: "Enter" }, navContextRef.current);
+      setNav(outcome.state);
+      runEffects(outcome.effects, { ...state, editing: edit });
+    },
+    [runEffects, setNav],
+  );
+  const cancelEdit = useCallback(() => {
+    const state = navRef.current;
+    if (!state.editing) return;
+    setNav({ ...state, editing: null });
+    setEditError(null);
+  }, [setNav]);
+
   const setDraft = useCallback(
     (text: string) => {
       const state = navRef.current;
@@ -895,7 +945,69 @@ export function Grid<Row>(props: GridProps<Row>) {
 
   // ------------------------------------------------------------ columns
   const [dragColumn, setDragColumn] = useState<string | null>(null);
-  const resizeStarted = useRef(false);
+  // Reordering by dragging a header, with pointer events: a native drag
+  // does not start from a button, and every header has one.
+  const headerDrag = useRef<{ columnId: string; startX: number; moving: boolean } | null>(null);
+  const dropHintRef = useRef<{ id: string; after: boolean } | null>(null);
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
+  useEffect(() => {
+    const move = (event: MouseEvent) => {
+      const drag = headerDrag.current;
+      if (!drag) return;
+      if (!drag.moving) {
+        if (Math.abs(event.clientX - drag.startX) < 6) return;
+        drag.moving = true;
+        setDragColumn(drag.columnId);
+      }
+      const over = document
+        .elementFromPoint(event.clientX, event.clientY)
+        ?.closest<HTMLElement>('[role="columnheader"][data-col]');
+      const target = over && scrollerRef.current?.contains(over) ? shownRef.current[Number(over.dataset.col)] : undefined;
+      let hint: { id: string; after: boolean } | null = null;
+      if (over && target && target.id !== drag.columnId) {
+        const rect = over.getBoundingClientRect();
+        hint = { id: target.id, after: event.clientX > rect.left + rect.width / 2 };
+      }
+      if (hint?.id !== dropHintRef.current?.id || hint?.after !== dropHintRef.current?.after) {
+        dropHintRef.current = hint;
+        setDropHint(hint);
+      }
+    };
+    const up = () => {
+      const drag = headerDrag.current;
+      headerDrag.current = null;
+      if (!drag?.moving) return;
+      const hint = dropHintRef.current;
+      dropHintRef.current = null;
+      setDragColumn(null);
+      setDropHint(null);
+      // The click that ends a drag does not sort.
+      const swallow = (event: Event) => {
+        event.stopPropagation();
+        event.preventDefault();
+      };
+      window.addEventListener("click", swallow, { capture: true, once: true });
+      setTimeout(() => window.removeEventListener("click", swallow, { capture: true }), 0);
+      if (!hint) return;
+      const dragged = drag.columnId;
+      setLayout((l) => {
+        // Dropped among pinned columns, a column takes their side.
+        const side = l.pinning.left.includes(hint.id) ? "left" : l.pinning.right.includes(hint.id) ? "right" : null;
+        const left = l.pinning.left.filter((x) => x !== dragged);
+        const right = l.pinning.right.filter((x) => x !== dragged);
+        if (side === "left") left.splice(left.indexOf(hint.id) + (hint.after ? 1 : 0), 0, dragged);
+        if (side === "right") right.splice(right.indexOf(hint.id) + (hint.after ? 1 : 0), 0, dragged);
+        return { ...l, order: moveColumn(l.order, dragged, hint.id, hint.after), pinning: { left, right } };
+      });
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    return () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+  }, []);
   const [dropHint, setDropHint] = useState<{ id: string; after: boolean } | null>(null);
 
   const measureCanvas = useRef<HTMLCanvasElement | null>(null);
@@ -968,7 +1080,7 @@ export function Grid<Row>(props: GridProps<Row>) {
   );
 
   const closeMenu = useCallback(() => {
-    setMenuColumn(null);
+    setMenu(null);
     hasFocus.current = true;
   }, []);
 
@@ -990,13 +1102,17 @@ export function Grid<Row>(props: GridProps<Row>) {
     });
   }, []);
 
+  /** Open a column's menu or filter by pointer or from a chip. Opened from the keyboard, the active cell stays. */
   const openMenuFor = useCallback(
-    (columnId: string) => {
+    (columnId: string, kind: "column" | "filter") => {
       const col = shown.findIndex((c) => c.id === columnId);
       if (col === -1) return;
-      const cell = { row: -1, col };
-      setNav({ ...navRef.current, active: cell, anchor: { row: 0, col }, extent: { row: 0, col }, editing: null });
-      setMenuColumn(columnId);
+      const state = navRef.current;
+      if (state.active.col !== col || state.active.row !== -1) {
+        const cell = { row: -1, col };
+        setNav({ ...state, active: cell, anchor: { row: 0, col }, extent: { row: 0, col }, editing: null });
+      }
+      setMenu({ columnId, kind });
     },
     [shown, setNav],
   );
@@ -1011,7 +1127,7 @@ export function Grid<Row>(props: GridProps<Row>) {
             columnId: f.id,
             label: describeFilter(column, f.value as FilterCondition, labels, locale, referenceLabels),
             remove: () => setFilter(f.id, null),
-            edit: () => openMenuFor(f.id),
+            edit: () => openMenuFor(f.id, "filter"),
           },
         ];
       }),
@@ -1085,7 +1201,8 @@ export function Grid<Row>(props: GridProps<Row>) {
     return { direction, order: sorting.length > 1 ? column.getSortIndex() + 1 : null };
   };
 
-  const { Header, ColumnMenu, FilterEditor, Toolbar, Pager, FooterCell, Empty } = slots;
+  const { Part, Row: RowSlot, HeaderCell, FooterCell, ResizeHandle, ColumnMenu, FilterPopover, Toolbar } = slots;
+  const { SearchBox, FilterChips, ColumnsMenu, Pager, Empty } = slots;
 
   const headerCells = shownColumns.map((tc, col) => {
     const column = shown[col] as GridColumn<Row>;
@@ -1093,33 +1210,67 @@ export function Grid<Row>(props: GridProps<Row>) {
     const condition = (columnFilters.find((f) => f.id === column.id)?.value as FilterCondition | undefined) ?? null;
     const align = alignOf(column.type);
     const sort = sortInfo(tc);
-    const menuOpen = menuColumn === column.id;
-    const filterNode =
-      column.filterable === false ? null : (
-        <FilterEditor
-          column={column}
-          condition={condition ?? emptyCondition(column.type)}
-          active={condition !== null}
-          onChange={(c) => setFilter(column.id, c)}
-          onClear={() => setFilter(column.id, null)}
-          onDone={closeMenu}
-          options={column.options ?? []}
-          loadOptions={column.loadOptions}
-          rememberLabels={rememberLabels}
-          labels={labels}
-        />
-      );
-    const menu = (
+    const pinned = tc.getIsPinned();
+    const filterable = column.filterable !== false;
+    const menuOpen = menu?.columnId === column.id && menu.kind === "column";
+    const filterOpen = menu?.columnId === column.id && menu.kind === "filter";
+    const filterLabel = `${labels.filter}: ${column.header}`;
+    const menuLabel = `${labels.columnMenu}: ${column.header}`;
+
+    const filter = filterable ? (
+      <FilterPopover
+        column={column}
+        open={filterOpen}
+        onOpenChange={(open) => (open ? openMenuFor(column.id, "filter") : closeMenu())}
+        triggerProps={{
+          tabIndex: -1,
+          "aria-label": filterLabel,
+          "aria-haspopup": "dialog",
+          "aria-expanded": filterOpen,
+          "data-grid-trigger": "",
+        }}
+        contentProps={{ "data-grid-menu": "", "aria-label": filterLabel }}
+        active={condition !== null}
+        labels={labels}
+      >
+        {filterOpen ? (
+          <FilterBody<Row>
+            column={column}
+            condition={condition}
+            onChange={(c) => setFilter(column.id, c)}
+            onDone={closeMenu}
+            labels={labels}
+            knownLabels={referenceLabels}
+            rememberLabels={rememberLabels}
+            slots={slots}
+          />
+        ) : null}
+      </FilterPopover>
+    ) : null;
+
+    const menuNode = (
       <ColumnMenu
         column={column}
         open={menuOpen}
-        onOpenChange={(open) => (open ? openMenuFor(column.id) : closeMenu())}
+        onOpenChange={(open) => (open ? openMenuFor(column.id, "column") : closeMenu())}
+        triggerProps={{
+          tabIndex: -1,
+          "aria-label": menuLabel,
+          "aria-haspopup": "menu",
+          "aria-expanded": menuOpen,
+          "data-grid-trigger": "",
+        }}
+        contentProps={{ "data-grid-menu": "", "aria-label": menuLabel }}
         sort={sort}
         sortable={tc.getCanSort()}
         sortAsc={() => tc.toggleSorting(false, tc.getIsSorted() !== false && sorting.length > 1)}
         sortDesc={() => tc.toggleSorting(true, tc.getIsSorted() !== false && sorting.length > 1)}
         clearSort={() => tc.clearSorting()}
-        pinned={tc.getIsPinned()}
+        filterable={filterable}
+        filtered={condition !== null}
+        openFilter={() => openMenuFor(column.id, "filter")}
+        clearFilter={() => setFilter(column.id, null)}
+        pinned={pinned}
         pin={(side) => pinColumn(column.id, side)}
         hideable={tc.getCanHide()}
         hide={() => {
@@ -1130,203 +1281,211 @@ export function Grid<Row>(props: GridProps<Row>) {
         canMoveLeft={col > 0}
         canMoveRight={col < shownColumns.length - 1}
         move={(direction) => moveShown(column.id, direction)}
-        filter={filterNode}
         labels={labels}
       />
     );
-    return (
-      <div
-        key={column.id}
-        role="columnheader"
-        id={`${id}-h-${column.id}`}
-        aria-colindex={col + 1}
-        aria-sort={sort ? (sort.direction === "asc" ? "ascending" : "descending") : tc.getCanSort() ? "none" : undefined}
-        tabIndex={isActive || (rowCount === 0 && active.col === col) ? 0 : -1}
-        data-grid-cell=""
-        data-row={-1}
-        data-col={col}
-        data-active={isActive ? "" : undefined}
-        data-pinned={tc.getIsPinned() || undefined}
-        data-sorted={sort?.direction}
-        data-filtered={condition ? "" : undefined}
-        data-type={column.type}
-        data-align={align}
-        data-dragging={dragColumn === column.id ? "" : undefined}
-        data-drop={dropHint?.id === column.id ? (dropHint.after ? "after" : "before") : undefined}
-        className={classNames.headerCell}
-        style={cellStyle(tc, true)}
-        draggable={menuColumn === null}
-        onDragStart={(event: DragEvent) => {
-          // A drag that starts on the resize handle resizes; it does not move the column.
-          if (resizeStarted.current || !outsidePortal(event)) {
-            event.preventDefault();
-            return;
-          }
-          event.dataTransfer.setData("text/x-grid-column", column.id);
-          event.dataTransfer.effectAllowed = "move";
-          setDragColumn(column.id);
-        }}
-        onDragOver={(event: DragEvent) => {
-          if (!dragColumn || dragColumn === column.id) return;
-          event.preventDefault();
-          const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-          const after = event.clientX > rect.left + rect.width / 2;
-          if (dropHint?.id !== column.id || dropHint.after !== after) setDropHint({ id: column.id, after });
-        }}
-        onDragLeave={() => setDropHint((h) => (h?.id === column.id ? null : h))}
-        onDrop={(event: DragEvent) => {
-          event.preventDefault();
-          const dragged = event.dataTransfer.getData("text/x-grid-column") || dragColumn;
-          if (dragged && dropHint) {
-            setLayout((l) => {
-              // Dropped among pinned columns, a column takes their side.
-              const targetPin = l.pinning.left.includes(column.id)
-                ? "left"
-                : l.pinning.right.includes(column.id)
-                  ? "right"
-                  : null;
-              const left = l.pinning.left.filter((x) => x !== dragged);
-              const right = l.pinning.right.filter((x) => x !== dragged);
-              if (targetPin === "left") left.splice(left.indexOf(column.id) + (dropHint.after ? 1 : 0), 0, dragged);
-              if (targetPin === "right") right.splice(right.indexOf(column.id) + (dropHint.after ? 1 : 0), 0, dragged);
-              return { ...l, order: moveColumn(l.order, dragged, column.id, dropHint.after), pinning: { left, right } };
-            });
-          }
-          setDragColumn(null);
-          setDropHint(null);
-        }}
-        onDragEnd={() => {
-          setDragColumn(null);
-          setDropHint(null);
-        }}
-        onMouseDown={(event) => {
-          // React passes on events from portals (the column menu): only the header's own count.
-          if (!outsidePortal(event)) return;
-          // Clicks on the header's own controls go to them; the header just becomes active.
-          hasFocus.current = true;
-          if (navRef.current.editing) {
-            const state = navRef.current;
-            if (state.editing) runEffects([{ type: "commit", edit: state.editing }], state);
-          }
-          setNav({ ...navRef.current, active: { row: -1, col }, editing: null });
-        }}
-      >
-        <Header
+
+    const header = table.getHeaderGroups()[0]?.headers.find((h) => h.column.id === column.id);
+    const resizeHandle =
+      tc.getCanResize() && header ? (
+        <ResizeHandle
           column={column}
-          sort={sort}
-          sortable={tc.getCanSort()}
-          onSort={(multi) => tc.toggleSorting(undefined, multi)}
-          filtered={condition !== null}
-          align={align}
-          menu={menu}
-        />
-        {tc.getCanResize() ? (
-          // biome-ignore lint/a11y/noStaticElementInteractions: resizing by pointer; the menu fits by keyboard
-          <div
-            data-grid-resize=""
-            aria-hidden="true"
-            className={classNames.resizeHandle}
-            data-resizing={tc.getIsResizing() ? "" : undefined}
-            style={{ position: "absolute", top: 0, bottom: 0, right: 0, width: 6, cursor: "col-resize", zIndex: 4 }}
-            draggable={false}
-            onDragStart={(event) => event.preventDefault()}
-            onMouseDown={(event) => {
+          resizing={tc.getIsResizing()}
+          props={{
+            "aria-hidden": true,
+            "data-grid-resize": "",
+            "data-resizing": tc.getIsResizing() || undefined,
+            style: { position: "absolute", top: 0, bottom: 0, right: 0, cursor: "col-resize", touchAction: "none" },
+            onMouseDown: (event) => {
               event.stopPropagation();
-              resizeStarted.current = true;
-              table.getHeaderGroups()[0]?.headers.find((h) => h.column.id === column.id)?.getResizeHandler()(event);
-            }}
-            onTouchStart={(event) => {
+              header.getResizeHandler()(event);
+            },
+            onTouchStart: (event) => {
               event.stopPropagation();
-              table.getHeaderGroups()[0]?.headers.find((h) => h.column.id === column.id)?.getResizeHandler()(event);
-            }}
-            onDoubleClick={(event) => {
+              header.getResizeHandler()(event);
+            },
+            onDoubleClick: (event) => {
               event.stopPropagation();
               autoFit(column.id);
-            }}
-          />
-        ) : null}
-      </div>
+            },
+          }}
+        />
+      ) : null;
+
+    const props: ElementProps = {
+      role: "columnheader",
+      id: `${id}-h-${column.id}`,
+      "aria-colindex": col + 1,
+      "aria-sort": sort ? (sort.direction === "asc" ? "ascending" : "descending") : tc.getCanSort() ? "none" : undefined,
+      tabIndex: isActive ? 0 : -1,
+      "data-grid-cell": "",
+      "data-row": -1,
+      "data-col": col,
+      "data-active": isActive || undefined,
+      "data-pinned": pinned || undefined,
+      "data-sorted": sort?.direction,
+      "data-filtered": condition !== null || undefined,
+      "data-type": column.type,
+      "data-align": align,
+      "data-dragging": dragColumn === column.id || undefined,
+      "data-drop": dropHint?.id === column.id ? (dropHint.after ? "after" : "before") : undefined,
+      style: cellStyle(tc, true),
+      onMouseDown: (event) => {
+        // React passes on events from portals (the menus): only the header's own count.
+        if (!outsidePortal(event)) return;
+        // Pressing on the header (not its menu triggers) may start a drag that reorders columns.
+        const target = event.target as HTMLElement;
+        if (event.button === 0 && !target.closest("[data-grid-trigger], [data-grid-resize]")) {
+          headerDrag.current = { columnId: column.id, startX: event.clientX, moving: false };
+        }
+        hasFocus.current = true;
+        const state = navRef.current;
+        if (state.editing) runEffects([{ type: "commit", edit: state.editing }], state);
+        setNav({ ...navRef.current, active: { row: -1, col }, editing: null });
+      },
+    };
+
+    return (
+      <HeaderCell
+        key={column.id}
+        column={column}
+        props={props}
+        label={column.header}
+        sort={sort}
+        sortable={tc.getCanSort()}
+        sortProps={{
+          type: "button",
+          tabIndex: -1,
+          disabled: !tc.getCanSort(),
+          onClick: (event) => tc.toggleSorting(undefined, event.shiftKey),
+        }}
+        filtered={condition !== null}
+        active={isActive}
+        pinned={pinned}
+        align={align}
+        filter={filter}
+        menu={menuNode}
+        resizeHandle={resizeHandle}
+      />
     );
   });
 
   const searchable = shown.some(isSearchable);
+  const columnsMenu = (
+    <ColumnsMenu
+      columns={table.getAllLeafColumns().map((tc) => {
+        const column = (tc.columnDef.meta as ColumnMeta<Row>).column;
+        return {
+          column,
+          visible: tc.getIsVisible(),
+          hideable: tc.getCanHide(),
+          toggle: () => hideColumn(column.id, tc.getIsVisible()),
+        };
+      })}
+      resetLayout={() => setLayout(defaultLayout(columns))}
+      labels={labels}
+    />
+  );
+  const clearAll = () => {
+    setColumnFilters([]);
+    setSearch("");
+  };
+
+  const pageCount = Math.max(1, Math.ceil(totalRows / size));
+  const groupStyle: CSSProperties = { width: totalWidth, minWidth: "100%" };
 
   return (
-    <div
-      ref={rootRef}
-      className={classNames.root}
-      data-grid-root=""
-      data-mode={mode}
-      onFocus={onFocusIn}
-      onBlur={onFocusOut}
+    <Part
+      kind="root"
+      loading={loading}
+      props={{ ref: setRootRef, "data-grid-root": "", "data-mode": mode, onFocus: onFocusIn, onBlur: onFocusOut }}
     >
       {toolbar ? (
         <Toolbar
-          search={search}
-          setSearch={setSearch}
-          searchable={searchable}
-          chips={chips}
-          clearAll={() => {
-            setColumnFilters([]);
-            setSearch("");
-          }}
-          columns={table.getAllLeafColumns().map((tc) => {
-            const column = (tc.columnDef.meta as ColumnMeta<Row>).column;
-            return {
-              column,
-              visible: tc.getIsVisible(),
-              hideable: tc.getCanHide(),
-              toggle: () => hideColumn(column.id, tc.getIsVisible()),
-            };
-          })}
-          resetLayout={() => setLayout(defaultLayout(columns))}
-          labels={labels}
+          props={{ "data-grid-toolbar": "" }}
+          search={
+            searchable ? (
+              <SearchBox
+                value={search}
+                setValue={setSearch}
+                inputProps={{
+                  type: "search",
+                  value: search,
+                  onChange: (event) => setSearch(event.target.value),
+                  "aria-label": labels.search,
+                  placeholder: labels.search,
+                }}
+                labels={labels}
+              />
+            ) : null
+          }
+          chips={<FilterChips chips={chips} clearAll={clearAll} canClear={chips.length > 0 || search !== ""} labels={labels} />}
+          columns={columnsMenu}
           shownRows={server ? totalRows : rowCount}
           totalRows={totalRows}
+          extra={toolbarExtra}
+          labels={labels}
         />
-      ) : null}
-      {toolbarExtra}
-      {/* biome-ignore lint/a11y/useSemanticElements: an interactive data grid, not a table */}
-      <div
-        ref={scrollerRef}
-        role="grid"
-        id={id}
-        aria-label={props["aria-label"]}
-        aria-rowcount={ariaRowCount}
-        aria-colcount={colCount}
-        aria-multiselectable="true"
-        aria-busy={loading || undefined}
-        className={classNames.scroller}
-        data-grid-scroller=""
-        style={{
-          height,
-          overflow: "auto",
-          position: "relative",
-          scrollPaddingTop: headerHeight,
-          scrollPaddingBottom: footerHeight,
-          scrollPaddingLeft: leftWidth,
-          scrollPaddingRight: rightWidth,
-          overscrollBehavior: "contain",
+      ) : (
+        toolbarExtra
+      )}
+      <Part
+        kind="scroller"
+        loading={loading}
+        props={{
+          ref: setScrollerRef,
+          role: "grid",
+          id,
+          "aria-label": props["aria-label"],
+          "aria-rowcount": ariaRowCount,
+          "aria-colcount": colCount,
+          "aria-multiselectable": true,
+          "aria-busy": loading || undefined,
+          "data-grid-scroller": "",
+          style: {
+            height,
+            overflow: "auto",
+            position: "relative",
+            scrollPaddingTop: headerHeight,
+            scrollPaddingBottom: footerHeight,
+            scrollPaddingLeft: leftWidth,
+            scrollPaddingRight: rightWidth,
+            overscrollBehavior: "contain",
+          },
+          onKeyDown,
+          onCopy,
+          onCut,
+          onPaste,
         }}
-        onKeyDown={onKeyDown}
-        onCopy={onCopy}
-        onCut={onCut}
-        onPaste={onPaste}
       >
-        <div
-          ref={headerRef}
-          role="rowgroup"
-          className={classNames.header}
-          style={{ position: "sticky", top: 0, zIndex: 2, width: totalWidth, minWidth: "100%" }}
+        <Part
+          kind="header"
+          loading={loading}
+          props={{
+            ref: setHeaderRef,
+            role: "rowgroup",
+            "data-grid-header": "",
+            style: { ...groupStyle, position: "sticky", top: 0, zIndex: 2 },
+          }}
         >
-          <div role="row" aria-rowindex={1} className={classNames.headerRow} style={{ display: "flex", width: totalWidth }}>
+          <RowSlot
+            kind="header"
+            row={null}
+            rowIndex={-1}
+            selected={false}
+            props={{ role: "row", "aria-rowindex": 1, style: { display: "flex", width: totalWidth } }}
+          >
             {headerCells}
-          </div>
-        </div>
-        <div
-          role="rowgroup"
-          className={classNames.body}
-          style={{ height: virtualizer.getTotalSize(), width: totalWidth, position: "relative" }}
+          </RowSlot>
+        </Part>
+        <Part
+          kind="body"
+          loading={loading}
+          props={{
+            role: "rowgroup",
+            "data-grid-body": "",
+            style: { height: virtualizer.getTotalSize(), width: totalWidth, position: "relative" },
+          }}
         >
           {virtualItems.map((item) => {
             const r = item.index;
@@ -1355,11 +1514,12 @@ export function Grid<Row>(props: GridProps<Row>) {
                 editable={editable}
                 locale={locale}
                 slots={slots}
-                classNames={classNames}
                 rowIdOf={rowIdOf}
                 gridId={id}
                 editorRef={editorRef}
                 setDraft={setDraft}
+                commitEdit={commitEdit}
+                cancelEdit={cancelEdit}
                 onMouseDown={onCellMouseDown}
                 onMouseEnter={onCellMouseEnter}
                 onDoubleClick={onCellDoubleClick}
@@ -1371,66 +1531,100 @@ export function Grid<Row>(props: GridProps<Row>) {
               <Empty filtered={filtered} loading={loading} labels={labels} />
             </div>
           ) : null}
-        </div>
+        </Part>
         {footerTotals ? (
-          <div
-            role="rowgroup"
-            className={classNames.footer}
-            style={{ position: "sticky", bottom: 0, zIndex: 2, width: totalWidth, minWidth: "100%" }}
+          <Part
+            kind="footer"
+            loading={loading}
+            props={{
+              role: "rowgroup",
+              "data-grid-footer": "",
+              style: { ...groupStyle, position: "sticky", bottom: 0, zIndex: 2 },
+            }}
           >
-            <div role="row" aria-rowindex={ariaRowCount} style={{ display: "flex", width: totalWidth, height: rowHeight }}>
+            <RowSlot
+              kind="footer"
+              row={null}
+              rowIndex={-1}
+              selected={false}
+              props={{ role: "row", "aria-rowindex": ariaRowCount, style: { display: "flex", width: totalWidth } }}
+            >
               {shownColumns.map((tc, col) => {
                 const column = shown[col] as GridColumn<Row>;
                 const found = footerTotals.get(column.id);
+                const align = alignOf(column.type);
                 return (
-                  <div
+                  <FooterCell
                     key={column.id}
-                    role="gridcell"
-                    aria-colindex={col + 1}
-                    className={classNames.footerCell}
-                    data-type={column.type}
-                    data-align={alignOf(column.type)}
-                    data-pinned={tc.getIsPinned() || undefined}
-                    style={cellStyle(tc, true)}
-                  >
-                    <FooterCell
-                      column={column}
-                      total={found?.total ?? null}
-                      text={found ? found.text : col === 0 ? labels.total : ""}
-                      align={alignOf(column.type)}
-                    />
-                  </div>
+                    column={column}
+                    total={found?.total ?? null}
+                    text={found ? found.text : col === 0 ? labels.total : ""}
+                    align={align}
+                    props={{
+                      role: "gridcell",
+                      "aria-colindex": col + 1,
+                      "data-type": column.type,
+                      "data-align": align,
+                      "data-pinned": tc.getIsPinned() || undefined,
+                      style: cellStyle(tc, true),
+                    }}
+                  />
                 );
               })}
-            </div>
-          </div>
+            </RowSlot>
+          </Part>
         ) : null}
-      </div>
+      </Part>
       {server ? (
         <Pager
           page={pageIndex}
-          pageCount={Math.max(1, Math.ceil(totalRows / size))}
+          pageCount={pageCount}
           pageSize={size}
           total={totalRows}
-          setPage={(page) => setPageIndex(Math.max(0, page))}
+          setPage={(page) => setPageIndex(Math.max(0, Math.min(page, pageCount - 1)))}
+          canPrevious={pageIndex > 0}
+          canNext={pageIndex < pageCount - 1}
           labels={labels}
         />
       ) : null}
-      <div
-        aria-live="polite"
-        role="status"
-        className={classNames.live}
-        data-grid-live=""
-        style={
-          classNames.live
-            ? undefined
-            : { position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap" }
-        }
-      >
+      <div aria-live="polite" role="status" data-grid-live="" style={VISUALLY_HIDDEN}>
         {announcement}
       </div>
-    </div>
+    </Part>
   );
+}
+
+/** Read by screen readers, never seen: not a look, so the grid keeps it. */
+const VISUALLY_HIDDEN: CSSProperties = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  margin: -1,
+  padding: 0,
+  border: 0,
+  overflow: "hidden",
+  clip: "rect(0 0 0 0)",
+  whiteSpace: "nowrap",
+};
+
+/** The filter form for a column: a checklist or a condition, through the slots. */
+function FilterBody<Row>(
+  props: ChecklistOptions<Row> & { slots: GridSlots<Row> },
+) {
+  const kind = filterKind(props.column.type);
+  return kind === "set" ? <ChecklistHost {...props} /> : <ConditionHost {...props} />;
+}
+
+function ChecklistHost<Row>({ slots, ...options }: ChecklistOptions<Row> & { slots: GridSlots<Row> }) {
+  const state = useChecklistFilter(options);
+  const { ChecklistFilter } = slots;
+  return <ChecklistFilter {...state} />;
+}
+
+function ConditionHost<Row>({ slots, ...options }: ChecklistOptions<Row> & { slots: GridSlots<Row> }) {
+  const state = useConditionFilter(options);
+  const { ConditionFilter } = slots;
+  return <ConditionFilter {...state} />;
 }
 
 interface GridRowProps<Row> {
@@ -1454,109 +1648,130 @@ interface GridRowProps<Row> {
   editable: boolean;
   locale: string | undefined;
   slots: GridSlots<Row>;
-  classNames: Partial<GridClassNames>;
   rowIdOf: (row: Row, index: number) => string;
   gridId: string;
   editorRef: React.RefObject<(HTMLInputElement & HTMLSelectElement & HTMLTextAreaElement) | null>;
   setDraft(text: string): void;
+  commitEdit(text?: string): void;
+  cancelEdit(): void;
   onMouseDown(event: ReactMouseEvent, row: number, col: number): void;
   onMouseEnter(row: number, col: number): void;
   onDoubleClick(row: number, col: number): void;
 }
 
 function GridRowInner<Row>(props: GridRowProps<Row>) {
-  const { row, rowIndex: r, shownColumns, shown, slots, classNames, editing, error } = props;
-  const { Cell: CellSlot, Editor } = slots;
+  const { row, rowIndex: r, shownColumns, shown, slots, editing, error } = props;
+  const { Row: RowSlot, Cell: CellSlot, Editor } = slots;
   const rowId = props.rowIdOf(row, r);
+  const selectedRow = props.selLeft !== -1;
   return (
-    <div
-      role="row"
-      aria-rowindex={props.ariaRowIndex}
-      data-row-id={rowId}
-      data-selected={props.selLeft !== -1 ? "" : undefined}
-      className={classNames.row}
-      style={{
-        position: "absolute",
-        top: 0,
-        left: 0,
-        display: "flex",
-        width: props.width,
-        height: props.height,
-        transform: `translateY(${props.top}px)`,
+    <RowSlot
+      kind="body"
+      row={row}
+      rowIndex={r}
+      selected={selectedRow}
+      props={{
+        role: "row",
+        "aria-rowindex": props.ariaRowIndex,
+        "data-row-id": rowId,
+        "data-selected": selectedRow || undefined,
+        style: {
+          position: "absolute",
+          top: 0,
+          left: 0,
+          display: "flex",
+          width: props.width,
+          height: props.height,
+          transform: `translateY(${props.top}px)`,
+        },
       }}
     >
       {shownColumns.map((tc, c) => {
         const column = shown[c] as GridColumn<Row>;
         const value = cellValue(column, row);
         const isActive = props.activeCol === c;
-        const selected = c >= props.selLeft && c <= props.selRight && props.selLeft !== -1;
+        const selected = selectedRow && c >= props.selLeft && c <= props.selRight;
         const canEdit = props.editable && isEditable(column, row);
         const align = alignOf(column.type);
         const isEditing = editing !== null && editing.col === c;
         const cellError = error && error.col === c ? error.message : null;
+        const editor =
+          isEditing && editing ? (
+            <Editor
+              column={column}
+              row={row}
+              value={value}
+              draft={editing.draft}
+              setDraft={props.setDraft}
+              commit={props.commitEdit}
+              cancel={props.cancelEdit}
+              mode={editing.mode}
+              inputProps={{
+                ref: props.editorRef,
+                value: editing.draft,
+                onChange: (event) => props.setDraft(event.target.value),
+                "aria-label": column.header,
+                "aria-invalid": cellError ? true : undefined,
+                "data-grid-editor": "",
+                ...(column.type === "number" || column.type === "money" ? { inputMode: "decimal" as const } : {}),
+              }}
+              options={column.options ?? []}
+              loadOptions={column.loadOptions}
+              align={align}
+              error={cellError}
+            />
+          ) : null;
         return (
-          // biome-ignore lint/a11y/useFocusableInteractive: roving tabindex; the active cell has 0
-          <div
+          <CellSlot
             key={column.id}
-            role="gridcell"
-            id={`${props.gridId}-${r}-${c}`}
-            aria-colindex={c + 1}
-            aria-selected={selected}
-            aria-readonly={!canEdit || undefined}
-            aria-invalid={cellError ? true : undefined}
-            tabIndex={isActive ? 0 : -1}
-            data-grid-cell=""
-            data-row={r}
-            data-col={c}
-            data-active={isActive ? "" : undefined}
-            data-selected={selected ? "" : undefined}
-            data-editing={isEditing ? "" : undefined}
-            data-editable={canEdit ? "" : undefined}
-            data-pinned={tc.getIsPinned() || undefined}
-            data-type={column.type}
-            data-align={align}
-            data-sel-top={selected && props.selTop ? "" : undefined}
-            data-sel-bottom={selected && props.selBottom ? "" : undefined}
-            data-sel-left={selected && c === props.selLeft ? "" : undefined}
-            data-sel-right={selected && c === props.selRight ? "" : undefined}
-            className={classNames.cell}
-            style={{ ...props.cellStyle(tc), height: props.height }}
-            onMouseDown={(event) => outsidePortal(event) && props.onMouseDown(event, r, c)}
-            onMouseEnter={() => props.onMouseEnter(r, c)}
-            onDoubleClick={(event) => outsidePortal(event) && props.onDoubleClick(r, c)}
-          >
-            {isEditing && editing ? (
-              <Editor
-                column={column}
-                row={row}
-                value={value}
-                draft={editing.draft}
-                setDraft={props.setDraft}
-                mode={editing.mode}
-                inputRef={props.editorRef}
-                options={column.options ?? []}
-                loadOptions={column.loadOptions}
-                align={align}
-                error={cellError}
-              />
-            ) : (
-              <CellSlot
-                column={column}
-                row={row}
-                value={value}
-                text={formatCell(column, row, props.locale)}
-                rowIndex={r}
-                colIndex={c}
-                active={isActive}
-                selected={selected}
-                editable={canEdit}
-                align={align}
-              />
-            )}
-          </div>
+            column={column}
+            row={row}
+            value={value}
+            text={formatCell(column, row, props.locale)}
+            editor={editor}
+            rowIndex={r}
+            colIndex={c}
+            active={isActive}
+            selected={selected}
+            editing={isEditing}
+            editable={canEdit}
+            invalid={cellError !== null}
+            align={align}
+            props={{
+              role: "gridcell",
+              id: `${props.gridId}-${r}-${c}`,
+              "aria-colindex": c + 1,
+              "aria-selected": selected,
+              "aria-readonly": !canEdit || undefined,
+              "aria-invalid": cellError ? true : undefined,
+              tabIndex: isActive ? 0 : -1,
+              "data-grid-cell": "",
+              "data-row": r,
+              "data-col": c,
+              "data-active": isActive || undefined,
+              "data-selected": selected || undefined,
+              "data-sel-top": (selected && props.selTop) || undefined,
+              "data-sel-bottom": (selected && props.selBottom) || undefined,
+              "data-sel-left": (selected && c === props.selLeft) || undefined,
+              "data-sel-right": (selected && c === props.selRight) || undefined,
+              "data-editing": isEditing || undefined,
+              "data-editable": canEdit || undefined,
+              "data-pinned": tc.getIsPinned() || undefined,
+              "data-type": column.type,
+              "data-align": align,
+              style: { ...props.cellStyle(tc), height: props.height },
+              onMouseDown: (event) => {
+                if (outsidePortal(event)) props.onMouseDown(event, r, c);
+              },
+              onMouseEnter: () => props.onMouseEnter(r, c),
+              onDoubleClick: (event) => {
+                if (outsidePortal(event)) props.onDoubleClick(r, c);
+              },
+            }}
+          />
         );
       })}
-    </div>
+    </RowSlot>
   );
 }
 

@@ -20,8 +20,9 @@ import {
   toDecimal,
   toErpcraftQuery,
 } from "../src";
-import { referenceClassNames, referenceSlots } from "../src/reference";
-import "../src/reference/reference.css";
+import { referenceSlots } from "../src/reference";
+// Demo only: just enough to see the active cell and the selection. The package ships no CSS.
+import "./demo.css";
 import { CUSTOMERS, ITEMS, makeOrders, type Order, STATES, searchCustomers } from "./data";
 
 const slots = referenceSlots<Order>();
@@ -95,7 +96,6 @@ function ClientDemo() {
         columns={orderColumns}
         rows={rows}
         slots={slots}
-        classNames={referenceClassNames}
         onEdit={onEdit}
         onReport={setReport}
         onQueryChange={setQuery}
@@ -180,7 +180,6 @@ function ServerDemo() {
         loading={loading}
         pageSize={50}
         slots={slots}
-        classNames={referenceClassNames}
         onQueryChange={setQuery}
         height={480}
       />
@@ -249,7 +248,6 @@ function LinesDemo() {
         columns={lineColumns}
         rows={lines}
         slots={lineSlots}
-        classNames={referenceClassNames}
         toolbar={false}
         height={300}
         onEdit={(changes) => setLines((current) => applyChanges(current, changes, lineColumns))}

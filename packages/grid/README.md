@@ -3,10 +3,18 @@
 A headless data grid that works like a spreadsheet, for React 18 and 19. It is built on
 TanStack Table v8 and TanStack Virtual v3.
 
-The grid owns the structure, state, keyboard, focus, clipboard, sorting, filtering,
-column layout and virtual rows. A design system supplies the look through nine small
-**slot** components and a set of **class names**. `@erpcraft/grid/reference` holds a plain,
-unstyled version of every slot, used by the demo and the tests.
+The grid has **no look of its own**. It ships no CSS and no visual defaults: no colours,
+borders, fonts or spacing. It owns the behaviour: state, keyboard, focus, clipboard,
+sorting, filtering, column layout, virtual rows, ARIA and data attributes for state.
+Every visible element is drawn by a **slot** from the UI's own design system. The slot
+receives the state it shows and `props` to spread on its root element, so in each UI
+the grid looks exactly like that design system's table.
+
+`@erpcraft/grid/reference` holds bare, browser-default HTML versions of the slots, for
+the tests and the demo only. It is not a look to ship or start from: each UI writes its
+own skin from its own components (see the skinning checklist below). The demo adds a
+few lines of CSS of its own (`demo/demo.css`) so the active cell and the selection are
+visible; the package itself has none.
 
 ```sh
 bun install
@@ -20,7 +28,7 @@ bun run typecheck
 
 ```tsx
 import { applyChanges, Grid, type GridColumn, localStorageLayout } from "@erpcraft/grid";
-import { referenceClassNames, referenceSlots } from "@erpcraft/grid/reference";
+import { gridSlots } from "@/components/grid-slots"; // the UI's own skin
 
 const columns: GridColumn<Order>[] = [
   { id: "number", header: "Number", type: "text", pin: "left", hideable: false },
@@ -36,8 +44,7 @@ const columns: GridColumn<Order>[] = [
   aria-label="Sales orders"
   columns={columns}
   rows={rows}
-  slots={referenceSlots<Order>()}        // or your design system's slots
-  classNames={referenceClassNames}
+  slots={gridSlots<Order>()}
   onEdit={(changes) => setRows((r) => applyChanges(r, changes, columns))}
   onReport={(report) => report.rejected.length && toast(report)}
   layoutStorage={localStorageLayout()}
@@ -111,77 +118,90 @@ and new ones appear where they are defined.
 
 ## How a design system skins it
 
-Pass `slots` (all nine) and, optionally, `classNames`. Each slot only draws what it is
-given and calls back. State, focus and keys stay in the grid.
+A skin is an object with the 17 slots. Each slot gets **state** (what to show) and,
+where the grid needs an element of its own, **`props` to spread** on the slot's root
+element: role and ARIA, the roving `tabIndex`, `data-*` state attributes, event handlers,
+a callback `ref`, and the layout the virtual rows need in `style` (widths, sticky and
+absolute positions, `display: flex` on rows). Spread `props` first, then add the design
+system's classes, and keep `props.style`:
 
-| Slot | Draws | Receives |
-| --- | --- | --- |
-| `Cell` | the content of a body cell | `column, row, value, text, active, selected, editable, align` |
-| `Editor` | the input of the cell being edited | `draft, setDraft, mode, inputRef, options, loadOptions, align, error` |
-| `Header` | the content of a header cell | `column, sort {direction, order}, sortable, onSort(multi), filtered, align, menu` |
-| `ColumnMenu` | the menu trigger and its popover | `open, onOpenChange, sortAsc/Desc, clearSort, pin(side), hide, autoFit, move(±1), filter, labels` |
-| `FilterEditor` | the typed filter form inside the menu | `condition, active, onChange, onClear, onDone, options, loadOptions, rememberLabels` |
-| `Toolbar` | quick search, filter chips, "clear all", columns menu | `search, setSearch, chips[{label, remove, edit}], clearAll, columns[{visible, toggle}], resetLayout, shownRows, totalRows` |
-| `Pager` | paging in server mode | `page, pageCount, pageSize, total, setPage` |
-| `FooterCell` | a total | `column, total, text, align` |
-| `Empty` | the empty or loading state | `filtered, loading` |
+```tsx
+const Cell: GridSlots<Row>["Cell"] = ({ props, text, editor, align }) => (
+  <TableCell {...props} className={cn("h-9 px-2", align === "end" && "text-right tabular-nums",
+    "data-[selected]:bg-muted data-[active]:ring-2 data-[active]:ring-ring")}>
+    {editor ?? text}
+  </TableCell>
+);
+```
+
+Rows are positioned absolutely and laid out with flex, so a skin that uses `<table>`
+elements (shadcn's `Table`) keeps working: the `style` in `props` overrides their table
+display. Draw state from the data attributes (Tailwind `data-[active]:`, `data-[selected]:`),
+not from class names: the grid gives none.
+
+### Skinning checklist
+
+| Slot | Draws | shadcn/ui | Gets |
+| --- | --- | --- | --- |
+| `Part` kind `root` | wrapper around toolbar, grid and pager | `div` | `props` |
+| `Part` kind `scroller` | the scrolling `role="grid"` element | `Table` (or its container `div`) | `props`, `loading` |
+| `Part` kind `header` / `body` / `footer` | row groups | `TableHeader` / `TableBody` / `TableFooter` | `props` |
+| `Row` | header, body and footer rows | `TableRow` | `props`, `kind`, `row`, `selected` |
+| `HeaderCell` | a column header | `TableHead` with a ghost `Button` (`sortProps`) and sort icon (`ArrowUp`/`ArrowDown`, a small `Badge` for the order) | `props`, `label`, `sort`, `sortProps`, `filtered`, `filter`, `menu`, `resizeHandle` |
+| `Cell` | a body cell | `TableCell` | `props`, `text`, `editor`, `active`, `selected`, `editing`, `invalid`, `align` |
+| `FooterCell` | a total | `TableCell` in `TableFooter` | `props`, `text`, `total` |
+| `ResizeHandle` | the drag edge of a header | `div` (give it a width and a hover colour) | `props`, `resizing` |
+| `Editor` | the input of the cell being edited | `Input`; `Select` or a `Command` combobox for enum, state and reference (call `commit(value)` on choosing) | `inputProps`, `draft`, `setDraft`, `commit`, `cancel`, `options`, `loadOptions`, `error` |
+| `ColumnMenu` | the column menu and its trigger | `DropdownMenu` (`DropdownMenuTrigger asChild` + `triggerProps`, `DropdownMenuContent {...contentProps}`, items for sort, `openFilter`, pin, move, fit, hide) | `open`, `onOpenChange`, `triggerProps`, `contentProps`, actions |
+| `FilterPopover` | the filter button and popover | `Popover` (`PopoverTrigger asChild` + a ghost icon `Button` with `triggerProps`, `PopoverContent {...contentProps}`) | `open`, `onOpenChange`, `triggerProps`, `contentProps`, `active`, `children` |
+| `ConditionFilter` | text, number, date and boolean conditions | `Select` for `ops` and `ranges`, `Input {...valueProps}` / `{...toProps}`, `Button` Apply / Clear; `RadioGroup` for boolean | `ops`, `op`, `setOp`, `needsValue`, `needsTo`, `needsRange`, `valid`, `apply`, `clear` |
+| `ChecklistFilter` | the checklist with search | `Command` with `shouldFilter={false}`: `CommandInput value={search} onValueChange={setSearch}`, `CommandList` of `CommandItem onSelect={item.toggle}` with a `Checkbox`; `CommandEmpty`; a "Select all" item | `items`, `toggleAll`, `allChecked`, `emptyItem`, `loading`, `search`, `setSearch` |
+| `Toolbar` | the bar above the grid | `div` laying out its parts | `props`, `search`, `chips`, `columns`, `shownRows`, `totalRows`, `extra` |
+| `SearchBox` | quick search | `Input` | `inputProps` |
+| `FilterChips` | active filters, "clear all" | `Badge` per chip (a `button` to edit, an `X` button to remove), ghost `Button` "Clear all" | `chips`, `clearAll`, `canClear` |
+| `ColumnsMenu` | show and hide columns | `DropdownMenu` with `DropdownMenuCheckboxItem`s and a reset item | `columns`, `resetLayout` |
+| `Pager` | paging (server mode) | `Pagination` | `page`, `pageCount`, `setPage`, `canPrevious`, `canNext` |
+| `Empty` | no rows, loading | the UI's empty state, `Skeleton` | `filtered`, `loading` |
+
+For Astryx, map each row to its counterpart in the same way.
 
 The rules a skin has to keep:
 
-1. **The editor's input goes inside the cell, and gets `inputRef`.** The grid focuses it,
-   puts the caret at the end, and reads the keys that bubble from it (Enter, Tab, Escape,
-   arrows in "enter" mode). Call `setDraft` on every change. A combobox may show its list
-   in a portal. Keys pressed in that list stay with the list, so commit by putting the
-   chosen value into `draft`.
-2. **Mark every portal of the grid with `data-grid-menu`** (the popover content of the column
-   menu, a filter's date picker, and so on). Focus inside such an element still counts as
-   focus in the grid, and the grid ignores keys and clicks that come from it.
-3. **Inner header controls take `tabIndex={-1}`.** The header cell is the tab stop.
-   Enter sorts and Alt+ArrowDown opens the menu.
-4. **Call `onOpenChange(false)` when the menu closes** (Escape, a click outside, an action).
-   The grid then puts focus back on the cell or header the menu was opened from.
-5. Apply sorting from the header with `onSort(event.shiftKey)`, so Shift+click adds a sort.
-6. The `FilterEditor` decides when to apply a condition: the reference applies checklists at
-   once and typed conditions on Enter or "Apply". An incomplete condition removes the filter.
-   For the checklist of a reference column, call `rememberLabels(options)` so the chips can
-   show names instead of ids.
+1. **Spread `props` on the slot's own element and keep `props.style`**, `props.ref` and the
+   handlers. Merge, don't replace.
+2. **The editor's input goes inside the cell** and gets `inputProps` (with its `ref`). The grid
+   focuses it and reads the keys that bubble from it (Enter, Tab, Escape, arrows in "enter"
+   mode). An editor whose list lives in a portal (`Select`, a `Command` combobox) calls
+   `commit(value)` when a choice is made and `cancel()` on Escape, since its keys do not
+   reach the grid.
+3. **Put `contentProps` on every popover's content.** It carries `data-grid-menu`, which
+   keeps the grid's focus while the menu is open and makes the grid ignore keys and clicks
+   from it. A date picker or anything else the grid opens in a portal needs `data-grid-menu`
+   too.
+4. **Put `triggerProps` on the trigger buttons.** They are `tabIndex={-1}`: the header cell is
+   the tab stop. Clicking a trigger or the sort button hands focus back to the cell, so the
+   grid keeps its keys. Keys open them: Alt+ArrowDown the filter, Shift+F10 the menu.
+5. **Call `onOpenChange(false)` when a menu closes** (Escape, a click outside, an action).
+   The grid then puts focus back on its cell. Radix's own close autofocus is harmless: the
+   grid moves focus from the trigger to the cell.
+6. Sorting: spread `sortProps` on the header's button. It sorts on click and adds to the
+   sort on Shift+click. Show `sort.direction` and, in a multi-sort, `sort.order`.
+7. The filter forms are headless (`useConditionFilter`, `useChecklistFilter`, both
+   exported): a checklist applies as boxes are ticked, and a condition applies on Enter in
+   its inputs (`valueProps` handle it) or on `apply()`.
 
-A shadcn/ui `ColumnMenu`, roughly:
-
-```tsx
-function ShadcnColumnMenu<Row>(p: ColumnMenuSlotProps<Row>) {
-  return (
-    <Popover open={p.open} onOpenChange={p.onOpenChange}>
-      <PopoverTrigger asChild>
-        <Button variant="ghost" size="icon" tabIndex={-1} aria-label={`${p.labels.columnMenu}: ${p.column.header}`}>
-          <MoreVertical />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent data-grid-menu="" align="end" className="w-72">
-        {/* sort buttons, p.filter, pin / move / fit / hide */}
-      </PopoverContent>
-    </Popover>
-  );
-}
-```
-
-### Styling hooks
-
-`classNames` puts classes on the grid's own elements: `root, scroller, header, headerRow,
-headerCell, resizeHandle, body, row, cell, footer, footerCell, live`. State is exposed as
-data attributes, so a stylesheet or Tailwind's `data-[…]:` variants can style it:
+Data attributes the grid sets:
 
 | Element | Attributes |
 | --- | --- |
-| body cell | `data-active`, `data-selected`, `data-sel-top`, `data-sel-bottom`, `data-sel-left`, `data-sel-right` (edges of the selection), `data-editing`, `data-editable`, `data-pinned="left\|right"`, `data-type`, `data-align`, `aria-invalid` |
-| header cell | `data-active`, `data-sorted="asc\|desc"`, `data-filtered`, `data-pinned`, `data-dragging`, `data-drop="before\|after"` (reorder target), `data-type`, `data-align` |
+| body cell | `data-active`, `data-selected`, `data-sel-top`, `data-sel-bottom`, `data-sel-left`, `data-sel-right` (edges of the selection), `data-editing`, `data-editable`, `data-pinned="left\|right"`, `data-type`, `data-align`, `aria-invalid`, `aria-selected`, `aria-readonly` |
+| header cell | `data-active`, `data-sorted="asc\|desc"`, `data-filtered`, `data-pinned`, `data-dragging`, `data-drop="before\|after"` (reorder target), `data-type`, `data-align`, `aria-sort` |
 | row | `data-selected`, `data-row-id` |
 | resize handle | `data-resizing` |
-| root | `data-mode="client\|server"` |
+| root | `data-mode="client\|server"`; groups `data-grid-header`, `data-grid-body`, `data-grid-footer`; toolbar `data-grid-toolbar` |
 
-Numbers should be right-aligned with tabular figures (`font-variant-numeric: tabular-nums`),
-as the reference CSS does with `[data-type="number"], [data-type="money"]`. Pinned cells
-need an opaque background. The grid sets widths, sticky positions and z-index inline.
+Right-align numbers with tabular figures (`data-[align=end]:text-right tabular-nums`).
+Pinned cells and the sticky header and footer need an opaque background.
 
 ## Keyboard
 
@@ -231,7 +251,8 @@ leaves the arrow keys to the text, and F2 switches between the two modes.
 | --- | --- |
 | Enter / Space | Sort by the column (ascending, descending, none) |
 | Shift+Enter | Add the column to a multi-column sort |
-| Alt+ArrowDown, Shift+F10, ContextMenu | Open the column menu (sort, filter, pin, move, fit, hide). Alt+ArrowDown on a body cell opens its column's menu, as with Excel's filter. |
+| Alt+ArrowDown | Open the column's filter popover, as Excel's filter button does. It also works on a body cell. |
+| Shift+F10, ContextMenu | Open the column menu (sort, filter, pin, move, fit, hide). It also works on a body cell. |
 | ArrowLeft / ArrowRight / Home / End | Move along the header |
 | ArrowDown | Back to the first row |
 
@@ -246,7 +267,8 @@ leaves the arrow keys to the text, and F2 switches between the two modes.
 | Ctrl+- | Delete the selected rows |
 
 The mouse: a click on a header sorts it and Shift+click adds it to the sort. Dragging a
-header reorders the columns. Dropped among pinned columns, a column joins their side.
+header reorders the columns. This uses pointer events, so it works when the header is a
+button. Dropped among pinned columns, a column joins their side.
 Dragging a header's right edge resizes the column, and a double click on the edge fits
 it to its content.
 
@@ -271,8 +293,8 @@ announced in an `aria-live` region.
 | reference | checklist with search, loaded through `loadOptions` |
 | boolean | yes, no, empty |
 
-Active filters appear as chips in the Toolbar slot, each with a remove button and an edit
-action, plus "clear all". Quick search matches the shown text of every searchable column
+Active filters appear in the FilterChips slot, each with a remove action and an edit
+action that opens the filter popover, plus "clear all". Quick search matches the shown text of every searchable column
 (text, enum, state and reference by default).
 
 ## The erpcraft query adapter
@@ -319,7 +341,8 @@ src/core/layout.ts      layout reconcile, localStorage store, column move
 src/core/erpcraft.ts    toErpcraftQuery
 src/react/Grid.tsx      the component
 src/react/slots.ts      slot contracts and labels
-src/reference/          the plain renderer and its CSS
+src/react/filters.tsx   headless filter forms (useConditionFilter, useChecklistFilter)
+src/reference/          bare browser-default slots, for tests and the demo only
 demo/                   the demo page
 test/, e2e/             bun unit tests, Playwright tests
 ```

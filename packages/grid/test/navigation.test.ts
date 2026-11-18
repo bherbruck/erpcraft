@@ -240,15 +240,18 @@ describe("editing", () => {
 });
 
 describe("header row", () => {
-  test("Enter sorts, Shift+Enter adds to the sort, Alt+ArrowDown opens the menu", () => {
+  test("Enter sorts, Shift+Enter adds to the sort, Alt+ArrowDown opens the filter, Shift+F10 the menu", () => {
     const header = at(-1, 2);
     expect(press(header, ["Enter"]).effects).toEqual([{ type: "sort", col: 2, multi: false }]);
     expect(press(header, [{ key: "Enter", shift: true }]).effects).toEqual([{ type: "sort", col: 2, multi: true }]);
-    expect(press(header, [{ key: "ArrowDown", alt: true }]).effects).toEqual([{ type: "openMenu", col: 2 }]);
+    expect(press(header, [{ key: "ArrowDown", alt: true }]).effects).toEqual([{ type: "openMenu", col: 2, menu: "filter" }]);
+    expect(press(header, [{ key: "F10", shift: true }]).effects).toEqual([{ type: "openMenu", col: 2, menu: "column" }]);
+    expect(press(header, ["ContextMenu"]).effects).toEqual([{ type: "openMenu", col: 2, menu: "column" }]);
   });
 
-  test("Alt+ArrowDown on a cell opens its column's menu, as Excel's filter does", () => {
-    expect(press(at(3, 1), [{ key: "ArrowDown", alt: true }]).effects).toEqual([{ type: "openMenu", col: 1 }]);
+  test("Alt+ArrowDown on a cell opens its column's filter, as in Excel; Shift+F10 its menu", () => {
+    expect(press(at(3, 1), [{ key: "ArrowDown", alt: true }]).effects).toEqual([{ type: "openMenu", col: 1, menu: "filter" }]);
+    expect(press(at(3, 1), [{ key: "F10", shift: true }]).effects).toEqual([{ type: "openMenu", col: 1, menu: "column" }]);
   });
 });
 

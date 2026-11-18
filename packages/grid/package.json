@@ -3,14 +3,13 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "A headless, Excel-style data grid for React on TanStack Table and TanStack Virtual.",
+  "description": "A headless, Excel-style data grid for React on TanStack Table and TanStack Virtual. No CSS: a design system draws it through slots.",
   "license": "Apache-2.0",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./reference": "./src/reference/index.tsx",
-    "./reference.css": "./src/reference/reference.css"
+    "./reference": "./src/reference/index.tsx"
   },
   "scripts": {
     "demo": "vite --host 127.0.0.1 --port 5175 --strictPort",

@@ -73,7 +73,8 @@ export type Effect =
   | { type: "insertRow"; at: number }
   | { type: "deleteRows"; from: number; to: number }
   | { type: "sort"; col: number; multi: boolean }
-  | { type: "openMenu"; col: number };
+  /** "filter": the column's filter popover (Alt+ArrowDown, as Excel's filter button); "column": its menu. */
+  | { type: "openMenu"; col: number; menu: "filter" | "column" };
 
 export interface KeyResult {
   state: NavState;
@@ -271,7 +272,7 @@ function tab(state: NavState, ctx: NavContext, from: Cell, back: boolean, effect
 function handleHeader(state: NavState, input: KeyInput, ctx: NavContext): KeyResult {
   const col = state.active.col;
   const direction = ARROWS[input.key];
-  if (direction === "down" && input.alt) return result(state, [{ type: "openMenu", col }]);
+  if (direction === "down" && input.alt) return result(state, [{ type: "openMenu", col, menu: "filter" }]);
   if (direction === "down") return result(moveTo(state, { row: 0, col }));
   if (direction === "left" || direction === "right") {
     const next = clamp(col + (direction === "left" ? -1 : 1), 0, Math.max(ctx.colCount - 1, 0));
@@ -284,9 +285,9 @@ function handleHeader(state: NavState, input: KeyInput, ctx: NavContext): KeyRes
       if (ctx.sortable && !ctx.sortable(col)) return result(state);
       return result(state, [{ type: "sort", col, multi: Boolean(input.shift) }]);
     case "ContextMenu":
-      return result(state, [{ type: "openMenu", col }]);
+      return result(state, [{ type: "openMenu", col, menu: "column" }]);
     case "F10":
-      if (input.shift) return result(state, [{ type: "openMenu", col }]);
+      if (input.shift) return result(state, [{ type: "openMenu", col, menu: "column" }]);
       break;
     case "Home":
       return result(moveTo(state, { row: -1, col: 0 }));
@@ -312,7 +313,7 @@ export function handleKey(state: NavState, input: KeyInput, ctx: NavContext): Ke
 
   const direction = ARROWS[input.key];
   if (direction) {
-    if (input.alt && direction === "down") return result(state, [{ type: "openMenu", col: active.col }]);
+    if (input.alt && direction === "down") return result(state, [{ type: "openMenu", col: active.col, menu: "filter" }]);
     const from = input.shift ? state.extent : active;
     if (input.ctrl) return go(edgeOfData(from, direction, ctx), Boolean(input.shift));
     if (direction === "up" && from.row === 0 && !input.shift && ctx.headerRow) {
@@ -395,7 +396,10 @@ export function handleKey(state: NavState, input: KeyInput, ctx: NavContext): Ke
       }
       break;
     case "ContextMenu":
-      return result(state, [{ type: "openMenu", col: active.col }]);
+      return result(state, [{ type: "openMenu", col: active.col, menu: "column" }]);
+    case "F10":
+      if (input.shift) return result(state, [{ type: "openMenu", col: active.col, menu: "column" }]);
+      break;
   }
   if (isPrintable(input)) {
     if (!ctx.isEditable(active.row, active.col)) return result(state, [], false);

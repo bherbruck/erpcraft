@@ -1,0 +1,22 @@
+/* Demo page only, never part of the package: the bare reference slots
+   draw nothing, so these few rules make the grid's state visible here. */
+[data-grid-header],
+[data-grid-footer],
+[data-pinned] {
+  background: Canvas;
+}
+[role="gridcell"][data-selected] {
+  background: Highlight;
+  color: HighlightText;
+}
+[data-grid-cell][data-active] {
+  outline: 2px solid AccentColor;
+  outline-offset: -2px;
+}
+[data-grid-cell] {
+  white-space: nowrap;
+}
+[data-align="end"] {
+  text-align: right;
+  justify-content: flex-end;
+}

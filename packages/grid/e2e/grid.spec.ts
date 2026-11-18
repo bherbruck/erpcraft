@@ -19,6 +19,14 @@ async function focused(page: Page): Promise<string> {
   });
 }
 
+const chips = (page: Page) => page.getByRole("list", { name: "Filters" }).getByRole("listitem");
+const count = (page: Page) => page.locator("[data-grid-toolbar] output");
+const footer = (page: Page) => page.locator("[data-grid-footer] [role='gridcell']");
+const pager = (page: Page) => page.getByRole("navigation", { name: "Page" });
+/** The filter popover trigger of a column, by its header text. */
+const filterButton = (page: Page, name: string) => page.getByRole("button", { name: `Filter: ${name}`, exact: true });
+const menuButton = (page: Page, name: string) => page.getByRole("button", { name: `Column menu: ${name}`, exact: true });
+
 function cell(page: Page, row: number, col: number) {
   return page.locator(`[role="grid"] [data-row="${row}"][data-col="${col}"]`);
 }
@@ -189,6 +197,8 @@ test("click sorts, Shift+click adds a sort with order badges; focus stays", asyn
   const header = (col: number) => page.locator(`[role="columnheader"][data-col="${col}"]`);
   await header(COL.qty).locator("button").first().click();
   await expect(header(COL.qty)).toHaveAttribute("aria-sort", "ascending");
+  // The header's own button handed focus to the header cell: one tab stop, and its keys work.
+  expect(await focused(page)).toBe(`-1,${COL.qty}`);
   const first = Number(await cell(page, 0, COL.qty).textContent());
   const second = Number(await cell(page, 1, COL.qty).textContent());
   expect(first).toBeLessThanOrEqual(second);
@@ -196,8 +206,8 @@ test("click sorts, Shift+click adds a sort with order badges; focus stays", asyn
   await expect(header(COL.qty)).toHaveAttribute("aria-sort", "descending");
 
   await header(COL.status).locator("button").first().click({ modifiers: ["Shift"] });
-  await expect(header(COL.qty).locator(".rg-sort-order")).toHaveText("1");
-  await expect(header(COL.status).locator(".rg-sort-order")).toHaveText("2");
+  await expect(header(COL.qty).locator("[data-sort-order]")).toHaveText("1");
+  await expect(header(COL.status).locator("[data-sort-order]")).toHaveText("2");
 
   // By keyboard: Enter on a header sorts, and the header keeps focus.
   await cell(page, 0, COL.amount).click();
@@ -225,46 +235,46 @@ test("typed filters show as chips; chips remove; clear all; quick search", async
   await expect(menu).toBeHidden();
   // Focus came back to the cell the menu was opened from.
   expect(await focused(page)).toBe(`0,${COL.qty}`);
-  await expect(page.locator(".rg-chip")).toHaveCount(1);
-  await expect(page.locator(".rg-chip-label")).toHaveText("Qty ≥ 490");
-  const shown = await page.locator(".rg-count").textContent();
+  await expect(chips(page)).toHaveCount(1);
+  await expect(chips(page).first().getByRole("button").first()).toHaveText("Qty ≥ 490");
+  const shown = await count(page).textContent();
   expect(shown).toMatch(/^\d+ of 1000 rows$/);
   for (let r = 0; r < 3; r += 1) expect(Number(await cell(page, r, COL.qty).textContent())).toBeGreaterThanOrEqual(490);
 
   // A checklist on the state column.
-  await page.locator(`[role="columnheader"][data-col="${COL.status}"] .rg-menu-button`).click();
+  await filterButton(page, "Status").click();
   await menu.getByLabel("Draft").uncheck();
   await menu.getByLabel("Cancelled").uncheck();
   await menu.getByRole("button", { name: "Done" }).click();
-  await expect(page.locator(".rg-chip")).toHaveCount(2);
-  await expect(page.locator(".rg-chip-label").nth(1)).toContainText("Status: Submitted, Posted");
+  await expect(chips(page)).toHaveCount(2);
+  await expect(chips(page).nth(1).getByRole("button").first()).toContainText("Status: Submitted, Posted");
   for (let r = 0; r < 3; r += 1) await expect(cell(page, r, COL.status)).toHaveText(/Submitted|Posted/);
 
-  await page.locator(".rg-chip-remove").first().click();
-  await expect(page.locator(".rg-chip")).toHaveCount(1);
+  await chips(page).first().getByRole("button").nth(1).click();
+  await expect(chips(page)).toHaveCount(1);
 
   await page.getByRole("searchbox", { name: "Search" }).first().fill("Gift wrap");
   await expect(cell(page, 0, COL.memo)).toHaveText("Gift wrap");
   await page.getByRole("button", { name: "Clear all" }).click();
-  await expect(page.locator(".rg-chip")).toHaveCount(0);
-  await expect(page.locator(".rg-count")).toHaveText("1000 rows");
+  await expect(chips(page)).toHaveCount(0);
+  await expect(count(page)).toHaveText("1000 rows");
 });
 
 test("relative date filter and reference checklist loaded asynchronously", async ({ page }) => {
   await open(page);
-  await page.locator(`[role="columnheader"][data-col="${COL.date}"] .rg-menu-button`).click();
+  await filterButton(page, "Date").click();
   const menu = page.locator("[data-grid-menu]");
-  await menu.getByLabel("Condition").first().selectOption("relative");
-  await menu.locator("select").nth(1).selectOption("thisYear");
+  await menu.getByLabel("Condition").selectOption("relative");
+  await menu.getByLabel("Range").selectOption("thisYear");
   await menu.getByRole("button", { name: "Apply" }).click();
-  await expect(page.locator(".rg-chip-label")).toHaveText("Date: this year");
+  await expect(chips(page).first().getByRole("button").first()).toHaveText("Date: this year");
 
-  await page.locator(`[role="columnheader"][data-col="${COL.customer}"] .rg-menu-button`).click();
+  await filterButton(page, "Customer").click();
   await menu.getByRole("searchbox").fill("glob");
   await expect(menu.getByLabel("Globex")).toBeVisible();
   await menu.getByLabel("Globex").check();
   await menu.getByRole("button", { name: "Done" }).click();
-  await expect(page.locator(".rg-chip-label").nth(1)).toHaveText("Customer: Globex");
+  await expect(chips(page).nth(1).getByRole("button").first()).toHaveText("Customer: Globex");
   await expect(cell(page, 0, COL.customer)).toHaveText("Globex");
 });
 
@@ -281,16 +291,15 @@ test("focus is kept when a filter leaves no rows, and when rows re-order under i
   expect(await focused(page)).toBe(`-1,${COL.qty}`);
   await page.keyboard.press("Alt+ArrowDown");
   await menu.getByRole("button", { name: "Clear filter" }).click();
-  await page.keyboard.press("Escape");
+  await menu.getByRole("button", { name: "Apply" }).press("Escape");
   expect(await focused(page)).toBe(`-1,${COL.qty}`);
   await page.keyboard.press("ArrowDown");
   expect(await focused(page)).toBe(`0,${COL.qty}`);
 
   // Sorting re-orders the rows under the focused cell; it keeps focus.
   await page.keyboard.press("ArrowDown");
-  await page.keyboard.press("Alt+ArrowDown");
-  await menu.getByRole("button", { name: "Sort descending" }).click();
-  await page.keyboard.press("Escape");
+  await page.keyboard.press("Shift+F10");
+  await menu.getByRole("menuitem", { name: "Sort descending" }).click();
   expect(await focused(page)).toBe(`1,${COL.qty}`);
   // And an edit that changes the rows keeps it too.
   await page.keyboard.type("1");
@@ -319,16 +328,25 @@ test("columns: resize, auto-fit, hide, pin, reorder; the layout is saved", async
   expect(await width("memo")).toBeLessThan(before + 80);
 
   // Hide from the column menu.
-  await header("urgent").locator(".rg-menu-button").click();
-  await page.locator("[data-grid-menu]").getByRole("button", { name: "Hide column" }).click();
+  await menuButton(page, "Urgent").click();
+  await page.locator("[data-grid-menu]").getByRole("menuitem", { name: "Hide column" }).click();
   await expect(header("urgent")).toHaveCount(0);
 
   // Pin the amount column right, then reorder status before customer by dragging.
-  await header("amount").locator(".rg-menu-button").click();
-  await page.locator("[data-grid-menu]").getByRole("button", { name: "Pin right" }).click();
-  await page.keyboard.press("Escape");
+  await menuButton(page, "Amount").click();
+  await page.locator("[data-grid-menu]").getByRole("menuitem", { name: "Pin right" }).click();
   await expect(header("amount")).toHaveAttribute("data-pinned", "right");
-  await header("status").dragTo(header("customer"), { targetPosition: { x: 5, y: 10 } });
+  // Drag the status header onto the left half of customer's: it moves before it.
+  const from = await header("status").boundingBox();
+  const to = await header("customer").boundingBox();
+  if (!from || !to) throw new Error("no headers");
+  await page.mouse.move(from.x + 30, from.y + 10);
+  await page.mouse.down();
+  await page.mouse.move(to.x + 5, to.y + 10, { steps: 5 });
+  await expect(header("customer")).toHaveAttribute("data-drop", "before");
+  await page.mouse.up();
+  // The click that ends the drag did not sort.
+  await expect(header("status")).toHaveAttribute("aria-sort", "none");
   const order = await page.locator('[role="columnheader"]').evaluateAll((els) => els.map((e) => e.id.replace("demo-orders-h-", "")));
   expect(order).toEqual(["number", "status", "customer", "doc_date", "qty", "memo", "amount"]);
 
@@ -358,15 +376,15 @@ test("100k rows: virtual, fast to the end, footer totals", async ({ page }) => {
   await page.locator('[role="columnheader"][data-col="5"] button').first().click();
   await expect(page.locator('[role="columnheader"][data-col="5"]')).toHaveAttribute("aria-sort", "ascending");
   expect(Date.now() - t1).toBeLessThan(3000);
-  await expect(page.locator(".rg-tf").first()).toHaveText("Total");
-  await expect(page.locator(".rg-tf[data-type='money']")).toContainText(/\d{3},\d{3}\.\d{2}/);
+  await expect(footer(page).first()).toHaveText("Total");
+  await expect(footer(page).and(page.locator("[data-type='money']"))).toContainText(/\d{3},\d{3}\.\d{2}/);
 });
 
 test("server mode: the query state and the erpcraft query follow sort, filter and page", async ({ page }) => {
   await page.goto("/#server");
   await expect(page.locator('[role="gridcell"]').first()).toBeVisible();
   await page.locator('[role="columnheader"][data-col="5"] button').first().click();
-  await page.locator('[role="columnheader"][data-col="2"] .rg-menu-button').click();
+  await filterButton(page, "Status").click();
   const menu = page.locator("[data-grid-menu]");
   await menu.getByLabel("Draft").uncheck();
   await menu.getByLabel("Submitted").uncheck();
@@ -379,11 +397,11 @@ test("server mode: the query state and the erpcraft query follow sort, filter an
   // Unticking from "everything" keeps blanks, as Excel's checklist does.
   expect(erpcraft.input.where).toBe("(record.status in ['posted'] || record.status == null)");
   expect(erpcraft.input.offset).toBe(50);
-  await expect(page.locator(".rg-pager")).toContainText("Page 2 of");
+  await expect(pager(page)).toContainText("Page 2 of");
   for (let r = 0; r < 3; r += 1) await expect(cell(page, r, 2)).toHaveText("Posted");
   // A filter starts from the first page again.
   await page.getByRole("searchbox", { name: "Search" }).first().fill("Rush");
-  await expect(page.locator(".rg-pager")).toContainText("Page 1 of");
+  await expect(pager(page)).toContainText("Page 1 of");
 });
 
 test("line editing: ArrowDown on the last row adds one; Ctrl+- deletes; Ctrl++ inserts", async ({ page }) => {
@@ -411,7 +429,7 @@ test("line editing: ArrowDown on the last row adds one; Ctrl+- deletes; Ctrl++ i
   await expect(page.getByTestId("line-count")).toHaveText("5 lines");
   await expect(cell(page, 1, 1)).toHaveText("Bolts for frame");
   // Totals follow the lines.
-  await expect(page.locator(".rg-tf[data-type='money']").last()).toContainText("36.50");
+  await expect(footer(page).and(page.locator("[data-type='money']")).last()).toContainText("36.50");
 });
 
 test("Ctrl+X cuts: copies, then clears the editable cells", async ({ page }) => {
@@ -434,4 +452,26 @@ test("leaving the grid while editing commits the edit", async ({ page }) => {
   await page.keyboard.type("Typed then left");
   await page.getByTestId("before-grid").click();
   await expect(cell(page, 0, COL.memo)).toHaveText("Typed then left");
+});
+
+test("the column menu (Shift+F10) and its Filter… item; focus stays in the grid", async ({ page }) => {
+  await open(page);
+  await cell(page, 2, COL.memo).click();
+  await page.keyboard.press("Shift+F10");
+  const menu = page.locator("[data-grid-menu]");
+  await expect(menu.getByRole("menu")).toBeVisible();
+  await menu.getByRole("menuitem", { name: "Filter…" }).click();
+  await expect(menu.getByLabel("Condition")).toBeVisible();
+  await menu.getByLabel("Condition").selectOption("notEmpty");
+  await menu.getByRole("button", { name: "Apply" }).click();
+  await expect(menu).toHaveCount(0);
+  await expect(chips(page).first()).toContainText("Memo is not empty");
+  // Opened by pointer from the menu, the header of the column keeps focus.
+  expect(await focused(page)).toBe(`-1,${COL.memo}`);
+  // A chip opens the filter popover again; Escape closes it.
+  await chips(page).first().getByRole("button").first().click();
+  await expect(menu.getByLabel("Condition")).toHaveValue("notEmpty");
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  expect(await focused(page)).toBe(`-1,${COL.memo}`);
 });
