@@ -69,3 +69,47 @@ async fn document_lists_and_the_summary_refresh_use_the_kernels_indexes() {
         "{p}"
     );
 }
+
+/// The plan of `sql` with sequential scans off: whether an index can answer
+/// the query at all. For trigram indexes the planner's choice depends on how
+/// varied the text is, which test data says nothing about; on a copy of
+/// the AWC data it chose them (95 to 17 ms for a name filter on 57k
+/// customers).
+async fn usable(t: &TestApp, sql: &str, bind: &str) -> String {
+    let mut tx = t.pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL enable_seqscan = off")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let plan: Vec<String> = sqlx::query_scalar(&format!("EXPLAIN (COSTS OFF) {sql}"))
+        .bind(bind)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    plan.join("\n")
+}
+
+#[tokio::test]
+async fn an_item_list_can_find_items_by_part_of_their_name_through_an_index() {
+    let t = TestApp::start().await;
+    // `record.name.containsIgnoreCase(...)` as erpcraft-rules compiles it,
+    // and `q` as the entity list writes it over code and name.
+    let p = usable(
+        &t,
+        "SELECT * FROM item AS t WHERE (t.name ILIKE $1::text)",
+        "%bolt%",
+    )
+    .await;
+    assert!(p.contains("item_name_trgm"), "{p}");
+    let p = usable(
+        &t,
+        "SELECT * FROM item AS t WHERE (t.code::text ILIKE $1 OR t.name::text ILIKE $1)",
+        "%bolt%",
+    )
+    .await;
+    assert!(
+        p.contains("item_code_trgm") && p.contains("item_name_trgm"),
+        "{p}"
+    );
+}

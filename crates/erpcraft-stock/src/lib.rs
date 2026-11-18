@@ -74,6 +74,11 @@ impl Module for StockModule {
                 name: "reservation",
                 sql: include_str!("../migrations/0006_reservation.sql"),
             },
+            Migration {
+                version: 7,
+                name: "list_indexes",
+                sql: include_str!("../migrations/0007_list_indexes.sql"),
+            },
         ]
     }
 
