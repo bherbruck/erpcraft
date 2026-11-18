@@ -7,15 +7,13 @@ import { Card } from "@astryxdesign/core/Card";
 import { DateInput } from "@astryxdesign/core/DateInput";
 import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
-import { Link } from "@astryxdesign/core/Link";
-import { Skeleton } from "@astryxdesign/core/Skeleton";
-import { Table, TableBody, TableCell, TableFooter, TableHeader, TableHeaderCell, TableRow } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import type { ISODateString } from "@astryxdesign/core/utils";
 import { VStack } from "@astryxdesign/core/VStack";
 import { api } from "@/api/client";
 import type { StatementSection } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
+import { type Column, DataTable } from "@/components/data-table";
 import { Page } from "@/components/page";
 import { t } from "@/i18n/t";
 import { todayCalendarDate } from "@/lib/dates";
@@ -35,64 +33,41 @@ export function Money({ value, decimals, strong }: { value: string | null | unde
   );
 }
 
+interface StatementRow {
+  account_id: string;
+  code: string;
+  name: string;
+  balance: string;
+}
+
 function StatementTable({ title, section, decimals, range }: { title: string; section: StatementSection | undefined; decimals: number; range: string }) {
   const { meta } = useApp();
   const { code } = useCompany();
   const ledger = canRun(meta, "gl.account_ledger");
+  const columns: Column<StatementRow>[] = [
+    { id: "code", header: t("report.account_code"), width: 120, value: (row) => row.code },
+    { id: "name", header: t("report.account"), width: 300, value: (row) => row.name },
+    // The section's total is the grid's exact sum of its rows, under the column.
+    { id: "balance", header: t("report.amount"), type: "money", minFraction: decimals, total: true, width: 160, value: (row) => row.balance },
+  ];
   return (
     <VStack gap={2}>
       <Heading level={2}>{title}</Heading>
-      {section === undefined ? (
-        <Skeleton height={120} />
-      ) : (
-        <div className="fit-table">
-        <Table density="compact" dividers="rows" className="statement-table">
-          <colgroup>
-            <col className="col-code" />
-            <col />
-            <col className="col-amount" />
-          </colgroup>
-          <TableHeader>
-            <TableRow>
-              <TableHeaderCell>{t("report.account_code")}</TableHeaderCell>
-              <TableHeaderCell>{t("report.account")}</TableHeaderCell>
-              <TableHeaderCell className="num">{t("report.amount")}</TableHeaderCell>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {section.rows.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={3}>
-                  <Text color="secondary">{t("report.section_empty", { section: title })}</Text>
-                </TableCell>
-              </TableRow>
-            ) : (
-              section.rows.map((row) => (
-                <TableRow key={row.account_id}>
-                  <TableCell>
-                    {ledger ? <Link href={`${paths.report(code, "gl.account_ledger")}?account_id=${row.account_id}${range}`}>{row.code}</Link> : row.code}
-                  </TableCell>
-                  <TableCell>{row.name}</TableCell>
-                  <TableCell className="num">
-                    <Money value={row.balance} decimals={decimals} />
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-          <TableFooter>
-            <TableRow>
-              <TableCell colSpan={2}>
-                <Text weight="semibold">{t("report.section_total", { section: title })}</Text>
-              </TableCell>
-              <TableCell className="num">
-                <Money value={section.total} decimals={decimals} strong />
-              </TableCell>
-            </TableRow>
-          </TableFooter>
-        </Table>
-        </div>
-      )}
+      <DataTable
+        id={`statement.${title}`}
+        caption={title}
+        columns={columns}
+        rows={section?.rows}
+        rowKey={(row) => row.account_id}
+        rowHref={ledger ? (row) => `${paths.report(code, "gl.account_ledger")}?account_id=${row.account_id}${range}` : undefined}
+        empty={{ title: t("report.section_empty", { section: title }) }}
+      />
+      {section ? (
+        <HStack hAlign="between">
+          <Text type="supporting">{t("report.section_total", { section: title })}</Text>
+          <Money value={section.total} decimals={decimals} strong />
+        </HStack>
+      ) : null}
     </VStack>
   );
 }

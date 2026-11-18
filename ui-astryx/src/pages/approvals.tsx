@@ -110,14 +110,21 @@ export function ApprovalsPage() {
   const rows = isObject(requests.data) && Array.isArray(requests.data.items) ? (requests.data.items as unknown as ApprovalRequest[]) : undefined;
   const columns = useMemo<Column<ApprovalRequest>[]>(
     () => [
-      { id: "requested", header: t("approval.requested"), width: 170, cell: (r) => formatTimestamp(r.requested_at) },
-      { id: "command", header: t("approval.what"), cell: (r) => <Text weight="medium">{label(r.command)}</Text> },
-      { id: "subject", header: t("approval.on"), cell: (r) => <Subject command={r.command} input={r.input} /> },
-      { id: "message", header: t("approval.why"), cell: (r) => r.message ?? <Empty /> },
-      { id: "by", header: t("approval.asked_by"), width: 160, cell: (r) => r.requested_by_name ?? <Empty /> },
-      { id: "status", header: t("document.status"), width: 110, cell: (r) => <StatusOf status={r.status} /> },
+      { id: "requested", header: t("approval.requested"), type: "datetime", width: 170, value: (r) => r.requested_at, text: (r) => formatTimestamp(r.requested_at) },
+      { id: "command", header: t("approval.what"), width: 220, value: (r) => label(r.command) },
+      { id: "subject", header: t("approval.on"), width: 160, value: (r) => findCommand(meta, r.command)?.resource ?? "", cell: (r) => <Subject command={r.command} input={r.input} /> },
+      { id: "message", header: t("approval.why"), width: 320, value: (r) => r.message ?? "" },
+      { id: "by", header: t("approval.asked_by"), width: 160, value: (r) => r.requested_by_name ?? "" },
+      {
+        id: "status",
+        header: t("document.status"),
+        width: 120,
+        value: (r) => r.status,
+        text: (r) => (STATUSES[r.status] ? t((STATUSES[r.status] as { label: MessageKey }).label) : r.status),
+        cell: (r) => <StatusOf status={r.status} />,
+      },
     ],
-    [label],
+    [label, meta],
   );
   if (!list || !canRun(meta, list.name)) return <NotFoundPage />;
   return (
@@ -145,6 +152,8 @@ export function ApprovalsPage() {
       }
     >
       <DataTable
+        id="approvals"
+        fill
         caption={list.label}
         columns={columns}
         rows={rows}

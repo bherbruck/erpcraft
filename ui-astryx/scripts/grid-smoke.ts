@@ -143,6 +143,23 @@ try {
   await Bun.sleep(1500);
   check((await b.location()) === listUrl, `Back returned to the same sorted page (${await b.location()})`);
 
+  // ------------------------------------------------------------ a report on the grid, client mode
+  await b.goto(`${BASE}/c/OHIO/r/gl.trial_balance`);
+  await Bun.sleep(1200);
+  await b.evaluate(`(() => { const c = document.querySelector('[data-grid-body] [data-row="0"][data-col="0"]'); c?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); c?.focus(); })()`);
+  await b.key("ArrowDown", 8);
+  await b.key("End", 8);
+  const report = await b.evaluate(`(() => { const dt = new DataTransfer(); document.activeElement.dispatchEvent(new ClipboardEvent("copy", { clipboardData: dt, bubbles: true, cancelable: true })); return dt.getData("text/plain"); })()`);
+  check(typeof report === "string" && /^1000\t/.test(report) && report.split("\n").filter(Boolean).length === 2, `trial balance rows copied as TSV (${JSON.stringify(report).slice(0, 90)})`);
+  // Sorting in client mode: the balance, largest first.
+  const balance = await colIndex("Balance");
+  const sortBalance = `[data-grid-header] [role=columnheader]:nth-child(${balance + 1}) button`;
+  await b.evaluate(`document.querySelector(${JSON.stringify(sortBalance)})?.click()`);
+  await b.evaluate(`document.querySelector(${JSON.stringify(sortBalance)})?.click()`);
+  await Bun.sleep(400);
+  const top = await text(0, 0);
+  check(top === "1500", `sorted by balance in the browser, largest first (${top})`);
+
   if (b.errors.length) console.log(`page errors:\n${b.errors.join("\n")}`);
 } finally {
   await b.close();

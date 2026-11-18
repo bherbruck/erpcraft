@@ -4,7 +4,7 @@
 // operators and server-searched records, kept in the URL. The grid's own column filters are off.
 
 import { type CellChange, type ColumnType, Grid, type GridColumn, type GridQueryState, localStorageLayout } from "@erpcraft/grid";
-import { type KeyboardEvent, type ReactNode, useMemo, useRef } from "react";
+import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import type { FieldMeta, Json, JsonObject } from "@/api/types";
 import { t } from "@/i18n/t";
@@ -13,6 +13,7 @@ import { formatDecimal } from "@/lib/decimal";
 import { peekLinkLabel, shortId, useLinkLabelsVersion } from "@/lib/link-labels";
 import { enumLabel } from "@/lib/meta";
 import { astryxGridSlots, type GridCheck, type GridDecorate } from "./grid-skin";
+import { fitWidths } from "./grid-widths";
 
 const ROW_HEIGHT = 34;
 
@@ -175,7 +176,20 @@ export function ListGrid<R extends JsonObject>({
     [],
   );
   // biome-ignore lint/correctness/useExhaustiveDependencies: labels that arrive are re-read through a new column list
-  const shown = useMemo(() => columns.map((column) => ({ ...column })), [columns, labelsVersion]);
+  const [available, setAvailable] = useState(0);
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    const observer = new ResizeObserver(([entry]) => setAvailable(Math.floor((entry?.contentRect.width ?? 0) - 4)));
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, []);
+  // Widths fitted to the space and the page's content (a width the user dragged is kept).
+  const shown = useMemo(() => {
+    const widths = available > 0 ? fitWidths(columns, rows ?? [], available) : null;
+    return columns.map((column) => ({ ...column, width: widths?.get(column.id) ?? column.width }));
+  }, [columns, labelsVersion, rows, available]);
 
   // Enter (or Ctrl+Enter) on a cell of the link column opens the record, as the link would.
   const onKeyDownCapture = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -191,7 +205,7 @@ export function ListGrid<R extends JsonObject>({
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: Enter on a row's link cell opens it; the grid owns the other keys
-    <div className="list-grid" onKeyDownCapture={onKeyDownCapture}>
+    <div ref={boxRef} className="list-grid" onKeyDownCapture={onKeyDownCapture}>
       {rows !== undefined && rows.length === 0 && !loading && empty ? (
         empty
       ) : (

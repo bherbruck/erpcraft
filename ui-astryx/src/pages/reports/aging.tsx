@@ -10,7 +10,6 @@ import { Link } from "@astryxdesign/core/Link";
 import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Skeleton } from "@astryxdesign/core/Skeleton";
-import { Table, TableBody, TableCell, TableFooter, TableHeader, TableHeaderCell, TableRow } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import type { ISODateString } from "@astryxdesign/core/utils";
 import { VStack } from "@astryxdesign/core/VStack";
@@ -18,6 +17,7 @@ import { useMemo } from "react";
 import { api } from "@/api/client";
 import type { OpenItemAgingOutput } from "@/api/generated";
 import { useApp, useCompany } from "@/app/context";
+import { type Column, DataTable } from "@/components/data-table";
 import { LinkLabel } from "@/components/field-value";
 import { Page } from "@/components/page";
 import { t } from "@/i18n/t";
@@ -31,6 +31,7 @@ import { NotFoundPage } from "../not-found";
 import { Money } from "./statements";
 
 const REPORT = "open_item.aging";
+type Party = OpenItemAgingOutput["parties"][number];
 
 function isAging(value: unknown): value is OpenItemAgingOutput {
   return typeof value === "object" && value !== null && "parties" in value && "buckets" in value && "totals" in value;
@@ -82,80 +83,38 @@ export function AgingPage() {
         <Skeleton height={240} />
       ) : (
         <VStack gap={5}>
-          <div className="lines-scroll fit-table">
-            <Table density="compact" dividers="rows">
-              <TableHeader>
-                <TableRow>
-                  <TableHeaderCell>{t("aging.party")}</TableHeaderCell>
-                  {data.buckets.map((bucket) => (
-                    <TableHeaderCell key={bucket.label} className="num">
-                      {bucket.from_days === null ? t("aging.current") : t("aging.days", { label: bucket.label })}
-                    </TableHeaderCell>
-                  ))}
-                  <TableHeaderCell className="num">{t("aging.total")}</TableHeaderCell>
-                  <TableHeaderCell className="num">{t("aging.due_7")}</TableHeaderCell>
-                  <TableHeaderCell className="num">{t("aging.due_30")}</TableHeaderCell>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.parties.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={data.buckets.length + 4}>
-                      <Text color="secondary">{t("aging.empty")}</Text>
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  data.parties.map((party) => (
-                    <TableRow key={`${party.party_type}|${party.party_id}`}>
-                      <TableCell>
-                        <Link href={itemsOf(party.party_type, party.party_id)}>
-                          {party.party_name ?? <LinkLabel entity={party.party_type} keyField="id" value={party.party_id} />}
-                        </Link>
-                      </TableCell>
-                      {data.buckets.map((bucket, index) => {
-                        const value = party.amounts[index] ?? "0";
-                        return (
-                          <TableCell key={bucket.label} className="num">
-                            {isZeroDecimal(value) ? null : <Money value={value} decimals={decimals} />}
-                          </TableCell>
-                        );
-                      })}
-                      <TableCell className="num">
-                        <Money value={party.total} decimals={decimals} strong />
-                      </TableCell>
-                      <TableCell className="num">
-                        <Money value={party.due_next_7} decimals={decimals} />
-                      </TableCell>
-                      <TableCell className="num">
-                        <Money value={party.due_next_30} decimals={decimals} />
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-              <TableFooter>
-                <TableRow>
-                  <TableCell>
-                    <Text weight="semibold">{t("report.total")}</Text>
-                  </TableCell>
-                  {data.totals.map((value, index) => (
-                    <TableCell key={data.buckets[index]?.label ?? index} className="num">
-                      <Money value={value} decimals={decimals} strong />
-                    </TableCell>
-                  ))}
-                  <TableCell className="num">
-                    <Money value={data.total} decimals={decimals} strong />
-                  </TableCell>
-                  <TableCell className="num">
-                    <Money value={data.due_next_7} decimals={decimals} />
-                  </TableCell>
-                  <TableCell className="num">
-                    <Money value={data.due_next_30} decimals={decimals} />
-                  </TableCell>
-                </TableRow>
-              </TableFooter>
-            </Table>
-          </div>
+          <DataTable<Party>
+            id={`aging.${kind}`}
+            caption={reportTitle(command)}
+            columns={[
+              {
+                id: "party",
+                header: t("aging.party"),
+                width: 260,
+                value: (party) => party.party_name ?? party.party_id,
+                cell: (party) => (party.party_name ? undefined : <LinkLabel entity={party.party_type} keyField="id" value={party.party_id} />),
+              },
+              ...data.buckets.map(
+                (bucket, index): Column<Party> => ({
+                  id: `bucket-${index}`,
+                  header: bucket.from_days === null ? t("aging.current") : t("aging.days", { label: bucket.label }),
+                  type: "money",
+                  minFraction: decimals,
+                  total: true,
+                  width: 130,
+                  // An empty bucket shows nothing, as before; the total still adds it as zero.
+                  value: (party) => (isZeroDecimal(party.amounts[index] ?? "0") ? null : (party.amounts[index] ?? null)),
+                }),
+              ),
+              { id: "total", header: t("aging.total"), type: "money", minFraction: decimals, total: true, width: 140, value: (party) => party.total },
+              { id: "next7", header: t("aging.due_7"), type: "money", minFraction: decimals, total: true, width: 130, value: (party) => party.due_next_7 },
+              { id: "next30", header: t("aging.due_30"), type: "money", minFraction: decimals, total: true, width: 130, value: (party) => party.due_next_30 },
+            ]}
+            rows={data.parties}
+            rowKey={(party) => `${party.party_type}|${party.party_id}`}
+            rowHref={(party) => itemsOf(party.party_type, party.party_id)}
+            empty={{ title: t("aging.empty") }}
+          />
           {data.accounts.length > 0 ? (
             <VStack gap={2} maxWidth={720}>
               <Heading level={2}>{t("aging.accounts")}</Heading>

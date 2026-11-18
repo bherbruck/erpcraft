@@ -159,10 +159,18 @@ function problemsOf(error: ApiError, docType: DocTypeMeta): Problems | null {
 
 // ------------------------------------------------------------------ line grid
 
-/** The columns of a collection: its line fields, less read-only ones nobody has a value in yet. */
+/**
+ * The columns of a collection: its line fields, less read-only figures that say nothing yet
+ * (delivered, invoiced: blank or zero on every line). Amounts the server works out (net, tax)
+ * stay, since the preview fills them as the user types.
+ */
 function gridFields(collection: CollectionMeta, lines: Line[]): FieldMeta[] {
+  const nothing = (value: Json | undefined) => isBlank(value) || (typeof value === "string" && /^-?0*(\.0*)?$/.test(value));
   return lineFields(collection).filter(
-    (field) => !(field.readonly && lines.length > 0 && lines.every((line) => isBlank(line.values[field.name]))),
+    (field) =>
+      !field.readonly ||
+      field.decimal?.role === "money" ||
+      !(lines.length > 0 && lines.every((line) => nothing(line.values[field.name]))),
   );
 }
 
@@ -509,6 +517,7 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
               computed={dirty ? previewLines[collection.name] : undefined}
               companyId={doc?.company_id ?? company?.id ?? null}
               currency={typeof form.header.currency === "string" ? form.header.currency : (company?.base_currency ?? null)}
+              header={header}
               newLine={() => newLine(collection)}
               onChange={(update) =>
                 setForm((previous) => ({

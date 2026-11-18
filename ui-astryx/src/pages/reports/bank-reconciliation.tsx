@@ -18,7 +18,6 @@ import { api } from "@/api/client";
 import type { BankReconciliationOutput } from "@/api/generated";
 import { useApp, useCompany } from "@/app/context";
 import { type Column, DataTable } from "@/components/data-table";
-import { Empty } from "@/components/field-value";
 import { Lookup } from "@/components/lookup";
 import { Page } from "@/components/page";
 import { t } from "@/i18n/t";
@@ -52,25 +51,20 @@ export function BankReconciliationPage() {
 
   const outstandingColumns = useMemo<Column<Outstanding>[]>(
     () => [
-      { id: "date", header: t("bank.posting_date"), width: 130, cell: (row) => formatCalendarDate(row.posting_date) },
-      {
-        id: "document",
-        header: t("ledger.document"),
-        width: 220,
-        cell: (row) => `${findDocType(meta, row.doc_type)?.label ?? row.doc_type} ${row.number ?? t("document.unnumbered")}`,
-      },
-      { id: "memo", header: t("document.memo"), cell: (row) => row.memo ?? <Empty /> },
-      { id: "amount", header: t("report.amount"), align: "end", width: 150, cell: (row) => <Money value={row.amount} decimals={decimals} /> },
+      { id: "date", header: t("bank.posting_date"), type: "date", width: 130, value: (row) => row.posting_date, text: (row) => formatCalendarDate(row.posting_date) },
+      { id: "document", header: t("ledger.document"), width: 220, value: (row) => `${findDocType(meta, row.doc_type)?.label ?? row.doc_type} ${row.number ?? t("document.unnumbered")}` },
+      { id: "memo", header: t("document.memo"), width: 280, value: (row) => row.memo ?? "" },
+      { id: "amount", header: t("report.amount"), type: "money", minFraction: decimals, total: true, width: 150, value: (row) => row.amount },
     ],
     [meta, decimals],
   );
   const unmatchedColumns = useMemo<Column<Unmatched>[]>(
     () => [
-      { id: "date", header: t("bank.booking_date"), width: 130, cell: (row) => formatCalendarDate(row.booking_date) },
-      { id: "counterparty", header: t("bank.counterparty"), cell: (row) => row.counterparty_name ?? <Empty /> },
-      { id: "reference", header: t("bank.reference"), cell: (row) => row.reference ?? <Empty /> },
-      { id: "amount", header: t("report.amount"), align: "end", width: 140, cell: (row) => <Money value={row.amount} decimals={decimals} /> },
-      { id: "unmatched", header: t("bank.unmatched"), align: "end", width: 140, cell: (row) => <Money value={row.unmatched} decimals={decimals} /> },
+      { id: "date", header: t("bank.booking_date"), type: "date", width: 130, value: (row) => row.booking_date, text: (row) => formatCalendarDate(row.booking_date) },
+      { id: "counterparty", header: t("bank.counterparty"), width: 220, value: (row) => row.counterparty_name ?? "" },
+      { id: "reference", header: t("bank.reference"), width: 260, value: (row) => row.reference ?? "" },
+      { id: "amount", header: t("report.amount"), type: "money", minFraction: decimals, total: true, width: 140, value: (row) => row.amount },
+      { id: "unmatched", header: t("bank.unmatched"), type: "money", minFraction: decimals, total: true, width: 140, value: (row) => row.unmatched },
     ],
     [decimals],
   );
@@ -152,6 +146,7 @@ export function BankReconciliationPage() {
           <VStack gap={2}>
             <Heading level={2}>{t("bank.outstanding")}</Heading>
             <DataTable
+              id="bank.outstanding"
               caption={t("bank.outstanding")}
               columns={outstandingColumns}
               rows={data.outstanding}
@@ -163,6 +158,7 @@ export function BankReconciliationPage() {
           <VStack gap={2}>
             <Heading level={2}>{t("bank.unmatched_lines")}</Heading>
             <DataTable
+              id="bank.unmatched"
               caption={t("bank.unmatched_lines")}
               columns={unmatchedColumns}
               rows={data.unmatched_lines}

@@ -17,7 +17,9 @@ import {
   type Option,
   type ParseResult,
 } from "@erpcraft/grid";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ReferenceLabels, type ReferenceSource, referenceSource } from "./grid-references";
+import { fitWidths } from "./grid-widths";
 import { api } from "@/api/client";
 import type { CollectionMeta, DocTypeMeta, FieldMeta, Json, JsonObject } from "@/api/types";
 import { useApp } from "@/app/context";
@@ -68,6 +70,7 @@ export function LinesGrid({
   computed,
   companyId,
   currency,
+  header,
   newLine,
   onChange,
 }: {
@@ -82,6 +85,8 @@ export function LinesGrid({
   computed?: JsonObject[];
   companyId: string | null;
   currency: string | null;
+  /** The document's header (with company_id): what link-like fields of a line depend on. */
+  header: FieldValues;
   newLine: () => Line;
   /** Changes the lines from what they are by then: an edit and a new line can come in one key. */
   onChange: (update: (lines: Line[]) => Line[]) => void;
@@ -89,8 +94,51 @@ export function LinesGrid({
   const { meta, currencyDecimals } = useApp();
   const labelsVersion = useLinkLabelsVersion();
   const [report, setReport] = useState<EditReport | null>(null);
+  // Labels of line links, lookups and document links, filled as their options load.
+  const [, setRefVersion] = useState(0);
+  const labels = useRef<ReferenceLabels | null>(null);
+  if (!labels.current) labels.current = new ReferenceLabels(() => setRefVersion((v) => v + 1));
+  const contextFields = useMemo(() => [...docType.fields, ...collection.fields], [docType, collection]);
+  const sources = useMemo(() => {
+    const out = new Map<string, ReferenceSource>();
+    for (const field of fields) {
+      const source = referenceSource(meta, field, contextFields, labels.current as ReferenceLabels, { companyId, decimals: (currency ? currencyDecimals[currency] : undefined) ?? 2 });
+      if (source) out.set(field.name, source);
+    }
+    return out;
+  }, [fields, contextFields, meta, companyId, currency, currencyDecimals]);
+  const headerRef = useRef(header);
+  headerRef.current = header;
+  // The labels of the values the lines hold, read when lines or the header they depend on change.
+  const prefetchKey = JSON.stringify([...sources.keys()].map((name) => [name, lines.map((line) => line.values[name] ?? null)])) + JSON.stringify(header);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the key names what the labels depend on
+  useEffect(() => {
+    if (sources.size === 0) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      for (const source of sources.values()) void source.prefetch(lines.map((line) => line.values), headerRef.current, controller.signal).catch(() => undefined);
+    }, 150);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [prefetchKey]);
   // One set of slot components for the grid's life: new ones would remount every cell, editor included.
-  const slots = useMemo(() => astryxGridSlots<Line>(), []);
+  const sourcesRef = useRef(sources);
+  sourcesRef.current = sources;
+  const slots = useMemo(
+    () =>
+      astryxGridSlots<Line>({
+        pickers: {
+          options: (columnId, row) => {
+            const source = sourcesRef.current.get(columnId);
+            return source ? (search, signal) => source.options(row.values, headerRef.current, search, signal) : undefined;
+          },
+          blocked: (columnId, row) => sourcesRef.current.get(columnId)?.blocked(row.values, headerRef.current) ?? null,
+        },
+      }),
+    [],
+  );
   const kinds = docType.alternatives.find((alternative) => alternative.collection === collection.name)?.one_of ?? [];
   const decimals = (currency ? currencyDecimals[currency] : undefined) ?? 2;
 
@@ -104,8 +152,19 @@ export function LinesGrid({
     if (sent) sentIndex.set(line.key, sentIndex.size);
   }
 
+  const firstComputedMoney = fields.find((field) => field.readonly && gridType(field) === "money")?.name;
+  // The width there is, measured, so the columns can be fitted to it.
+  const [available, setAvailable] = useState(0);
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    const observer = new ResizeObserver(([entry]) => setAvailable(Math.floor((entry?.contentRect.width ?? 0) - 4)));
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `labelsVersion` re-reads labels that arrived
-  const columns = useMemo<GridColumn<Line>[]>(
+  const rawColumns = useMemo<GridColumn<Line>[]>(
     () =>
       fields.map((field): GridColumn<Line> => {
         const type = gridType(field);
@@ -134,6 +193,10 @@ export function LinesGrid({
           minFraction: type === "money" ? decimals : undefined,
           currency: type === "money" ? (currency ?? undefined) : undefined,
           total: field.readonly && type === "money",
+          // What the server works out for the line (net) stays in view at the right edge.
+          pin: field.readonly && type === "money" && name === firstComputedMoney ? "right" : name === fields[0]?.name ? "left" : undefined,
+          hidden: field.type.kind === "json" ? true : undefined,
+          searchable: false,
           width: type === "text" ? 240 : type === "reference" ? 200 : undefined,
         };
         if (field.type.kind === "enum") {
@@ -175,13 +238,33 @@ export function LinesGrid({
             },
           };
         }
+        const source = sources.get(name);
+        if (source) {
+          return {
+            ...base,
+            type: "reference",
+            width: 240,
+            format: (value, row) => (typeof value === "string" && value ? source.label(value, row.values) : ""),
+            // Typed or pasted: a choice already offered, by its label, or an id.
+            parse: (text): ParseResult => {
+              const trimmed = text.trim();
+              if (trimmed === "") return { ok: true, value: null };
+              const found = labels.current?.find(name, trimmed);
+              if (found) return { ok: true, value: found };
+              if (UUID.test(trimmed)) return { ok: true, value: trimmed };
+              return { ok: false, error: t("grid.pick_from_list", { label: field.label }) };
+            },
+          };
+        }
         if (["document_link", "line_link", "lookup", "entity_link", "uuid", "json", "posting"].includes(field.type.kind)) {
           return { ...base, editable: false, format: (value) => (typeof value === "string" ? shortId(value) : "") };
         }
         return base;
       }),
-    [fields, kinds, editable, computed, decimals, currency, companyId, meta, labelsVersion, lines],
+    [fields, kinds, editable, computed, decimals, currency, companyId, meta, labelsVersion, lines, sources, labels.current?.version],
   );
+  const widths = useMemo(() => (available > 0 ? fitWidths(rawColumns, lines, available) : null), [rawColumns, lines, available]);
+  const columns = useMemo(() => rawColumns.map((column) => ({ ...column, width: widths?.get(column.id) ?? column.width })), [rawColumns, widths]);
 
   const problemList = Object.entries(problems ?? {}).flatMap(([line, problem]) => [
     ...(problem.line ? [`${t("lines.line_n", { line })}: ${problem.line}`] : []),
@@ -190,7 +273,7 @@ export function LinesGrid({
       return `${t("lines.line_n", { line })}, ${label}: ${message}`;
     }),
   ]);
-  const height = Math.min(ROW_HEIGHT * (Math.max(lines.length, 1) + 2) + 8, 560);
+  const height = Math.min(ROW_HEIGHT * (Math.max(lines.length, 1) + 2) + 52, 600);
 
   return (
     <VStack gap={2}>
@@ -213,6 +296,7 @@ export function LinesGrid({
           onDismiss={() => setReport(null)}
         />
       ) : null}
+      <div ref={boxRef}>
       <Grid<Line>
         id={`lines.${docType.name}.${collection.name}`}
         aria-label={collection.label}
@@ -220,7 +304,7 @@ export function LinesGrid({
         rows={lines}
         rowId={(line) => line.key}
         slots={slots}
-        toolbar={false}
+        toolbar
         height={height}
         rowHeight={ROW_HEIGHT}
         layoutStorage={localStorageLayout("astryx-spike.grid.")}
@@ -236,6 +320,7 @@ export function LinesGrid({
             : undefined
         }
       />
+      </div>
     </VStack>
   );
 }

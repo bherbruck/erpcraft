@@ -107,8 +107,9 @@
 .ag-cell[data-align="end"] { justify-content: flex-end; font-variant-numeric: tabular-nums; }
 .ag-cell[data-editable] { cursor: cell; }
 .ag-cell:not([data-editable]) .ag-text { color: var(--color-text-secondary); }
-.ag-cell[data-selected] { background: var(--color-accent-muted); }
-.ag-cell[data-active] { box-shadow: inset 0 0 0 2px var(--color-accent); }
+/* The active cell and the selection show while the grid has the focus, as in a spreadsheet. */
+.ag-root:focus-within .ag-cell[data-selected] { background: var(--color-accent-muted); }
+.ag-root:focus-within .ag-cell[data-active] { box-shadow: inset 0 0 0 2px var(--color-accent); }
 .ag-cell[aria-invalid="true"] { box-shadow: inset 0 0 0 2px var(--color-border-error); }
 .ag-cell[data-editing] { padding-inline: 0; }
 .ag-cell[data-pinned], .ag-hcell[data-pinned] { z-index: 1; }
@@ -121,4 +122,4 @@
 .list-grid > .ag-root { flex: 1 1 auto; }
 .ag-cell a, .ag-cell a * { font-size: inherit; }
 /* On the selection's wash, text keeps full contrast in both themes (axe, dark mode). */
-.ag-cell[data-selected] .ag-text, .ag-cell[data-selected] a { color: var(--color-text-primary); }
+.ag-root:focus-within .ag-cell[data-selected] .ag-text, .ag-root:focus-within .ag-cell[data-selected] a { color: var(--color-text-primary); }

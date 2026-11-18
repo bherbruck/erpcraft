@@ -1,22 +1,17 @@
 import { Heading } from "@astryxdesign/core/Heading";
-import { Table, type TableColumn, pixel, proportional } from "@astryxdesign/core/Table";
+import { type Column, DataTable } from "./data-table";
 import { Text } from "@astryxdesign/core/Text";
 import { VStack } from "@astryxdesign/core/VStack";
 import type { Posting } from "@/api/types";
 import { t } from "@/i18n/t";
 import { formatCalendarDate } from "@/lib/dates";
-import { formatDecimal } from "@/lib/decimal";
 
-interface Entry extends Record<string, unknown> {
+interface Entry {
   key: string;
   account: string;
   memo: string;
-  debit: string;
-  credit: string;
-}
-
-function amount(value: string | null | undefined): string {
-  return value ? formatDecimal(value, { minFraction: 2 }) : "";
+  debit: string | null;
+  credit: string | null;
 }
 
 /**
@@ -25,11 +20,11 @@ function amount(value: string | null | undefined): string {
  */
 export function Postings({ postings, currency }: { postings: Posting[]; currency: string }) {
   if (postings.length === 0) return null;
-  const columns: TableColumn<Entry>[] = [
-    { key: "account", header: t("postings.what"), width: proportional(2, { minWidth: 200 }) },
-    { key: "memo", header: t("document.memo"), width: proportional(2, { minWidth: 120 }) },
-    { key: "debit", header: t("postings.debit", { currency }), align: "end", width: pixel(140) },
-    { key: "credit", header: t("postings.credit", { currency }), align: "end", width: pixel(140) },
+  const columns: Column<Entry>[] = [
+    { id: "account", header: t("postings.what"), width: 320, value: (e) => e.account },
+    { id: "memo", header: t("document.memo"), width: 260, value: (e) => e.memo },
+    { id: "debit", header: t("postings.debit", { currency }), type: "money", minFraction: 2, total: true, width: 150, value: (e) => e.debit },
+    { id: "credit", header: t("postings.credit", { currency }), type: "money", minFraction: 2, total: true, width: 150, value: (e) => e.credit },
   ];
   return (
     <VStack gap={3}>
@@ -39,13 +34,13 @@ export function Postings({ postings, currency }: { postings: Posting[]; currency
           key: entry.id ?? String(index),
           account: [entry.account_code, entry.account_name].filter(Boolean).join(" · "),
           memo: entry.memo ?? "",
-          debit: amount(entry.debit),
-          credit: amount(entry.credit),
+          debit: entry.debit ?? null,
+          credit: entry.credit ?? null,
         }));
         return (
           <VStack key={posting.id} gap={1}>
             <Text type="supporting">{t("postings.dated", { date: formatCalendarDate(posting.posting_date) })}</Text>
-            <Table<Entry> data={entries} columns={columns} idKey="key" density="compact" dividers="rows" />
+            <DataTable id="postings" caption={t("postings.title")} columns={columns} rows={entries} rowKey={(e) => e.key} empty={{ title: t("postings.no_entries") }} />
           </VStack>
         );
       })}

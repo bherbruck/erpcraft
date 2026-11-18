@@ -182,8 +182,19 @@ function GenericReport({ command }: { command: CommandMeta }) {
     (column): Column<Json> => ({
       id: column.name,
       header: column.label,
-      align: column.format === "decimal" || column.format === "integer" ? "end" : "start",
-      cell: (row) => <Cell value={isObject(row) ? row[column.name] : undefined} format={column.format} decimals={decimals} />,
+      // The grid formats, sorts and copies by type: decimals stay exact strings.
+      type: column.format === "decimal" ? "money" : column.format === "integer" ? "number" : column.format === "date" ? "date" : column.format === "timestamp" ? "datetime" : column.format === "boolean" ? "boolean" : "text",
+      minFraction: column.format === "decimal" ? decimals : undefined,
+      value: (row) => {
+        const value = isObject(row) ? row[column.name] : undefined;
+        return typeof value === "number" ? String(value) : value === undefined ? null : typeof value === "object" && value !== null ? JSON.stringify(value) : value;
+      },
+      text:
+        column.format === "date"
+          ? (row) => (isObject(row) && typeof row[column.name] === "string" ? formatCalendarDate(row[column.name] as string) : "")
+          : column.format === "timestamp"
+            ? (row) => (isObject(row) && typeof row[column.name] === "string" ? formatTimestamp(row[column.name] as string) : "")
+            : undefined,
     }),
   );
   const title = reportTitle(command);
@@ -278,6 +289,8 @@ function GenericReport({ command }: { command: CommandMeta }) {
       }
     >
       <DataTable
+        id={`report.${command.name}`}
+        fill
         caption={title}
         columns={columns}
         rows={ready ? rows : []}

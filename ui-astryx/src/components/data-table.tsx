@@ -1,233 +1,170 @@
-// The one table for every list, on Astryx's Table. Kept in one file on purpose:
-// the headless grid (packages/grid) is to replace what is inside, not its props.
+// The read-only tables of the app (reports, history, bank reconciliation, approvals) on
+// @erpcraft/grid in client mode, Astryx skin: sorting, column layout, the keyboard and copying a
+// block to Excel work the same as in the lists. A report the server pages runs in server mode.
 
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
-import { DropdownMenu, DropdownMenuCheckboxItem } from "@astryxdesign/core/DropdownMenu";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
-import { HStack } from "@astryxdesign/core/HStack";
-import { Link } from "@astryxdesign/core/Link";
-import { Pagination } from "@astryxdesign/core/Pagination";
-import { Skeleton } from "@astryxdesign/core/Skeleton";
-import { pixel, proportional, Table, type TableColumn, useTableSelection, useTableSortable } from "@astryxdesign/core/Table";
-import { Text } from "@astryxdesign/core/Text";
 import { VStack } from "@astryxdesign/core/VStack";
-import { Columns3 } from "lucide-react";
-import { type ReactNode, useMemo } from "react";
+import { type ColumnType, Grid, type GridColumn, localStorageLayout } from "@erpcraft/grid";
+import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router";
 import type { ApiError } from "@/api/client";
 import { t } from "@/i18n/t";
-import { isStringArray } from "@/lib/storage";
-import { useStoredState } from "./use-stored";
+import { astryxGridSlots } from "./grid-skin";
+import { fitWidths } from "./grid-widths";
 
 export interface Column<Row> {
   id: string;
   header: string;
-  cell: (row: Row) => ReactNode;
-  align?: "start" | "end";
-  /** The field the server sorts by when the header is clicked. */
-  sortField?: string;
-  /** Not shown until the user asks for it. */
-  defaultHidden?: boolean;
-  /** Fixed width in pixels, for short values such as dates and statuses. */
+  /** The value: what sorts, and (formatted by `text` or by type) what is shown and copied. */
+  value: (row: Row) => unknown;
+  type?: ColumnType;
+  /** The text shown and copied, where the type's own formatting is not it. */
+  text?: (row: Row) => string;
+  /** Something richer to draw than the text (a badge, a link); the text is still what is copied. */
+  cell?: (row: Row) => ReactNode;
   width?: number;
+  /** Decimals of a money column. */
+  minFraction?: number;
+  /** A total under the column (number and money). */
+  total?: boolean;
+  hidden?: boolean;
 }
 
 export interface DataTableProps<Row> {
   caption: string;
+  /** Names the saved column layout. */
+  id: string;
   columns: Column<Row>[];
   /** `undefined` while the first page loads. */
   rows: Row[] | undefined;
   rowKey: (row: Row) => string;
-  /** Makes the row's first cell a link to its record. */
+  /** The first column's cells link to the row's record; Enter on one opens it. */
   rowHref?: (row: Row) => string | undefined;
   loading?: boolean;
   error?: ApiError | null;
   onRetry?: () => void;
-  /** What to say, and offer, when there are no rows. */
   empty: { title: string; description?: string; action?: ReactNode };
-  /** Current sort as the server takes it: a field name, `-` first for descending. */
-  sort?: string;
-  onSort?: (sort: string) => void;
+  /** Paging by the server; leave out to show every row. */
   page?: number;
   pageSize?: number;
   total?: number;
   onPage?: (page: number) => void;
-  onPageSize?: (size: number) => void;
-  /** Where the user's column choice is kept, per list. */
-  storageKey?: string;
-  /** Rows can be chosen with Astryx's selection plugin (checkboxes, select-all), for an action on several. */
-  selection?: {
-    selected: ReadonlySet<string>;
-    onChange: (rows: Row[], selected: boolean) => void;
-    label: (row: Row) => string;
-  };
+  /** Take the height of the space around it rather than of the rows. */
+  fill?: boolean;
 }
 
-type Cells = Record<string, unknown> & { __row: unknown; __key: string };
-
-/** The columns the user chose for a list, kept in the browser. */
-export function useColumnChoice<Row>(storageKey: string | undefined, columns: Column<Row>[]) {
-  const defaults = useMemo(() => columns.filter((c) => !c.defaultHidden).map((c) => c.id), [columns]);
-  const [chosen, setChosen] = useStoredState<string[]>(
-    storageKey ? `columns.${storageKey}` : null,
-    defaults,
-    isStringArray,
-  );
-  const known = new Set(columns.map((c) => c.id));
-  const active = chosen.filter((id) => known.has(id));
-  const visible = (active.length ? active : defaults).flatMap((id) => columns.filter((c) => c.id === id));
-  const chooser = (
-    <DropdownMenu
-      button={{ label: t("columns.button"), size: "sm", variant: "secondary", icon: <Columns3 size={14} aria-hidden /> }}
-      alignment="end"
-    >
-      {columns.map((column) => (
-        <DropdownMenuCheckboxItem
-          key={column.id}
-          label={column.header}
-          value={visible.some((v) => v.id === column.id)}
-          onChange={(on) => {
-            const current = visible.map((v) => v.id);
-            const next = on ? columns.map((c) => c.id).filter((id) => id === column.id || current.includes(id)) : current.filter((id) => id !== column.id);
-            if (next.length > 0) setChosen(next);
-          }}
-        />
-      ))}
-    </DropdownMenu>
-  );
-  return {
-    visible,
-    chooser,
-    /** The user's choice, or null for the defaults: what a saved view keeps. */
-    chosen: active.length ? active : null,
-    choose: (next: string[] | null) => setChosen(next ?? defaults),
-  };
-}
+const ROW_HEIGHT = 34;
 
 export function DataTable<Row>(props: DataTableProps<Row>) {
-  const { columns, rows, rowKey, rowHref, sort = "" } = props;
-  const descending = sort.startsWith("-");
-  const sortField = descending ? sort.slice(1) : sort;
+  const { columns, rows, rowKey, rowHref } = props;
+  const navigate = useNavigate();
+  const paged = props.page !== undefined && props.pageSize !== undefined && props.total !== undefined && props.onPage !== undefined;
+  const latest = useRef(props);
+  latest.current = props;
+  const first = columns[0]?.id ?? "";
+  // One set of slots for the table's life (see ListGrid).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the props are read through a ref
+  const slots = useMemo(
+    () =>
+      astryxGridSlots<Row>({
+        link: { columnId: first, href: (row) => latest.current.rowHref?.(row) },
+        decorate: (columnId, row) => latest.current.columns.find((c) => c.id === columnId)?.cell?.(row),
+      }),
+    [first],
+  );
+  const gridColumns = useMemo<GridColumn<Row>[]>(
+    () =>
+      columns.map((column) => ({
+        id: column.id,
+        header: column.header,
+        type: column.type ?? "text",
+        value: column.value,
+        format: column.text ? (_value, row) => column.text?.(row) ?? "" : undefined,
+        width: column.width,
+        minFraction: column.minFraction,
+        total: column.total,
+        hidden: column.hidden,
+        filterable: false,
+        searchable: false,
+        sortable: !paged,
+      })),
+    [columns, paged],
+  );
 
-  const sortable = useTableSortable<Cells>({
-    sort: sortField ? [{ sortKey: sortField, direction: descending ? "descending" : "ascending" }] : [],
-    onSortChange: (next) => {
-      const first = next[0];
-      if (first && props.onSort) props.onSort(`${first.direction === "descending" ? "-" : ""}${first.sortKey}`);
-    },
-  });
+  // Widths that fit the space there is (see fitWidths), measured once it is known.
+  const [available, setAvailable] = useState(0);
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    const observer = new ResizeObserver(([entry]) => setAvailable(Math.floor((entry?.contentRect.width ?? 0) - 4)));
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, []);
+  const fitted = useMemo(() => {
+    if (available <= 0) return gridColumns;
+    const widths = fitWidths(gridColumns, rows ?? [], available);
+    return gridColumns.map((column) => ({ ...column, width: widths.get(column.id) ?? column.width }));
+  }, [gridColumns, rows, available]);
 
-  const pageRows = rows ?? [];
-  const selection = props.selection;
-  const allSelected = selection !== undefined && pageRows.length > 0 && pageRows.every((row) => selection.selected.has(rowKey(row)));
-  const selectable = useTableSelection<Cells>({
-    getIsItemSelected: (cells) => selection?.selected.has(cells.__key) ?? false,
-    onSelectItem: ({ item, isSelected }) => selection?.onChange([item.__row as Row], isSelected),
-    onSelectAll: ({ isAllSelected }) => selection?.onChange(pageRows, isAllSelected),
-    getIsAllSelected: () => allSelected,
-    getIsIndeterminate: () => !allSelected && pageRows.some((row) => selection?.selected.has(rowKey(row))),
-    getRowLabel: (cells) => selection?.label(cells.__row as Row) ?? "",
-  });
-  const plugins = {
-    ...(props.onSort ? { sortable } : {}),
-    ...(selection ? { selectable } : {}),
+  const onKeyDownCapture = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Enter" || event.shiftKey || event.altKey) return;
+    const cell = (event.target as HTMLElement).closest<HTMLElement>("[data-grid-cell]");
+    const row = cell ? rows?.[Number(cell.dataset.row)] : undefined;
+    const href = row ? rowHref?.(row) : undefined;
+    if (!cell || !href || !(cell.hasAttribute("data-link") || event.ctrlKey || event.metaKey)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    navigate(href);
   };
 
-  const tableColumns: TableColumn<Cells>[] = columns.map((column, index) => ({
-    key: column.id,
-    header: column.header,
-    align: column.align === "end" ? "end" : "start",
-    width: column.width ? pixel(column.width) : proportional(1, { minWidth: 120 }),
-    sortable: column.sortField && props.onSort ? { sortKey: column.sortField } : undefined,
-    renderCell: (cells) => {
-      const row = cells.__row as Row;
-      const content = column.cell(row);
-      const href = index === 0 ? rowHref?.(row) : undefined;
-      return href ? <Link href={href}>{content}</Link> : content;
-    },
-  }));
-
-  const data: Cells[] = (rows ?? []).map((row) => ({ __row: row, __key: rowKey(row) }));
-  const paged = props.page !== undefined && props.pageSize !== undefined && props.total !== undefined && props.onPage;
-
-  let body: ReactNode;
-  if (rows === undefined && !props.error) {
-    body = (
-      <VStack gap={2} padding={4}>
-        {Array.from({ length: 8 }, (_, i) => (
-          <Skeleton key={String(i)} height={24} index={i} />
-        ))}
-      </VStack>
-    );
-  } else if (rows && rows.length === 0) {
-    body = (
-      <EmptyState
-        title={props.empty.title}
-        description={props.empty.description}
-        actions={props.empty.action}
-        isCompact
-      />
-    );
-  } else {
-    body = (
-      <div className={props.loading ? "reloading" : undefined} aria-busy={props.loading || undefined}>
-        <Table<Cells>
-          data={data}
-          columns={tableColumns}
-          idKey="__key"
-          density="compact"
-          hasHover
-          textOverflow="truncate"
-          plugins={plugins}
-          rowIndexStart={paged ? ((props.page ?? 1) - 1) * (props.pageSize ?? 0) + 1 : undefined}
-          rowCount={props.total}
-        />
-      </div>
+  const box = (children: ReactNode) => (
+    <div ref={boxRef} className={props.fill ? "list-grid" : undefined}>
+      {children}
+    </div>
+  );
+  if (props.error) {
+    return box(
+      <Banner
+        status="error"
+        title={t("list.load_failed")}
+        description={props.error.message}
+        endContent={props.onRetry ? <Button label={t("action.retry")} size="sm" onClick={props.onRetry} /> : undefined}
+      />,
     );
   }
+  if (rows !== undefined && rows.length === 0 && !props.loading) {
+    return box(<EmptyState title={props.empty.title} description={props.empty.description} actions={props.empty.action} isCompact />);
+  }
+  const footer = columns.some((column) => column.total) ? 1 : 0;
+  const height = props.fill ? "100%" : Math.min(ROW_HEIGHT * (Math.max(rows?.length ?? 6, 1) + 1 + footer) + 12 + (paged ? 48 : 0), 640);
 
   return (
-    <VStack gap={0} height="100%">
-      {props.error ? (
-        <VStack padding={3}>
-          <Banner
-            status="error"
-            title={t("list.load_failed")}
-            description={props.error.message}
-            endContent={props.onRetry ? <Button label={t("action.retry")} size="sm" onClick={props.onRetry} /> : undefined}
-          />
-        </VStack>
-      ) : null}
-      {/* A scrolling region is a tab stop, so the keyboard can scroll a table without links in it. */}
-      {/* biome-ignore lint/a11y/noNoninteractiveTabindex: scrollable region must be reachable by keyboard */}
-      <div className="table-scroll" role="region" aria-label={props.caption} tabIndex={0}>
-        {body}
-      </div>
-      {paged ? (
-        <div className="table-footer">
-          <HStack hAlign="between" vAlign="center" gap={3} wrap="wrap">
-            <Text type="supporting">
-              {props.total
-                ? t("list.count", {
-                    first: ((props.page ?? 1) - 1) * (props.pageSize ?? 0) + 1,
-                    last: Math.min((props.page ?? 1) * (props.pageSize ?? 0), props.total ?? 0),
-                    total: (props.total ?? 0).toLocaleString(),
-                  })
-                : t("list.count_none")}
-            </Text>
-            <Pagination
-              page={props.page ?? 1}
-              onChange={(next) => props.onPage?.(next)}
-              totalItems={props.total ?? 0}
-              pageSize={props.pageSize}
-              pageSizeOptions={props.onPageSize ? [25, 50, 100] : undefined}
-              onPageSizeChange={props.onPageSize}
-              size="sm"
-            />
-          </HStack>
-        </div>
-      ) : null}
-    </VStack>
+    // biome-ignore lint/a11y/noStaticElementInteractions: Enter on a row's link cell opens it; the grid owns the other keys
+    <div ref={boxRef} className={props.fill ? "list-grid" : undefined} onKeyDownCapture={onKeyDownCapture}>
+      <VStack gap={0}>
+        <Grid<Row>
+          id={props.id}
+          aria-label={props.caption}
+          mode={paged ? "server" : "client"}
+          columns={fitted}
+          // A small table needs no toolbar; a page-sized one gets the columns menu.
+          toolbar={Boolean(props.fill)}
+          rows={rows ?? []}
+          rowId={(row) => rowKey(row)}
+          total={paged ? props.total : undefined}
+          loading={props.loading}
+          pageSize={paged ? props.pageSize : 1000}
+          initialQuery={paged ? { page: { index: (props.page ?? 1) - 1, size: props.pageSize ?? 50 } } : undefined}
+          onQueryChange={paged ? (query) => query.page.index + 1 !== latest.current.page && latest.current.onPage?.(query.page.index + 1) : undefined}
+          rowHeight={ROW_HEIGHT}
+          height={height}
+          slots={slots}
+          layoutStorage={localStorageLayout("astryx-spike.grid.")}
+        />
+      </VStack>
+    </div>
   );
 }
-

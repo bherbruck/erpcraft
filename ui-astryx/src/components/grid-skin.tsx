@@ -33,6 +33,7 @@ import type {
   FilterPopoverSlotProps,
   FooterCellSlotProps,
   GridSlots,
+  Option,
   HeaderCellSlotProps,
   PagerSlotProps,
   PartSlotProps,
@@ -154,7 +155,14 @@ interface Choice extends SearchableItem {}
  * `data-grid-menu` wrapper, so the grid leaves their keys alone (Enter chooses, arrows
  * move in the list), and they commit or cancel themselves.
  */
-function PickerEditor<R>(p: EditorSlotProps<R>) {
+/** Choices that depend on the row being edited (a line of the order this line's header names). */
+export interface GridRowPickers<R> {
+  options: (columnId: string, row: R) => ((search: string, signal: AbortSignal) => Promise<Option[]>) | undefined;
+  /** Why nothing can be chosen yet in this cell, or null. */
+  blocked: (columnId: string, row: R) => string | null;
+}
+
+function PickerEditor<R>(p: EditorSlotProps<R> & { pickers?: GridRowPickers<R> }) {
   const [open, setOpen] = useState(false);
   // The grid hands new option arrays and functions on every render; the source reads the latest
   // through a ref, so Astryx's Typeahead keeps one source and its search in flight.
@@ -163,7 +171,8 @@ function PickerEditor<R>(p: EditorSlotProps<R>) {
   const source = useMemo<SearchSource<Choice>>(() => {
     let controller: AbortController | null = null;
     const run = async (q: string): Promise<Choice[]> => {
-      const { options, loadOptions } = latest.current;
+      const { options, pickers, column, row } = latest.current;
+      const loadOptions = pickers?.options(column.id, row) ?? latest.current.loadOptions;
       if (!loadOptions) {
         const needle = q.trim().toLowerCase();
         return options.filter((o) => !needle || o.label.toLowerCase().includes(needle)).map((o) => ({ id: o.value, label: o.label }));
@@ -186,6 +195,17 @@ function PickerEditor<R>(p: EditorSlotProps<R>) {
       p.cancel();
     }
   };
+  const blocked = p.pickers?.blocked(p.column.id, p.row) ?? null;
+  if (blocked) {
+    return (
+      // biome-ignore lint/a11y/noStaticElementInteractions: Escape and Tab close the note, as they would the editor
+      <div data-grid-menu="" className="ag-editor ag-blocked" onKeyDown={onKeyDown} tabIndex={-1} ref={(element) => element?.focus()}>
+        <Text type="supporting" maxLines={1}>
+          {blocked}
+        </Text>
+      </div>
+    );
+  }
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: closes the editor on Escape and Tab while the list is shut
     <div data-grid-menu="" className="ag-editor" onKeyDown={onKeyDown}>
@@ -211,8 +231,14 @@ function PickerEditor<R>(p: EditorSlotProps<R>) {
   );
 }
 
-function Editor<R>(p: EditorSlotProps<R>) {
-  if (p.column.type === "enum" || p.column.type === "state" || p.column.type === "reference") return <PickerEditor {...p} />;
+function makeEditor<R>(pickers?: GridRowPickers<R>) {
+  return function Editor(p: EditorSlotProps<R>) {
+    if (p.column.type === "enum" || p.column.type === "state" || p.column.type === "reference") return <PickerEditor {...p} pickers={pickers} />;
+    return <TextEditor {...p} />;
+  };
+}
+
+function TextEditor<R>(p: EditorSlotProps<R>) {
   const { ref, value, onChange, inputMode, ...rest } = p.inputProps;
   return (
     <div className={p.align === "end" ? "ag-editor num" : "ag-editor"}>
@@ -441,7 +467,9 @@ function Empty({ filtered, loading, labels }: EmptySlotProps) {
 }
 
 /** The Astryx skin of the grid. */
-export function astryxGridSlots<R>(options: { link?: GridLink<R>; check?: GridCheck<R>; decorate?: GridDecorate<R> } = {}): GridSlots<R> {
+export function astryxGridSlots<R>(
+  options: { link?: GridLink<R>; check?: GridCheck<R>; decorate?: GridDecorate<R>; pickers?: GridRowPickers<R> } = {},
+): GridSlots<R> {
   return {
     Part,
     Row,
@@ -449,7 +477,7 @@ export function astryxGridSlots<R>(options: { link?: GridLink<R>; check?: GridCh
     Cell: makeCell(options.link, options.check, options.decorate),
     FooterCell,
     ResizeHandle,
-    Editor,
+    Editor: makeEditor(options.pickers),
     ColumnMenu,
     FilterPopover,
     ConditionFilter,
