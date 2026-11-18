@@ -40,6 +40,7 @@ export const router = createBrowserRouter([
           { path: "r/:report", lazy: page(() => import("@/pages/report-page")) },
           { path: "approvals", lazy: async () => ({ Component: (await import("@/pages/approvals")).ApprovalsPage }) },
           { path: "approvals/:id", lazy: async () => ({ Component: (await import("@/pages/approvals")).ApprovalPage }) },
+          { path: "setup", lazy: page(() => import("@/pages/company-setup")) },
           { path: "run/:command", lazy: page(() => import("@/pages/command-page")) },
           { path: "*", element: <NotPortedPage /> },
         ],

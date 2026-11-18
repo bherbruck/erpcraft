@@ -10,6 +10,7 @@ import { useMemo } from "react";
 import { useNavigate } from "react-router";
 import { api } from "@/api/client";
 import { useApp, useCompany } from "@/app/context";
+import { useCurrentPageActions } from "@/app/page-actions";
 import { t } from "@/i18n/t";
 import { formatCalendarDate } from "@/lib/dates";
 import { canDoc, canEntity, canRun, findDocType, navigation, reportTitle } from "@/lib/meta";
@@ -19,6 +20,8 @@ interface Aux {
   group: string;
   to: string;
   detail?: string;
+  /** An action of the page on screen, run instead of going somewhere. */
+  run?: () => void;
 }
 type Item = SearchableItem<Aux>;
 
@@ -26,6 +29,17 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
   const { meta, companies } = useApp();
   const { code, company } = useCompany();
   const navigate = useNavigate();
+  const pageActions = useCurrentPageActions();
+  // The actions of the record on screen come first: they are what the user is most likely after.
+  const actionItems = useMemo<Item[]>(
+    () =>
+      (pageActions?.actions ?? []).map((action) => ({
+        id: `a:${action.id}`,
+        label: action.label,
+        auxiliaryData: { group: t("palette.actions_on", { subject: pageActions?.subject ?? "" }), to: "", run: action.run },
+      })),
+    [pageActions],
+  );
 
   const screens = useMemo<Item[]>(() => {
     const items: Item[] = [];
@@ -42,6 +56,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
     for (const entity of meta.entities)
       if (!entity.parent && !entity.read_only && canEntity(meta, entity.name, "create"))
         add(`ne:${entity.name}`, t("palette.new", { label: entity.label }), t("palette.create"), paths.entityNew(code, entity.name));
+    if (canRun(meta, "company.setup")) add("setup", t("setup.new_company"), t("palette.create"), paths.setup(code));
     for (const other of companies)
       if (other.code !== code) add(`c:${other.id}`, `${other.code} · ${other.name}`, t("palette.switch_company"), paths.home(other.code));
     return items;
@@ -50,10 +65,10 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
   const source = useMemo<SearchSource<Item>>(() => {
     let controller: AbortController | null = null;
     return {
-      bootstrap: () => screens.filter((item) => item.auxiliaryData?.group === t("palette.go_to")).slice(0, 12),
+      bootstrap: () => [...actionItems, ...screens.filter((item) => item.auxiliaryData?.group === t("palette.go_to")).slice(0, 12)],
       search: async (query, context) => {
         const needle = query.trim().toLowerCase();
-        const local = screens.filter((item) => `${item.label} ${item.auxiliaryData?.group ?? ""}`.toLowerCase().includes(needle)).slice(0, 12);
+        const local = [...actionItems, ...screens].filter((item) => `${item.label} ${item.auxiliaryData?.group ?? ""}`.toLowerCase().includes(needle)).slice(0, 12);
         // Screens show at once; records follow when the server answers.
         context?.update(local);
         if (needle.length < 2) return local;
@@ -88,7 +103,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       },
       cancel: () => controller?.abort(),
     };
-  }, [screens, meta, code, company?.id]);
+  }, [screens, actionItems, meta, code, company?.id]);
 
   return (
     <AstryxPalette<Item>
@@ -98,7 +113,13 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       searchSource={source}
       emptySearchText={t("spike.no_results")}
       onValueChange={(id) => {
-        const to = (screens.find((item) => item.id === id) ?? lastFound.get(id))?.auxiliaryData?.to;
+        const chosen = actionItems.find((item) => item.id === id) ?? screens.find((item) => item.id === id) ?? lastFound.get(id);
+        if (chosen?.auxiliaryData?.run) {
+          onOpenChange(false);
+          chosen.auxiliaryData.run();
+          return;
+        }
+        const to = chosen?.auxiliaryData?.to;
         if (to) {
           onOpenChange(false);
           navigate(to);

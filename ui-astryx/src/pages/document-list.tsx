@@ -1,7 +1,9 @@
 import { Button } from "@astryxdesign/core/Button";
 import { HStack } from "@astryxdesign/core/HStack";
 import { Text } from "@astryxdesign/core/Text";
-import { useMemo } from "react";
+import { VStack } from "@astryxdesign/core/VStack";
+import { useMemo, useState } from "react";
+import { type BulkResult, BulkBar, BulkResults } from "@/components/bulk-actions";
 import { useParams } from "react-router";
 import { api } from "@/api/client";
 import type { DocTypeMeta, DocumentSummary, FieldMeta, JsonObject } from "@/api/types";
@@ -182,6 +184,10 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
   }, [docType, meta.document_header]);
   const { visible, chooser, chosen, choose } = useColumnChoice(`document.${docType.name}`, columns);
 
+  // Documents chosen for one action on all of them, kept across pages of the list.
+  const [chosenDocs, setChosenDocs] = useState<Map<string, DocumentSummary>>(() => new Map());
+  const [bulk, setBulk] = useState<{ action: string; results: BulkResult[] } | null>(null);
+  const canBulk = meta.commands.some((command) => command.resource === docType.name && command.target && !command.read_only && command.creates === null);
   const filtered = filters.length > 0;
   const clearFilters = (): void => url.set({ f: null, page: null });
   // Commands that make a document of this type from something else (importing a file).
@@ -218,7 +224,38 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
         </HStack>
       }
     >
+      {bulk || chosenDocs.size > 0 ? (
+        <VStack gap={2} padding={3}>
+          {bulk ? <BulkResults docType={docType} action={bulk.action} results={bulk.results} onClose={() => setBulk(null)} /> : null}
+          {chosenDocs.size > 0 ? (
+            <BulkBar
+              docType={docType}
+              chosen={[...chosenDocs.values()]}
+              onClear={() => setChosenDocs(new Map())}
+              onDone={(results, action) => {
+                setBulk({ action, results });
+                setChosenDocs(new Map());
+                list.reload();
+              }}
+            />
+          ) : null}
+        </VStack>
+      ) : null}
       <DataTable
+        selection={
+          canBulk
+            ? {
+                selected: new Set(chosenDocs.keys()),
+                label: (doc) => t("bulk.choose", { number: doc.number ?? doc.memo ?? doc.id }),
+                onChange: (docs, on) =>
+                  setChosenDocs((previous) => {
+                    const next = new Map(previous);
+                    for (const doc of docs) on ? next.set(doc.id, doc) : next.delete(doc.id);
+                    return next;
+                  }),
+              }
+            : undefined
+        }
         caption={docType.plural}
         columns={visible}
         rows={company ? list.data?.items : []}

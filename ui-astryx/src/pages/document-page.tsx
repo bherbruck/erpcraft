@@ -25,7 +25,9 @@ import { useNavigate, useParams } from "react-router";
 import { ApiError, api } from "@/api/client";
 import type { CollectionMeta, DocTypeMeta, DocumentRecord, FieldMeta, Json, JsonObject } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
+import { useOfferPageActions } from "@/app/page-actions";
 import { ActionButtons, ActionDialog } from "@/components/actions";
+import { BANK_STATEMENT, BankMatching } from "@/components/bank-matching";
 import { useDecimalHeader } from "@/components/decimal-value";
 import { FieldInput, type FieldValues, initialValues, toEditable } from "@/components/field-input";
 import { FieldValue, isNumeric } from "@/components/field-value";
@@ -581,6 +583,12 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
   }
 
   const actions = useMemo(() => (doc ? recordActions(meta, docType.name, doc.status) : []), [meta, docType.name, doc]);
+  // The same actions in the palette (Ctrl+K), run exactly as the buttons run them.
+  useOfferPageActions(
+    actions.length > 0 && !dirty
+      ? { subject: `${docType.label} ${doc?.number ?? t("document.unnumbered")}`, actions: actions.map((a) => ({ id: a.command.name, label: a.label, destructive: a.destructive, run: () => setAction(a) })) }
+      : null,
+  );
 
   if (loaded.error && !doc) {
     return (
@@ -602,6 +610,7 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
   const editable = canWrite;
   const editableFields = docType.fields.filter((field) => !field.readonly && (isNew || !field.immutable));
   const readonlyFields = docType.fields.filter((field) => field.readonly || (!isNew && field.immutable));
+  const matching = doc !== null && docType.name === BANK_STATEMENT && doc.status === docType.initial_state && !dirty;
   const summary = preview ?? (doc && isObject(doc.summary) ? doc.summary : {});
   const set = (change: Partial<FormState>) => setForm((previous) => ({ ...previous, ...change }));
 
@@ -712,7 +721,10 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
             </VStack>
           </Card>
 
-          {docType.collections.map((collection) => (
+          {/* A draft bank statement is matched line by line rather than edited as a grid. */}
+          {docType.collections
+            .filter(() => !matching)
+            .map((collection) => (
             <LineGrid
               key={collection.name}
               docType={docType}
@@ -728,6 +740,8 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
           ))}
 
           <Totals docType={docType} summary={summary} />
+
+          {matching && doc ? <BankMatching doc={doc} docType={docType} onChanged={loaded.reload} /> : null}
 
           {doc && doc.links.length > 0 ? (
             <VStack gap={2}>

@@ -11,6 +11,7 @@ import { Badge } from "@astryxdesign/core/Badge";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router";
 import { useApp, useCompany } from "@/app/context";
+import { PageActionsProvider } from "@/app/page-actions";
 import { t } from "@/i18n/t";
 import { canRun, navigation, reportTitle } from "@/lib/meta";
 import { pathInCompany, paths } from "@/lib/paths";
@@ -131,6 +132,7 @@ export function AppShell() {
   );
 
   return (
+    <PageActionsProvider>
     <AstryxShell sideNav={sideNav} topNav={topNav} variant="section" contentPadding={0} mobileNav={{ breakpoint: "lg" }}>
       <div className="page-fill">
         <Outlet />
@@ -141,5 +143,6 @@ export function AppShell() {
         </Suspense>
       ) : null}
     </AstryxShell>
+    </PageActionsProvider>
   );
 }

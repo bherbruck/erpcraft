@@ -13,7 +13,10 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import type { ISODateString } from "@astryxdesign/core/utils";
 import { VStack } from "@astryxdesign/core/VStack";
-import { useMemo } from "react";
+import { type ReactNode, useMemo } from "react";
+import { AgingPage } from "./reports/aging";
+import { BankReconciliationPage } from "./reports/bank-reconciliation";
+import { BalanceSheetPage, IncomeStatementPage } from "./reports/statements";
 import { useParams } from "react-router";
 import { api } from "@/api/client";
 import type { CommandMeta, FieldMeta, Json, JsonObject } from "@/api/types";
@@ -30,12 +33,21 @@ import { pageFromUrl, useUrlState } from "@/lib/url-state";
 import { useAsync } from "@/lib/use-async";
 import { NotFoundPage } from "./not-found";
 
+// Reports with a page laid out for what they show, by command name; every other report is generic.
+const CUSTOM: Record<string, () => ReactNode> = {
+  "gl.balance_sheet": BalanceSheetPage,
+  "gl.income_statement": IncomeStatementPage,
+  "open_item.aging": AgingPage,
+  "bank.reconciliation": BankReconciliationPage,
+};
+
 export function ReportPage() {
   const { meta } = useApp();
   const params = useParams();
   const command = findCommand(meta, params.report);
   if (!command || command.report === null || !canRun(meta, command.name)) return <NotFoundPage />;
-  return <GenericReport key={command.name} command={command} />;
+  const Custom = CUSTOM[command.name];
+  return Custom ? <Custom /> : <GenericReport key={command.name} command={command} />;
 }
 
 export default ReportPage;

@@ -158,6 +158,35 @@ try {
   await shot("21-command-palette");
   await browser.key("Escape");
 
+  // Parity with ../ui: statements, aging, bank reconciliation and matching, bulk, setup.
+  await browser.goto(`${BASE}/c/${SMALL}/r/gl.balance_sheet`);
+  await shot("22-balance-sheet");
+  await browser.goto(`${BASE}/c/${SMALL}/r/gl.income_statement`);
+  await shot("22b-income-statement");
+  await browser.goto(`${BASE}/c/${BIG}/r/open_item.aging`);
+  await shot("23-aging");
+  const statement = "01a1eadc-14a4-7697-8e02-3918b29c6235";
+  await browser.goto(`${BASE}/c/${SMALL}/d/bank_statement/${statement}`);
+  await shot("24-bank-statement-matching");
+  const account = await browser.evaluate(
+    `fetch("/api/commands/document.get", { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + sessionStorage.getItem("erpcraft.token") }, body: JSON.stringify({ doc_type: "bank_statement", id: "${statement}" }) }).then((r) => r.json()).then((d) => d.body.bank_account_id)`,
+  );
+  await browser.goto(`${BASE}/c/${SMALL}/r/bank.reconciliation?account=${String(account)}`);
+  await shot("24b-bank-reconciliation");
+  await browser.goto(`${BASE}/c/${SMALL}/d/journal_entry`);
+  await browser.evaluate(`[...document.querySelectorAll("tbody input[type=checkbox]")].slice(0, 3).forEach((c) => c.click())`);
+  await Bun.sleep(600);
+  await shot("25-bulk-selection");
+  await browser.goto(`${BASE}/c/${SMALL}/d/sales_order/${ORDER}`);
+  await browser.key("k", 2);
+  await Bun.sleep(900);
+  await shot("26-palette-record-actions");
+  await browser.key("Escape");
+  await browser.goto(`${BASE}/c/${SMALL}/setup`);
+  await browser.evaluate(`document.querySelector("input[type=radio]")?.click()`);
+  await Bun.sleep(400);
+  await shot("27-company-setup");
+
   await browser.dark(true);
   await browser.goto(`${BASE}/c/${SMALL}/d/sales_order/${ORDER}`);
   await shot("13-sales-order-dark");

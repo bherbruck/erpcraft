@@ -15,6 +15,7 @@ import { useNavigate, useParams } from "react-router";
 import { ApiError, api } from "@/api/client";
 import type { EntityMeta, EntityRecord, FieldMeta, Json, JsonObject } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
+import { useOfferPageActions } from "@/app/page-actions";
 import { ActionButtons, ActionDialog } from "@/components/actions";
 import { FieldInput, type FieldValues, initialValues, toEditable } from "@/components/field-input";
 import { FieldValue, Withheld } from "@/components/field-value";
@@ -241,6 +242,12 @@ function EntityForm({ entity, id }: { entity: EntityMeta; id: string | null }) {
   const actions = useMemo(
     () => (original ? recordActions(meta, entity.name, typeof state === "string" ? state : null) : []),
     [meta, entity.name, original, state],
+  );
+  // The same actions in the palette (Ctrl+K), run exactly as the buttons run them.
+  useOfferPageActions(
+    actions.length > 0 && !dirty
+      ? { subject: `${entity.label} ${original ? recordLabel(entity.name, original) : ""}`, actions: actions.map((a) => ({ id: a.command.name, label: a.label, destructive: a.destructive, run: () => setAction(a) })) }
+      : null,
   );
 
   if (loaded.error && !original) {

@@ -9,7 +9,7 @@ import { HStack } from "@astryxdesign/core/HStack";
 import { Link } from "@astryxdesign/core/Link";
 import { Pagination } from "@astryxdesign/core/Pagination";
 import { Skeleton } from "@astryxdesign/core/Skeleton";
-import { pixel, proportional, Table, type TableColumn, useTableSortable } from "@astryxdesign/core/Table";
+import { pixel, proportional, Table, type TableColumn, useTableSelection, useTableSortable } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import { VStack } from "@astryxdesign/core/VStack";
 import { Columns3 } from "lucide-react";
@@ -55,6 +55,12 @@ export interface DataTableProps<Row> {
   onPageSize?: (size: number) => void;
   /** Where the user's column choice is kept, per list. */
   storageKey?: string;
+  /** Rows can be chosen with Astryx's selection plugin (checkboxes, select-all), for an action on several. */
+  selection?: {
+    selected: ReadonlySet<string>;
+    onChange: (rows: Row[], selected: boolean) => void;
+    label: (row: Row) => string;
+  };
 }
 
 type Cells = Record<string, unknown> & { __row: unknown; __key: string };
@@ -111,6 +117,22 @@ export function DataTable<Row>(props: DataTableProps<Row>) {
     },
   });
 
+  const pageRows = rows ?? [];
+  const selection = props.selection;
+  const allSelected = selection !== undefined && pageRows.length > 0 && pageRows.every((row) => selection.selected.has(rowKey(row)));
+  const selectable = useTableSelection<Cells>({
+    getIsItemSelected: (cells) => selection?.selected.has(cells.__key) ?? false,
+    onSelectItem: ({ item, isSelected }) => selection?.onChange([item.__row as Row], isSelected),
+    onSelectAll: ({ isAllSelected }) => selection?.onChange(pageRows, isAllSelected),
+    getIsAllSelected: () => allSelected,
+    getIsIndeterminate: () => !allSelected && pageRows.some((row) => selection?.selected.has(rowKey(row))),
+    getRowLabel: (cells) => selection?.label(cells.__row as Row) ?? "",
+  });
+  const plugins = {
+    ...(props.onSort ? { sortable } : {}),
+    ...(selection ? { selectable } : {}),
+  };
+
   const tableColumns: TableColumn<Cells>[] = columns.map((column, index) => ({
     key: column.id,
     header: column.header,
@@ -156,7 +178,7 @@ export function DataTable<Row>(props: DataTableProps<Row>) {
           density="compact"
           hasHover
           textOverflow="truncate"
-          plugins={props.onSort ? { sortable } : undefined}
+          plugins={plugins}
           rowIndexStart={paged ? ((props.page ?? 1) - 1) * (props.pageSize ?? 0) + 1 : undefined}
           rowCount={props.total}
         />

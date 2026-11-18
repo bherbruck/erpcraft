@@ -11,7 +11,7 @@ import { Page } from "@/components/page";
 import { SavedViews } from "@/components/saved-views";
 import { FilterBar, filterSpec, parseFilters, toQuery, type FilterSpec } from "@/components/filter-bar";
 import { t } from "@/i18n/t";
-import { canEntity, fieldReach, findEntity, isCompanyScoped, listFields } from "@/lib/meta";
+import { COMPANY, canEntity, canRun, fieldReach, findEntity, isCompanyScoped, listFields } from "@/lib/meta";
 import { paths } from "@/lib/paths";
 import { pageFromUrl, useUrlState } from "@/lib/url-state";
 import { useAsync } from "@/lib/use-async";
@@ -86,6 +86,9 @@ function EntityList({ entity }: { entity: EntityMeta }) {
   );
   const { visible, chooser, chosen, choose } = useColumnChoice(`entity.${entity.name}`, columns);
 
+  // A company is best started from a template that sets it up ready to work.
+  const setupButton =
+    entity.name === COMPANY && canRun(meta, "company.setup") ? <Button label={t("setup.new_company")} href={paths.setup(code)} /> : null;
   const newButton = canCreate ? (
     <Button label={t("list.new", { label: entity.label })} variant="primary" href={paths.entityNew(code, entity.name)} />
   ) : null;
@@ -93,7 +96,12 @@ function EntityList({ entity }: { entity: EntityMeta }) {
   return (
     <Page
       title={entity.plural}
-      actions={newButton}
+      actions={
+        <>
+          {setupButton}
+          {newButton}
+        </>
+      }
       padded={false}
       toolbar={
         <HStack gap={2} vAlign="center">
