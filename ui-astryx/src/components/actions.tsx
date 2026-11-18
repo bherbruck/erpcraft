@@ -52,7 +52,7 @@ export function ActionButtons({
 }
 
 /** One input of a command, by what its schema says it is. */
-function InputControl({ input, value, onChange }: { input: InputProperty; value: Json | undefined; onChange: (v: Json | undefined) => void }) {
+export function InputControl({ input, value, onChange }: { input: InputProperty; value: Json | undefined; onChange: (v: Json | undefined) => void }) {
   const { company } = useCompany();
   if (input.fieldType) {
     const field: FieldMeta = {

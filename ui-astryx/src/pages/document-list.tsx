@@ -10,11 +10,12 @@ import { type Column, DataTable, useColumnChoice } from "@/components/data-table
 import { useDecimalHeader } from "@/components/decimal-value";
 import { Empty, FieldValue, isNumeric } from "@/components/field-value";
 import { Page } from "@/components/page";
+import { SavedViews } from "@/components/saved-views";
 import { FilterBar, filterSpec, parseFilters, toQuery, type FilterSpec } from "@/components/filter-bar";
 import { StatusBadge } from "@/components/status-badge";
 import { t } from "@/i18n/t";
 import { formatCalendarDate, formatTimestamp } from "@/lib/dates";
-import { canDoc, canEntity, findDocType } from "@/lib/meta";
+import { canDoc, canEntity, canRun, findDocType } from "@/lib/meta";
 import { paths } from "@/lib/paths";
 import { pageFromUrl, useUrlState } from "@/lib/url-state";
 import { useAsync } from "@/lib/use-async";
@@ -179,10 +180,12 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
     ];
     // biome-ignore lint/correctness/useExhaustiveDependencies: headers follow the type
   }, [docType, meta.document_header]);
-  const { visible, chooser } = useColumnChoice(`document.${docType.name}`, columns);
+  const { visible, chooser, chosen, choose } = useColumnChoice(`document.${docType.name}`, columns);
 
   const filtered = filters.length > 0;
   const clearFilters = (): void => url.set({ f: null, page: null });
+  // Commands that make a document of this type from something else (importing a file).
+  const makers = meta.commands.filter((command) => command.creates === docType.name && !command.target && canRun(meta, command.name));
   const newButton = canCreate ? (
     <Button label={t("list.new", { label: docType.label })} variant="primary" href={paths.docNew(code, docType.name)} />
   ) : null;
@@ -190,7 +193,14 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
   return (
     <Page
       title={docType.plural}
-      actions={newButton}
+      actions={
+        <>
+          {makers.map((command) => (
+            <Button key={command.name} label={command.label} href={paths.run(code, command.name)} />
+          ))}
+          {newButton}
+        </>
+      }
       padded={false}
       toolbar={
         <HStack gap={2} vAlign="center">
@@ -203,6 +213,7 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
             label={t("filter.placeholder", { label: docType.plural })}
             onChange={(next) => url.set({ f: next.length ? JSON.stringify(next) : null, page: null })}
           />
+          <SavedViews tableKey={`document.${docType.name}`} columns={chosen} onColumns={choose} />
           {chooser}
         </HStack>
       }

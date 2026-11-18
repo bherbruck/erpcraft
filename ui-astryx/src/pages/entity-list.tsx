@@ -8,6 +8,7 @@ import { useApp, useCompany } from "@/app/context";
 import { type Column, DataTable, useColumnChoice } from "@/components/data-table";
 import { FieldValue, isNumeric, Withheld } from "@/components/field-value";
 import { Page } from "@/components/page";
+import { SavedViews } from "@/components/saved-views";
 import { FilterBar, filterSpec, parseFilters, toQuery, type FilterSpec } from "@/components/filter-bar";
 import { t } from "@/i18n/t";
 import { canEntity, fieldReach, findEntity, isCompanyScoped, listFields } from "@/lib/meta";
@@ -83,7 +84,7 @@ function EntityList({ entity }: { entity: EntityMeta }) {
       })),
     [meta, entity],
   );
-  const { visible, chooser } = useColumnChoice(`entity.${entity.name}`, columns);
+  const { visible, chooser, chosen, choose } = useColumnChoice(`entity.${entity.name}`, columns);
 
   const newButton = canCreate ? (
     <Button label={t("list.new", { label: entity.label })} variant="primary" href={paths.entityNew(code, entity.name)} />
@@ -105,6 +106,7 @@ function EntityList({ entity }: { entity: EntityMeta }) {
             label={t("filter.placeholder", { label: entity.plural })}
             onChange={(next) => url.set({ f: next.length ? JSON.stringify(next) : null, page: null })}
           />
+          <SavedViews tableKey={`entity.${entity.name}`} columns={chosen} onColumns={choose} />
           {chooser}
         </HStack>
       }

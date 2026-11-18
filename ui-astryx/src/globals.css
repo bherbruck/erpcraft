@@ -56,3 +56,6 @@
 .lines-scroll > .astryx-table-scroll-wrapper { margin: 0; }
 .kind-cell { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: var(--spacing-1); align-items: start; }
 .filter-bar { flex: 1 1 auto; min-inline-size: 0; }
+.report-filter { inline-size: 16rem; }
+.print-frame { inline-size: 100%; block-size: 75vh; border: 1px solid var(--color-border); border-radius: var(--radius-container); background: white; /* paper stays white in dark mode */ }
+.two-columns { display: grid; gap: var(--spacing-5); grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); align-items: start; }

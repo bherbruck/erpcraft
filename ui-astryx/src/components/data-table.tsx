@@ -89,7 +89,13 @@ export function useColumnChoice<Row>(storageKey: string | undefined, columns: Co
       ))}
     </DropdownMenu>
   );
-  return { visible, chooser };
+  return {
+    visible,
+    chooser,
+    /** The user's choice, or null for the defaults: what a saved view keeps. */
+    chosen: active.length ? active : null,
+    choose: (next: string[] | null) => setChosen(next ?? defaults),
+  };
 }
 
 export function DataTable<Row>(props: DataTableProps<Row>) {

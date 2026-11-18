@@ -37,7 +37,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { UnsavedDialog, useUnsavedGuard } from "@/components/unsaved-guard";
 import { t } from "@/i18n/t";
 import { todayCalendarDate } from "@/lib/dates";
-import { canDoc, findDocType, recordActions, type ResourceAction } from "@/lib/meta";
+import { canDoc, canRun, findDocType, recordActions, type ResourceAction } from "@/lib/meta";
 import { paths } from "@/lib/paths";
 import { newKey } from "@/lib/text";
 import { useUrlState } from "@/lib/url-state";
@@ -620,6 +620,9 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
       actions={
         <>
           <ActionButtons actions={actions} disabledReason={dirty ? t("record.save_first") : null} onChoose={setAction} />
+          {doc && canRun(meta, "document.render") ? (
+            <Button label={t("print.print")} variant="ghost" href={paths.print(code, docType.name, doc.id)} />
+          ) : null}
           {doc && !locked && doc.postings.length === 0 && canDoc(meta, docType.name, "delete") ? (
             <Button label={t("action.delete")} variant="ghost" onClick={() => setConfirmDelete(true)} />
           ) : null}

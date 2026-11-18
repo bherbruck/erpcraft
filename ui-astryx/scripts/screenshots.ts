@@ -129,6 +129,35 @@ try {
   await browser.goto(`${BASE}/c/${BIG}/e/account`);
   await shot("12b-accounts");
 
+  // The rest of the app: reports, approvals, printing, commands, saved views, the palette.
+  await browser.goto(`${BASE}/c/${SMALL}/r/gl.trial_balance`);
+  await shot("16-report-trial-balance");
+  await browser.goto(`${BASE}/c/${BIG}/r/stock.on_hand`);
+  await shot("16b-report-stock-on-hand");
+  await browser.goto(`${BASE}/c/${SMALL}/approvals?scope=all`);
+  await shot("17-approvals");
+  const approval = await browser.evaluate(`document.querySelector("table a")?.getAttribute("href")`);
+  if (typeof approval === "string") {
+    await browser.goto(`${BASE}${approval}`);
+    await shot("17b-approval");
+  }
+  await browser.goto(`${BASE}/c/${SMALL}/d/sales_order/${ORDER}/print`);
+  await Bun.sleep(800);
+  await shot("18-print");
+  await browser.goto(`${BASE}/c/${SMALL}/run/bank_statement.import`);
+  await shot("19-command-bank-import");
+  await browser.goto(`${BASE}/c/${BIG}/d/sales_order`);
+  await browser.evaluate(`[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Views")?.click()`);
+  await Bun.sleep(500);
+  await shot("20-saved-views");
+  await browser.key("Escape");
+  await browser.key("k", 2);
+  await Bun.sleep(600);
+  await browser.insert("bike");
+  await Bun.sleep(1500);
+  await shot("21-command-palette");
+  await browser.key("Escape");
+
   await browser.dark(true);
   await browser.goto(`${BASE}/c/${SMALL}/d/sales_order/${ORDER}`);
   await shot("13-sales-order-dark");
