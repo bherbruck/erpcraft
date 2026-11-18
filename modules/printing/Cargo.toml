@@ -8,9 +8,16 @@ license.workspace = true
 
 [dependencies]
 ammonia.workspace = true
+base64.workspace = true
+erpcraft-banking.workspace = true
+erpcraft-party.workspace = true
 erpcraft-kernel.workspace = true
 chrono.workspace = true
 minijinja.workspace = true
+krilla.workspace = true
+ttf-parser.workspace = true
+html5ever.workspace = true
+markup5ever_rcdom.workspace = true
 rust_decimal.workspace = true
 serde.workspace = true
 serde_json.workspace = true

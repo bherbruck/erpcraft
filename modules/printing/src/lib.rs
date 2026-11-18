@@ -5,8 +5,8 @@
 //! one company or for all. `document.render` picks the one asked for, else
 //! the company's default, else the default for all companies, else the
 //! one built into this crate, and renders it with what the caller may read
-//! of the document. The server makes no PDF: the browser prints the page,
-//! to paper or to a PDF.
+//! of the document. The browser prints the page; `document.render_pdf`
+//! makes a PDF/A-3 of it on the server ([`pdf`]).
 //!
 //! What a template can see is exactly what `document.get` returns to the
 //! caller, plus the company's code, name and currency, plus what the
@@ -29,6 +29,8 @@ use uuid::Uuid;
 
 mod builtin;
 mod engine;
+mod letterhead;
+pub mod pdf;
 
 pub struct PrintingModule;
 
@@ -38,11 +40,18 @@ impl Module for PrintingModule {
     }
 
     fn migrations(&self) -> Vec<Migration> {
-        vec![Migration {
-            version: 1,
-            name: "printing",
-            sql: include_str!("../migrations/0001_printing.sql"),
-        }]
+        vec![
+            Migration {
+                version: 1,
+                name: "printing",
+                sql: include_str!("../migrations/0001_printing.sql"),
+            },
+            Migration {
+                version: 2,
+                name: "company_logo",
+                sql: include_str!("../migrations/0002_company_logo.sql"),
+            },
+        ]
     }
 
     fn entities(&self) -> Vec<EntityMeta> {
@@ -78,7 +87,15 @@ impl Module for PrintingModule {
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
-        vec![command(Render), command(Preview), command(Builtin)]
+        vec![
+            command(Render),
+            command(RenderPdf),
+            command(Preview),
+            command(Builtin),
+            command(letterhead::SetLogo),
+            command(letterhead::GetLogo),
+            command(letterhead::RemoveLogo),
+        ]
     }
 }
 
@@ -161,6 +178,76 @@ impl Command for Render {
     }
 }
 
+#[derive(Serialize, JsonSchema)]
+pub struct RenderedPdf {
+    /// The PDF, in base64: PDF/A-3b, A4, with its fonts embedded.
+    pub data: String,
+    pub content_type: String,
+    /// A file name for it: the document's type and number.
+    pub filename: String,
+    pub title: String,
+    pub template_id: Option<Uuid>,
+}
+
+struct RenderPdf;
+
+#[async_trait]
+impl Command for RenderPdf {
+    type Input = RenderInput;
+    type Output = RenderedPdf;
+
+    fn spec(&self) -> CommandSpec {
+        CommandSpec::query(
+            "document.render_pdf",
+            "Render a document as a PDF on the server (PDF/A-3b, A4), from the same print \
+             template and with the same data as document.render: the letterhead, the parties, \
+             the lines, the totals. The layout follows the built-in stylesheet; styles a \
+             template sets on its own elements show in the HTML page only. The PDF is returned \
+             in base64.",
+        )
+        .label("PDF")
+        .resource("document")
+    }
+
+    async fn run(&self, ctx: &mut Ctx<'_>, input: RenderInput) -> Result<RenderedPdf> {
+        pdf_of(ctx, &input.doc_type, input.id, input.template_id, vec![]).await
+    }
+}
+
+/// A document as a PDF, with `attachments` carried inside: for a module
+/// that sends it, or makes an e-invoice of it.
+pub async fn pdf_of(
+    ctx: &mut Ctx<'_>,
+    doc_type: &str,
+    id: Uuid,
+    template_id: Option<Uuid>,
+    attachments: Vec<pdf::Attachment>,
+) -> Result<RenderedPdf> {
+    use base64::Engine;
+    let rendered = render(ctx, doc_type, id, Source::Stored(template_id)).await?;
+    let bytes = pdf::render(&rendered.html, &rendered.title, attachments)
+        .map_err(|e| Error::validation(format!("the PDF cannot be made: {e}")))?;
+    let filename = format!(
+        "{}.pdf",
+        rendered
+            .title
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            })
+            .collect::<String>()
+    );
+    Ok(RenderedPdf {
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        content_type: "application/pdf".into(),
+        filename,
+        title: rendered.title,
+        template_id: rendered.template_id,
+    })
+}
+
 /// Which template a render uses.
 enum Source {
     /// The one with this id, or else the default.
@@ -191,6 +278,10 @@ async fn render(ctx: &mut Ctx<'_>, doc_type: &str, id: Uuid, source: Source) -> 
         Error::validation(format!("the print template cannot be rendered: {problem}"))
             .with_field(field)
     })?;
+    // The logo goes in after the page was sanitised, from bytes checked
+    // when it was uploaded.
+    let logo = letterhead::logo(&mut *ctx.conn, view.header.company_id).await?;
+    let html = letterhead::place_logo(&html, logo.as_ref());
     Ok(Rendered {
         html,
         template_id,
@@ -367,6 +458,7 @@ async fn context(
         },
         "refs": refs.found,
         "parties": parties,
+        "letterhead": letterhead::letterhead(ctx, company_id, &name).await?,
         "title": title,
     }))
 }

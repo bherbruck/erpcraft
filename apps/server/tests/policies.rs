@@ -885,6 +885,7 @@ async fn policy_points_are_described_for_interfaces_and_agents() {
             "asset.below_minimum",
             "bank_statement.amount_difference",
             CUSTOMER_INACTIVE,
+            "document.send",
             "fx.rate_differs",
             "payment.discount_tax",
             "payment.late_discount",

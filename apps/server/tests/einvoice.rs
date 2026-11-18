@@ -2045,3 +2045,274 @@ async fn an_incoming_reverse_charge_takes_the_self_assessed_code() {
     }
     t.stop().await;
 }
+
+/// The letterhead prints what party data and banking know of the company,
+/// with its logo; the same page comes as a PDF made on the server.
+#[tokio::test]
+async fn an_invoice_prints_on_the_letterhead_and_as_a_pdf() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let invoice = f.invoice(&t, &f.customer).await;
+    // A one-pixel PNG.
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    let (status, refused) = t
+        .command(
+            &t.admin,
+            "company_logo.set",
+            json!({ "company_id": f.company, "data": "PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+" }),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "an SVG is refused: {refused}"
+    );
+    let (status, logo) = t
+        .command(
+            &t.admin,
+            "company_logo.set",
+            json!({ "company_id": f.company, "data": png }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{logo}");
+    assert_eq!(logo["content_type"], "image/png");
+
+    let (status, page) = t
+        .command(
+            &t.admin,
+            "document.render",
+            json!({ "doc_type": "sales_invoice", "id": invoice["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let html = page["html"].as_str().unwrap();
+    for shown in [
+        "Muster GmbH",
+        "Hauptstraße 1",
+        "DE123456789",
+        "143/123/45678",
+        "HRB 12345, Amtsgericht München",
+        "DE89370400440532013000",
+        "COBADEFFXXX",
+        "rechnung@muster.example",
+        "src=\"data:image/png;base64,",
+    ] {
+        assert!(html.contains(shown), "{shown} is on the letterhead");
+    }
+
+    let (status, pdf) = t
+        .command(
+            &t.admin,
+            "document.render_pdf",
+            json!({ "doc_type": "sales_invoice", "id": invoice["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{pdf}");
+    assert_eq!(pdf["content_type"], "application/pdf");
+    assert!(pdf["filename"].as_str().unwrap().ends_with(".pdf"));
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(pdf["data"].as_str().unwrap())
+        .unwrap();
+    assert!(bytes.starts_with(b"%PDF-"));
+    assert!(String::from_utf8_lossy(&bytes).contains("pdfaid"), "PDF/A");
+    if let Ok(dir) = std::env::var("ERPCRAFT_KEEP_PDF") {
+        std::fs::write(format!("{dir}/invoice.pdf"), &bytes).unwrap();
+    }
+
+    // Removed, the logo is gone from the page.
+    let (status, _) = t
+        .command(
+            &t.admin,
+            "company_logo.remove",
+            json!({ "company_id": f.company }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, page) = t
+        .command(
+            &t.admin,
+            "document.render",
+            json!({ "doc_type": "sales_invoice", "id": invoice["id"] }),
+        )
+        .await;
+    assert!(!page["html"].as_str().unwrap().contains("data:image"));
+    t.stop().await;
+}
+
+/// A tiny SMTP server that takes every message and keeps it.
+async fn smtp_server() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let kept = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let store = kept.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((socket, _)) = listener.accept().await else {
+                return;
+            };
+            let store = store.clone();
+            tokio::spawn(async move {
+                let (read, mut write) = socket.into_split();
+                let mut lines = BufReader::new(read);
+                write.write_all(b"220 test ESMTP\r\n").await.unwrap();
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    if lines.read_line(&mut line).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let command = line.trim_end().to_ascii_uppercase();
+                    if command.starts_with("EHLO") {
+                        write.write_all(b"250-test\r\n250 OK\r\n").await.unwrap();
+                    } else if command.starts_with("DATA") {
+                        write.write_all(b"354 go on\r\n").await.unwrap();
+                        let mut data = String::new();
+                        loop {
+                            line.clear();
+                            lines.read_line(&mut line).await.unwrap();
+                            if line == ".\r\n" {
+                                break;
+                            }
+                            data.push_str(&line);
+                        }
+                        store.lock().unwrap().push(data);
+                        write.write_all(b"250 queued\r\n").await.unwrap();
+                    } else if command.starts_with("QUIT") {
+                        write.write_all(b"221 bye\r\n").await.unwrap();
+                        return;
+                    } else {
+                        write.write_all(b"250 OK\r\n").await.unwrap();
+                    }
+                }
+            });
+        }
+    });
+    (port, kept)
+}
+
+/// An invoice sent by email: to the customer's address on record, as a PDF,
+/// through the company's SMTP server, recorded on the invoice; a draft is
+/// not sent; an unreachable server leaves it to be tried again.
+#[tokio::test]
+async fn an_invoice_is_sent_by_email() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let invoice = f.invoice(&t, &f.customer).await;
+    let (port, kept) = smtp_server().await;
+    // A password does not go over a connection without encryption.
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "smtp_settings.set",
+            json!({ "company_id": f.company, "host": "127.0.0.1", "port": port,
+                    "security": "none", "username": "u", "password": "secret",
+                    "from_address": "rechnung@muster.example" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (status, settings) = t
+        .command(
+            &t.admin,
+            "smtp_settings.set",
+            json!({ "company_id": f.company, "host": "127.0.0.1", "port": port,
+                    "security": "none", "from_address": "rechnung@muster.example",
+                    "from_name": "Muster GmbH Buchhaltung" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{settings}");
+    assert_eq!(settings["has_password"], false);
+    assert!(settings.get("password").is_none());
+
+    // A draft is not sent.
+    let (status, draft) = t
+        .post(
+            &t.admin,
+            "/api/documents/sales_invoice",
+            json!({ "company_id": f.company, "doc_date": "2026-04-10", "body": {
+                "customer_id": f.customer, "lines": [
+                    { "account_id": f.account["8400"], "qty": "1", "unit_price": "10.00",
+                      "tax_code_id": f.vat19 } ] } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{draft}");
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "document.send",
+            json!({ "doc_type": "sales_invoice", "id": draft["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+    let (status, message) = t
+        .command(
+            &t.admin,
+            "document.send",
+            json!({ "doc_type": "sales_invoice", "id": invoice["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{message}");
+    assert_eq!(message["to_addresses"], json!(["einkauf@kunde.example"]));
+    assert_eq!(message["status"], "queued");
+    let delivered = erpcraft_kernel::outbox::deliver_batch(&t.kernel, 100)
+        .await
+        .unwrap();
+    assert_eq!(delivered.failed, 0);
+    let mail = kept.lock().unwrap().clone();
+    assert_eq!(mail.len(), 1);
+    assert!(
+        mail[0].contains("To: einkauf@kunde.example"),
+        "{}",
+        &mail[0][..400.min(mail[0].len())]
+    );
+    assert!(mail[0].contains("application/pdf"));
+    assert!(mail[0].contains(message["message_id"].as_str().unwrap()));
+    assert!(mail[0].contains("Muster GmbH Buchhaltung"));
+    let (status, sent) = t
+        .command(
+            &t.admin,
+            "document.messages",
+            json!({ "doc_type": "sales_invoice", "id": invoice["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{sent}");
+    assert_eq!(sent["items"][0]["status"], "sent");
+    assert!(sent["items"][0]["sent_at"].is_string());
+
+    // The server is away: the message waits and is tried again.
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dead = closed.local_addr().unwrap().port();
+    drop(closed);
+    t.command(
+        &t.admin,
+        "smtp_settings.set",
+        json!({ "company_id": f.company, "host": "127.0.0.1", "port": dead,
+                "security": "none", "from_address": "rechnung@muster.example" }),
+    )
+    .await;
+    let (status, message) = t
+        .command(
+            &t.admin,
+            "document.send",
+            json!({ "doc_type": "sales_invoice", "id": invoice["id"],
+                    "to": ["einkauf@kunde.example"], "cc": ["chef@kunde.example"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{message}");
+    let delivered = erpcraft_kernel::outbox::deliver_batch(&t.kernel, 100)
+        .await
+        .unwrap();
+    assert_eq!(delivered.failed, 1);
+    let (_, sent) = t
+        .command(
+            &t.admin,
+            "document.messages",
+            json!({ "doc_type": "sales_invoice", "id": invoice["id"] }),
+        )
+        .await;
+    assert_eq!(sent["items"][0]["status"], "queued");
+    assert_eq!(sent["items"][0]["attempts"], 1);
+    assert!(sent["items"][0]["last_error"].is_string());
+    t.stop().await;
+}

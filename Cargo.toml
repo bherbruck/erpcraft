@@ -34,6 +34,7 @@ erpcraft-banking = { path = "modules/banking" }
 erpcraft-assets = { path = "modules/assets" }
 erpcraft-einvoice = { path = "modules/einvoice" }
 erpcraft-planning = { path = "modules/planning" }
+erpcraft-mail = { path = "modules/mail" }
 
 # Used only by erpcraft-printing: every rendered page and every saved
 # template goes through it. Built on html5ever, a spec-compliant parser.
@@ -46,6 +47,13 @@ async-trait = "0.1"
 aws-lc-rs = "1"
 axum = "0.8"
 base64 = "0.23"
+# Used only by erpcraft-printing, to write PDFs (PDF/A-3) on the server.
+krilla = "0.8.2"
+ttf-parser = "0.25"
+html5ever = "0.40"
+markup5ever_rcdom = "0.40"
+# Used only by erpcraft-mail, to send documents through a company's SMTP server.
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "hostname", "tokio1-rustls", "ring", "webpki-roots"] }
 # Used only by erpcraft-rules. Nothing else may depend on the rule engine.
 cel = { version = "0.16", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }

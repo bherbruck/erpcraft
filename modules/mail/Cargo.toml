@@ -1,0 +1,19 @@
+[package]
+name = "erpcraft-mail"
+description = "erpcraft mail module: documents sent by email as PDFs, through each company's SMTP server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+base64.workspace = true
+chrono.workspace = true
+erpcraft-kernel.workspace = true
+erpcraft-printing.workspace = true
+lettre.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tracing.workspace = true
+uuid.workspace = true
