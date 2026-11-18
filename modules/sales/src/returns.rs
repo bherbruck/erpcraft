@@ -32,8 +32,8 @@ use uuid::Uuid;
 
 use crate::{
     DocInput, ReverseInput, SALES_INVOICE, SALES_ORDER, check_order_lines, follows, gl_line,
-    in_currency, lock_order, order_lines, policy, post_and_reverse, settings, settle_order, states,
-    trim,
+    in_currency, lock_order, lock_order_stock, order_lines, policy, post_and_reverse, settings,
+    settle_order, states, trim,
 };
 
 pub(crate) const SALES_RETURN: &str = "sales_return";
@@ -333,6 +333,7 @@ impl Command for PostReturn {
         }
         let order_id = return_order(&mut *ctx.conn, doc.id).await?;
         let (mut order, mut order_lines) = lock_order(ctx, order_id).await?;
+        lock_order_stock(ctx, &order, &order_lines).await?;
         let lines = return_lines(&mut *ctx.conn, doc.id).await?;
         if lines.is_empty() {
             return Err(Error::validation("a return needs at least one line"));
@@ -498,6 +499,7 @@ impl Command for ReverseReturn {
         }
         let order_id = return_order(&mut *ctx.conn, doc.id).await?;
         let (mut order, mut order_lines) = lock_order(ctx, order_id).await?;
+        lock_order_stock(ctx, &order, &order_lines).await?;
         for line in return_lines(&mut *ctx.conn, doc.id).await? {
             let ordered = order_lines
                 .get_mut(&line.order_line_id)

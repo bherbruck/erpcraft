@@ -2118,7 +2118,8 @@ async fn orders_reserve_stock_and_deliveries_respect_it_as_far_as_the_company_sa
     );
 
     // The second ships all six, two of them out of the first's: allowed by
-    // default. It holds nothing after; the first is cut back when asked.
+    // default. It holds nothing after, and the first is cut back to the
+    // four left at once: nothing reserved is not on hand.
     let deliver = |order: Value, qty: &'static str| {
         let f = &f;
         let t = &t;
@@ -2139,6 +2140,7 @@ async fn orders_reserve_stock_and_deliveries_respect_it_as_far_as_the_company_sa
     let (status, body) = deliver(second.clone(), "6").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(held(second.clone()).await, 0.0);
+    assert_eq!(held(first.clone()).await, 4.0);
     let (status, body) = t
         .command(
             &t.admin,
@@ -2171,5 +2173,278 @@ async fn orders_reserve_stock_and_deliveries_respect_it_as_far_as_the_company_sa
     assert_eq!(held(first.clone()).await, 0.0);
     let (status, body) = deliver(third.clone(), "2").await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    t.stop().await;
+}
+
+/// Stock that leaves another way than by the reserving order's delivery
+/// (an adjustment here) cuts reservations back to what is on hand, the
+/// latest first; a reservation listing shows an order only to someone who
+/// may read orders, and comes in pages.
+#[tokio::test]
+async fn reservations_never_exceed_what_is_on_hand_and_name_only_readable_orders() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let bought = f.order(&t, "purchase", "10", "1.00", json!({})).await;
+    f.posted(
+        &t,
+        "purchase_receipt",
+        "2026-01-02",
+        json!({ "purchase_order_id": bought["id"],
+                "lines": [{ "order_line_id": bought["body"]["lines"][0]["id"], "qty": "10" }] }),
+    )
+    .await;
+    let first = f.order(&t, "sales", "6", "5.00", json!({})).await;
+    let second = f.order(&t, "sales", "4", "5.00", json!({})).await;
+    let held = |order: &Value| {
+        let id = order["id"].as_str().unwrap().to_owned();
+        let pool = t.pool.clone();
+        async move {
+            let qty: Option<String> = sqlx::query_scalar(
+                "SELECT trim_scale(sum(qty))::text FROM stock_reservation
+                 WHERE document_id = $1::uuid",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            qty.map_or(0.0, |q| q.parse().unwrap())
+        }
+    };
+    assert_eq!((held(&first).await, held(&second).await), (6.0, 4.0));
+
+    // Seven are written off: three are left, all for the first order.
+    f.posted(
+        &t,
+        "stock_adjustment",
+        "2026-01-03",
+        json!({ "offset_account_id": f.account["5200"],
+                "lines": [{ "item_id": f.item, "warehouse_id": f.warehouse, "qty": "-7" }] }),
+    )
+    .await;
+    assert_eq!((held(&first).await, held(&second).await), (3.0, 0.0));
+    let (_, out) = t
+        .command(
+            &t.admin,
+            "stock.availability",
+            json!({ "company_id": f.c.id, "item_id": f.item }),
+        )
+        .await;
+    let row = &out["rows"][0];
+    assert_eq!(
+        (
+            dec(&row["on_hand"]),
+            dec(&row["reserved"]),
+            dec(&row["free"])
+        ),
+        (3.0, 3.0, 0.0),
+        "{row}"
+    );
+
+    // A stock clerk sees what is reserved, not for which order.
+    let (clerk, _) = t
+        .user_with_rules(
+            "stockclerk@example.com",
+            json!(["stock_entry:read"]),
+            Some(&f.c.id),
+        )
+        .await;
+    let (status, out) = t
+        .command(
+            &clerk,
+            "stock.reservations",
+            json!({ "company_id": f.c.id }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    let text = out.to_string();
+    for order in [&first, &second] {
+        assert!(!text.contains(order["id"].as_str().unwrap()), "{out}");
+        assert!(!text.contains(order["number"].as_str().unwrap()), "{out}");
+    }
+    assert_eq!(out["rows"][0]["doc_type"], "sales_order", "{out}");
+    assert_eq!(out["total"], 1, "{out}");
+    // The administrator sees the order; pages are as asked.
+    let (_, out) = t
+        .command(
+            &t.admin,
+            "stock.reservations",
+            json!({ "company_id": f.c.id, "limit": 1, "offset": 1 }),
+        )
+        .await;
+    assert_eq!(
+        (out["total"].as_i64(), out["rows"].as_array().map(Vec::len)),
+        (Some(1), Some(0))
+    );
+    let (_, out) = t
+        .command(
+            &t.admin,
+            "stock.reservations",
+            json!({ "company_id": f.c.id }),
+        )
+        .await;
+    assert_eq!(out["rows"][0]["number"], first["number"], "{out}");
+    t.stop().await;
+}
+
+/// Two deliveries of orders that share items, each taking the other's
+/// item first, run at once: the levels are locked up front in one order,
+/// so neither deadlocks, and a company that refuses taking reserved goods
+/// refuses the one that would, though both checked at the same moment.
+#[tokio::test]
+async fn concurrent_deliveries_take_their_locks_in_one_order() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let gadget = t
+        .create("item", json!({ "code": "GADGET", "name": "Gadget" }))
+        .await;
+    let bought = f.order(&t, "purchase", "10", "1.00", json!({})).await;
+    f.posted(
+        &t,
+        "purchase_receipt",
+        "2026-01-02",
+        json!({ "purchase_order_id": bought["id"],
+                "lines": [{ "order_line_id": bought["body"]["lines"][0]["id"], "qty": "10" }] }),
+    )
+    .await;
+    f.posted(
+        &t,
+        "stock_adjustment",
+        "2026-01-02",
+        json!({ "offset_account_id": f.account["5200"],
+                "lines": [{ "item_id": gadget, "warehouse_id": f.warehouse, "qty": "10",
+                            "unit_cost": "1" }] }),
+    )
+    .await;
+    // Each order has both items; one delivers widgets, the other gadgets.
+    let order = |first: &str, second: &str| {
+        let f = &f;
+        let t = &t;
+        let (first, second) = (first.to_owned(), second.to_owned());
+        async move {
+            let draft = f
+                .draft(
+                    t,
+                    "sales_order",
+                    "2026-01-03",
+                    json!({ "customer_id": f.customer, "lines": [
+                        { "item_id": first, "warehouse_id": f.warehouse, "qty": "5",
+                          "unit_price": "5.00" },
+                        { "item_id": second, "warehouse_id": f.warehouse, "qty": "5",
+                          "unit_price": "5.00" } ] }),
+                )
+                .await;
+            let (status, order) = t
+                .command(&t.admin, "sales_order.approve", json!({ "id": id(&draft) }))
+                .await;
+            assert_eq!(status, StatusCode::OK, "{order}");
+            order
+        }
+    };
+    let a = order(&f.item, &gadget).await;
+    let b = order(&gadget, &f.item).await;
+    let delivery = |order: &Value| {
+        let f = &f;
+        let t = &t;
+        let order = order.clone();
+        async move {
+            f.draft(
+                t,
+                "sales_delivery",
+                "2026-01-05",
+                json!({ "sales_order_id": order["id"],
+                        "lines": [{ "order_line_id": order["body"]["lines"][0]["id"],
+                                    "qty": "5" }] }),
+            )
+            .await
+        }
+    };
+    for _ in 0..3 {
+        let (da, db) = (delivery(&a).await, delivery(&b).await);
+        let (ra, rb) = tokio::join!(
+            f.post(&t, "sales_delivery", &da),
+            f.post(&t, "sales_delivery", &db)
+        );
+        assert_eq!(ra.0, StatusCode::OK, "{}", ra.1);
+        assert_eq!(rb.0, StatusCode::OK, "{}", rb.1);
+        for d in [&ra.1, &rb.1] {
+            let (status, body) = t
+                .command(&t.admin, "sales_delivery.reverse", json!({ "id": d["id"] }))
+                .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+    }
+
+    t.stop().await;
+}
+
+/// A company that keeps reservations firm: two deliveries posted at the
+/// same moment each check what is free only once the levels are locked,
+/// so between them they cannot take goods another order holds.
+#[tokio::test]
+async fn deliveries_at_once_do_not_slip_past_firm_reservations() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let (status, rule) = t
+        .post(
+            &t.admin,
+            "/api/entities/policy_rule",
+            json!({ "company_id": f.c.id, "point": "sales_delivery.reserved_elsewhere",
+                    "effect": "refuse", "condition": "facts.short > 0", "priority": 10 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{rule}");
+    // Two orders of four, taken while nothing was in stock: they hold none.
+    let b = f.order(&t, "sales", "4", "5.00", json!({})).await;
+    let c = f.order(&t, "sales", "4", "5.00", json!({})).await;
+    let bought = f.order(&t, "purchase", "10", "1.00", json!({})).await;
+    f.posted(
+        &t,
+        "purchase_receipt",
+        "2026-01-02",
+        json!({ "purchase_order_id": bought["id"],
+                "lines": [{ "order_line_id": bought["body"]["lines"][0]["id"], "qty": "10" }] }),
+    )
+    .await;
+    // A third, after the goods came in, holds five of the ten.
+    let a = f.order(&t, "sales", "5", "5.00", json!({})).await;
+    let delivery = |order: &Value| {
+        let f = &f;
+        let t = &t;
+        let order = order.clone();
+        async move {
+            f.draft(
+                t,
+                "sales_delivery",
+                "2026-01-05",
+                json!({ "sales_order_id": order["id"],
+                        "lines": [{ "order_line_id": order["body"]["lines"][0]["id"],
+                                    "qty": "4" }] }),
+            )
+            .await
+        }
+    };
+    let (db, dc) = (delivery(&b).await, delivery(&c).await);
+    let (rb, rc) = tokio::join!(
+        f.post(&t, "sales_delivery", &db),
+        f.post(&t, "sales_delivery", &dc)
+    );
+    // Five are free: one delivery of four goes, the other finds one free.
+    let mut statuses = [rb.0, rc.0];
+    statuses.sort();
+    assert_eq!(
+        statuses,
+        [StatusCode::OK, StatusCode::UNPROCESSABLE_ENTITY],
+        "{} / {}",
+        rb.1,
+        rc.1
+    );
+    let held: String = sqlx::query_scalar(
+        "SELECT trim_scale(sum(qty))::text FROM stock_reservation WHERE document_id = $1::uuid",
+    )
+    .bind(a["id"].as_str().unwrap())
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(held, "5", "the third order still holds its five");
     t.stop().await;
 }

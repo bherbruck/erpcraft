@@ -1126,8 +1126,19 @@ impl Command for Complete {
             erpcraft_gl::post(ctx, &posting, &gl).await?;
         }
 
-        // Consumed: nothing is held for it any more.
+        // Consumed: nothing is held for it any more. What it took beyond
+        // its own reservation may leave other orders holding more than is
+        // on hand: cut them back.
         erpcraft_stock::release(&mut *ctx.conn, doc.id).await?;
+        erpcraft_stock::cap_reservations(
+            &mut *ctx.conn,
+            doc.company_id,
+            components
+                .iter()
+                .map(|c| (c.item_id, order.warehouse_id))
+                .collect(),
+        )
+        .await?;
         document::transition(ctx, &mut doc, "completed").await?;
         document::view(ctx, doc).await
     }

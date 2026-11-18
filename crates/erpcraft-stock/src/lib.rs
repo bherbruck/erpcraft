@@ -505,6 +505,58 @@ pub async fn reserve(
     Ok(held)
 }
 
+/// Cut reservations back to what is on hand at these levels, which the
+/// caller holds locked: when goods leave other than for the order that
+/// reserved them (another order's delivery, an adjustment, a transfer, a
+/// return, production), or a receipt is reversed, a level can hold less
+/// than is reserved of it. The earliest reservations are kept whole and
+/// the latest cut back first, so a promise made first is kept first; one
+/// cut to nothing is removed. Reserved never exceeds on hand afterwards.
+pub async fn cap_reservations(
+    conn: &mut PgConnection,
+    company_id: Uuid,
+    mut pairs: Vec<(Uuid, Uuid)>,
+) -> Result<()> {
+    pairs.sort();
+    pairs.dedup();
+    let (items, warehouses): (Vec<Uuid>, Vec<Uuid>) = pairs.into_iter().unzip();
+    // What each reservation may keep: on hand less what the reservations
+    // before it hold, at most its own quantity.
+    let keep: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "WITH r AS (
+             SELECT r.id, r.qty, greatest(l.qty, 0) AS on_hand,
+                    sum(r.qty) OVER (PARTITION BY r.item_id, r.warehouse_id
+                                     ORDER BY r.created_at, r.id) - r.qty AS before
+             FROM stock_reservation r
+             JOIN unnest($2::uuid[], $3::uuid[]) AS p (item_id, warehouse_id)
+               ON p.item_id = r.item_id AND p.warehouse_id = r.warehouse_id
+             JOIN stock_level l ON l.item_id = r.item_id AND l.warehouse_id = r.warehouse_id
+             WHERE r.company_id = $1)
+         SELECT id, greatest(least(qty, on_hand - before), 0) FROM r
+         WHERE before + qty > on_hand",
+    )
+    .bind(company_id)
+    .bind(&items)
+    .bind(&warehouses)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (id, qty) in keep {
+        if qty.is_zero() {
+            sqlx::query("DELETE FROM stock_reservation WHERE id = $1")
+                .bind(id)
+                .execute(&mut *conn)
+                .await?;
+        } else {
+            sqlx::query("UPDATE stock_reservation SET qty = $2, updated_at = now() WHERE id = $1")
+                .bind(id)
+                .bind(qty)
+                .execute(&mut *conn)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 /// Remove every reservation of an order: it is done, cancelled or closed.
 pub async fn release(conn: &mut PgConnection, document_id: Uuid) -> Result<()> {
     sqlx::query("DELETE FROM stock_reservation WHERE document_id = $1")
@@ -739,6 +791,20 @@ pub async fn post(
     .await?;
     // Returned in the order given, by their numbers.
     entries.sort_by_key(|e| e.line_no);
+    // Goods that left may leave less on hand than is reserved. A sales
+    // delivery and production take their own order's reservation first:
+    // those commands settle it and then call `cap_reservations`
+    // themselves, so that another order's reservation is not cut for
+    // goods its own order was holding.
+    let settles_own = matches!(context, "sales_delivery" | "production");
+    let out: Vec<(Uuid, Uuid)> = lines
+        .iter()
+        .filter(|l| l.qty.is_sign_negative())
+        .map(|l| (l.item_id, l.warehouse_id))
+        .collect();
+    if !out.is_empty() && !settles_own {
+        cap_reservations(&mut *ctx.conn, posting.company_id, out).await?;
+    }
     Ok(entries)
 }
 
@@ -942,6 +1008,15 @@ impl Ledger for StockLedger {
             .execute(&mut *conn)
             .await?;
         }
+        // A receipt taken back may leave less on hand than is reserved.
+        let back: Vec<(Uuid, Uuid)> = originals
+            .iter()
+            .filter(|e| e.qty.is_sign_positive())
+            .map(|e| (e.item_id, e.warehouse_id))
+            .collect();
+        if !back.is_empty() {
+            cap_reservations(conn, original.company_id, back).await?;
+        }
         Ok(())
     }
 
@@ -1132,6 +1207,10 @@ struct ReservationsInput {
     warehouse_id: Option<Uuid>,
     /// Only those of this order.
     document_id: Option<Uuid>,
+    /// At most this many rows: 50 by default, 500 at most.
+    limit: Option<i64>,
+    /// How many rows to skip first, for the next page.
+    offset: Option<i64>,
 }
 
 #[derive(Serialize, JsonSchema, sqlx::FromRow)]
@@ -1139,18 +1218,21 @@ struct ReservationRow {
     item_id: Uuid,
     warehouse_id: Uuid,
     qty: Decimal,
-    /// The order it is set aside for, its type and number.
-    document_id: Uuid,
+    /// What kind of order it is set aside for.
     doc_type: String,
+    /// The order, its number and its line: only for a caller who may read
+    /// that kind of order in the company.
+    document_id: Option<Uuid>,
     number: Option<String>,
-    /// The order's line.
-    line_id: Uuid,
+    line_id: Option<Uuid>,
     updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Serialize, JsonSchema)]
 struct ReservationsOutput {
     company_id: Uuid,
+    /// How many reservations match, whatever the page.
+    total: i64,
     rows: Vec<ReservationRow>,
 }
 
@@ -1167,7 +1249,10 @@ impl Command for Reservations {
             "Stock on hand set aside for lines of open sales orders and released production \
              orders, per order line: what each holds now. An order reserves what free stock \
              covers when it is approved or released, holds less as its goods leave, and lets \
-             go when it is done, cancelled or closed.",
+             go when it is done, cancelled or closed; when other movements leave less on hand \
+             than is reserved, the latest reservations are cut back first. The order and its \
+             number are shown only to someone who may read that kind of order. Paged: \
+             limit (50, at most 500) and offset.",
         )
         .report("Reservations")
         .permission("stock_entry:read")
@@ -1175,23 +1260,48 @@ impl Command for Reservations {
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: ReservationsInput) -> Result<ReservationsOutput> {
         ctx.require("stock_entry:read", input.company_id)?;
-        let rows = sqlx::query_as(
-            "SELECT r.item_id, r.warehouse_id, trim_scale(r.qty) AS qty, r.document_id,
-                    d.doc_type, d.number, r.line_id, r.updated_at
-             FROM stock_reservation r JOIN document d ON d.id = r.document_id
-             WHERE r.company_id = $1 AND ($2::uuid IS NULL OR r.item_id = $2)
+        const FILTER: &str = "WHERE r.company_id = $1 AND ($2::uuid IS NULL OR r.item_id = $2)
                AND ($3::uuid IS NULL OR r.warehouse_id = $3)
-               AND ($4::uuid IS NULL OR r.document_id = $4)
-             ORDER BY r.item_id, r.warehouse_id, r.created_at",
-        )
+               AND ($4::uuid IS NULL OR r.document_id = $4)";
+        let total: i64 = sqlx::query_scalar(&format!(
+            "SELECT count(*) FROM stock_reservation r {FILTER}"
+        ))
         .bind(input.company_id)
         .bind(input.item_id)
         .bind(input.warehouse_id)
         .bind(input.document_id)
+        .fetch_one(&mut *ctx.conn)
+        .await?;
+        let mut rows: Vec<ReservationRow> = sqlx::query_as(&format!(
+            "SELECT r.item_id, r.warehouse_id, trim_scale(r.qty) AS qty, d.doc_type,
+                    r.document_id, d.number, r.line_id, r.updated_at
+             FROM stock_reservation r JOIN document d ON d.id = r.document_id
+             {FILTER}
+             ORDER BY r.item_id, r.warehouse_id, r.created_at, r.id
+             LIMIT $5 OFFSET $6"
+        ))
+        .bind(input.company_id)
+        .bind(input.item_id)
+        .bind(input.warehouse_id)
+        .bind(input.document_id)
+        .bind(input.limit.unwrap_or(50).clamp(1, 500))
+        .bind(input.offset.unwrap_or(0).max(0))
         .fetch_all(&mut *ctx.conn)
         .await?;
+        // Which order holds the stock is the order's to tell.
+        for row in &mut rows {
+            if !ctx
+                .actor
+                .can(&format!("{}:read", row.doc_type), input.company_id)
+            {
+                row.document_id = None;
+                row.number = None;
+                row.line_id = None;
+            }
+        }
         Ok(ReservationsOutput {
             company_id: input.company_id,
+            total,
             rows,
         })
     }

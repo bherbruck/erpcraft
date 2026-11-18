@@ -386,6 +386,26 @@ async fn lock_order(
     Ok((order, lines.into_iter().map(|l| (l.id, l)).collect()))
 }
 
+/// Lock the stock levels of every stock line of an order, in the stock
+/// ledger's one order, before anything moves: a delivery or a return
+/// moves some of them and then re-reserves all of them, so taking the
+/// locks piece by piece could deadlock two orders that share items; and
+/// what is reserved is read only once no one else can move those goods.
+pub(crate) async fn lock_order_stock(
+    ctx: &mut Ctx<'_>,
+    order: &Document,
+    lines: &BTreeMap<Uuid, OrderLine>,
+) -> Result<()> {
+    let pairs: Vec<(Uuid, Uuid)> = lines
+        .values()
+        .filter_map(|l| Some((l.item_id?, l.warehouse_id?)))
+        .collect();
+    if pairs.is_empty() {
+        return Ok(());
+    }
+    erpcraft_stock::lock_levels(&mut *ctx.conn, order.company_id, pairs).await
+}
+
 /// Save the progress of an order's lines, then close the order if it is
 /// now complete, or, after a reversal (`reversal`), reopen it if it no
 /// longer is.
@@ -1670,6 +1690,7 @@ impl Command for PostDelivery {
                 .fetch_one(&mut *ctx.conn)
                 .await?;
         let (mut order, mut order_lines) = lock_order(ctx, order_id).await?;
+        lock_order_stock(ctx, &order, &order_lines).await?;
         check_open(
             ctx,
             order.company_id,
@@ -1815,6 +1836,17 @@ impl Command for PostDelivery {
         }
 
         settle_order(ctx, &mut order, &order_lines, false).await?;
+        // Goods it took beyond its own reservation may leave other orders
+        // holding more than is on hand: they are cut back.
+        erpcraft_stock::cap_reservations(
+            &mut *ctx.conn,
+            doc.company_id,
+            movements
+                .iter()
+                .map(|m| (m.item_id, m.warehouse_id))
+                .collect(),
+        )
+        .await?;
         // The parties as the delivery note shows them, kept from now on.
         let (customer, shipping): (Uuid, Option<Uuid>) = sqlx::query_as(
             "SELECT o.customer_id, d.shipping_address_id
@@ -1888,6 +1920,7 @@ impl Command for ReverseDelivery {
                 .fetch_one(&mut *ctx.conn)
                 .await?;
         let (mut order, mut order_lines) = lock_order(ctx, order_id).await?;
+        lock_order_stock(ctx, &order, &order_lines).await?;
 
         for line in delivery_lines(&mut *ctx.conn, doc.id).await? {
             let ordered = order_lines
