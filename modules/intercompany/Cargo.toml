@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 chrono.workspace = true
+erpcraft-gl.workspace = true
 erpcraft-kernel.workspace = true
 serde.workspace = true
 serde_json.workspace = true

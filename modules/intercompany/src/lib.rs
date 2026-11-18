@@ -13,6 +13,8 @@
 
 use std::sync::Arc;
 
+mod consolidation;
+
 use chrono::NaiveDate;
 use erpcraft_kernel::authz::load_actor;
 use erpcraft_kernel::command::{Options, execute};
@@ -48,16 +50,23 @@ impl Module for IntercompanyModule {
     }
 
     fn migrations(&self) -> Vec<Migration> {
-        vec![Migration {
-            version: 1,
-            name: "intercompany",
-            sql: include_str!("../migrations/0001_intercompany.sql"),
-        }]
+        vec![
+            Migration {
+                version: 1,
+                name: "intercompany",
+                sql: include_str!("../migrations/0001_intercompany.sql"),
+            },
+            Migration {
+                version: 2,
+                name: "consolidation",
+                sql: include_str!("../migrations/0002_consolidation.sql"),
+            },
+        ]
     }
 
     fn entities(&self) -> Vec<EntityMeta> {
         let created = || FieldMeta::new("created_at", "Created", FieldType::Timestamp).readonly();
-        vec![
+        let mut entities = vec![
             EntityMeta::new("intercompany_party", "Intercompany party")
                 .field(
                     FieldMeta::new(
@@ -185,11 +194,17 @@ impl Module for IntercompanyModule {
                 .display(&["source_id", "status"])
                 .read_only()
                 .company_field("company_id"),
-        ]
+        ];
+        entities.extend(consolidation::entities());
+        entities
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
-        vec![command(Mirror), command(Balances)]
+        vec![
+            command(Mirror),
+            command(Balances),
+            command(consolidation::Report),
+        ]
     }
 
     fn subscribers(&self) -> Vec<Arc<dyn Subscriber>> {

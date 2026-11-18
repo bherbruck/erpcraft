@@ -983,6 +983,7 @@ name = "erpcraft-intercompany"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "erpcraft-gl",
  "erpcraft-kernel",
  "serde",
  "serde_json",
