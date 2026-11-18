@@ -19,19 +19,21 @@ async fn a_decimal_finer_than_its_column_is_refused_not_rounded() {
     let t = TestApp::start().await;
     let path = "/api/entities/exchange_rate";
 
-    // The column keeps 10 decimal places. An eleventh would be rounded
+    // The column keeps 18 decimal places. A nineteenth would be rounded
     // away, so it is refused, by name.
-    let (status, body) = t.post(&t.admin, path, rate(json!("1.12345678901"))).await;
+    let (status, body) = t
+        .post(&t.admin, path, rate(json!("1.1234567890123456789")))
+        .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert_eq!(message(&body), "field 'rate' has at most 10 decimal places");
+    assert_eq!(message(&body), "field 'rate' has at most 18 decimal places");
     // So is a number too fine for any parser to hold exactly.
     let fine = format!("1.{}1", "0".repeat(40));
     let (status, body) = t.post(&t.admin, path, rate(json!(fine))).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert_eq!(message(&body), "field 'rate' has at most 10 decimal places");
-    let (status, body) = t.post(&t.admin, path, rate(json!(1e-11))).await;
+    assert_eq!(message(&body), "field 'rate' has at most 18 decimal places");
+    let (status, body) = t.post(&t.admin, path, rate(json!(1e-19))).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert_eq!(message(&body), "field 'rate' has at most 10 decimal places");
+    assert_eq!(message(&body), "field 'rate' has at most 18 decimal places");
 
     // What is not a number is refused in the kernel's words, not Postgres's.
     for bad in [
@@ -50,36 +52,41 @@ async fn a_decimal_finer_than_its_column_is_refused_not_rounded() {
     }
     assert_eq!(t.count("SELECT count(*) FROM exchange_rate").await, 0);
 
-    // Zeros beyond the tenth place change nothing, so they are accepted.
-    let (status, created) = t.post(&t.admin, path, rate(json!("1.1000000000000"))).await;
+    // Zeros beyond the eighteenth place change nothing, so they are accepted.
+    let (status, created) = t
+        .post(&t.admin, path, rate(json!("1.10000000000000000000")))
+        .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
-    assert_eq!(created["rate"], "1.1000000000");
+    assert_eq!(created["rate"], "1.100000000000000000");
     let one = format!("{path}/{}", created["id"].as_str().unwrap());
 
     // The same on update.
     let (status, body) = t
-        .patch(&t.admin, &one, json!({ "rate": "1.10000000001" }))
+        .patch(&t.admin, &one, json!({ "rate": "1.1000000000000000001" }))
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert_eq!(message(&body), "field 'rate' has at most 10 decimal places");
+    assert_eq!(message(&body), "field 'rate' has at most 18 decimal places");
     let (status, body) = t.patch(&t.admin, &one, json!({ "rate": "x" })).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert!(message(&body).starts_with("field 'rate' must be a number"));
     let (_, read) = t.get(&t.admin, &one).await;
-    assert_eq!(read["rate"], "1.1000000000", "nothing was rounded in");
+    assert_eq!(
+        read["rate"], "1.100000000000000000",
+        "nothing was rounded in"
+    );
 
     let (status, body) = t
-        .patch(&t.admin, &one, json!({ "rate": "1.250000000000" }))
+        .patch(&t.admin, &one, json!({ "rate": "1.25000000000000000000" }))
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["rate"], "1.2500000000");
+    assert_eq!(body["rate"], "1.250000000000000000");
     // A JSON number and an exponent are numbers too.
     let (status, body) = t.patch(&t.admin, &one, json!({ "rate": 1.5 })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["rate"], "1.5000000000");
+    assert_eq!(body["rate"], "1.500000000000000000");
     let (status, body) = t.patch(&t.admin, &one, json!({ "rate": "125e-2" })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["rate"], "1.2500000000");
+    assert_eq!(body["rate"], "1.250000000000000000");
 
     // Another entity, another scale: each column says what it keeps.
     let (status, body) = t

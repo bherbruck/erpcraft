@@ -96,6 +96,11 @@ impl Module for OpenItemsModule {
                 name: "instalment_locks",
                 sql: include_str!("../migrations/0009_instalment_locks.sql"),
             },
+            Migration {
+                version: 10,
+                name: "rate_precision",
+                sql: include_str!("../migrations/0010_rate_precision.sql"),
+            },
         ]
     }
 

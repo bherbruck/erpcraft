@@ -116,7 +116,7 @@ impl DocumentHandler for SalesCredit {
                 )
                 .help("The accounting currency when left out."),
                 FieldMeta::new("fx_rate", "Exchange rate", FieldType::Decimal)
-                    .rate(10)
+                    .rate(erpcraft_gl::RATE_PLACES)
                     .help(
                         "For a credit in another currency: accounting currency per unit. The \
                          rate on record for the document's date when left out; once posted, \
@@ -224,12 +224,11 @@ impl DocumentHandler for SalesCredit {
                 .await
                 .map_err(|e| e.with_field("currency"))?;
         }
-        if body
-            .fx_rate
-            .is_some_and(|rate| rate <= Decimal::ZERO || rate.normalize().scale() > 10)
-        {
+        if body.fx_rate.is_some_and(|rate| {
+            rate <= Decimal::ZERO || rate.normalize().scale() > erpcraft_gl::RATE_PLACES
+        }) {
             return Err(Error::validation(
-                "an exchange rate is more than zero, with at most 10 decimal places",
+                "an exchange rate is more than zero, with at most 18 decimal places",
             )
             .with_field("fx_rate"));
         }

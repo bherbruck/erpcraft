@@ -76,6 +76,11 @@ impl Module for GlModule {
                 name: "entry_amount",
                 sql: include_str!("../migrations/0008_entry_amount.sql"),
             },
+            Migration {
+                version: 9,
+                name: "rate_precision",
+                sql: include_str!("../migrations/0009_rate_precision.sql"),
+            },
         ]
     }
 
@@ -164,7 +169,7 @@ impl Module for GlModule {
                 )
                 .field(
                     FieldMeta::new("rate", "Rate", FieldType::Decimal)
-                        .rate(10)
+                        .rate(RATE_PLACES)
                         .required(),
                 )
                 .field(created())
@@ -215,7 +220,10 @@ impl Module for GlModule {
                     .money()
                     .currency_in("currency"),
                 )
-                .field(FieldMeta::new("fx_rate", "Exchange rate", FieldType::Decimal).rate(10))
+                .field(
+                    FieldMeta::new("fx_rate", "Exchange rate", FieldType::Decimal)
+                        .rate(RATE_PLACES),
+                )
                 .field(FieldMeta::new("memo", "Memo", FieldType::Text))
                 .field(
                     FieldMeta::new("amount", "Amount", FieldType::Decimal)
@@ -309,7 +317,7 @@ pub struct GlLine {
 /// The latest rate on record that converts `from` into `to` on `date`:
 /// a rate recorded from `from` to `to`, or the inverse of one recorded the
 /// other way, whichever is dated later (on the same day, the one recorded
-/// this way). The inverse is rounded to the 10 decimal places a rate is
+/// this way). The inverse is rounded to the [`RATE_PLACES`] a rate is
 /// kept with. `None` when neither is on record by `date`.
 pub async fn rate_on_record(
     conn: &mut PgConnection,
@@ -335,7 +343,7 @@ pub async fn rate_on_record(
         } else if rate.is_zero() {
             None
         } else {
-            Some((Decimal::ONE / rate).round_dp(10))
+            Some((Decimal::ONE / rate).round_dp(RATE_PLACES))
         }
     }))
 }
@@ -416,6 +424,13 @@ pub async fn exchange_difference(
 /// The policy point asked by [`document_rate`].
 pub const RATE_DIFFERS: &str = "fx.rate_differs";
 
+/// The decimal places an exchange rate is kept with, everywhere: on
+/// record, on a document and on a ledger entry (`numeric(28, 18)`). Every
+/// conversion multiplies by one rate; the inverse of a rate recorded the
+/// other way round is rounded to these places, which keeps it exact to the
+/// cent for any amount below about 10^13. A finer rate is refused.
+pub const RATE_PLACES: u32 = 18;
+
 /// The rate a document of `doc_type` in `currency`, dated `date`, posts
 /// at: the rate it states, or else the rate on record. A stated rate is
 /// checked against the rate on record by the company's policy
@@ -442,9 +457,9 @@ pub async fn document_rate(
     let Some(stated) = stated else {
         return rate_on(&mut *ctx.conn, company_id, currency, date).await;
     };
-    if stated <= Decimal::ZERO || stated.normalize().scale() > 10 {
+    if stated <= Decimal::ZERO || stated.normalize().scale() > RATE_PLACES {
         return Err(Error::validation(
-            "an exchange rate is more than zero, with at most 10 decimal places",
+            "an exchange rate is more than zero, with at most 18 decimal places",
         )
         .with_field("fx_rate"));
     }
@@ -630,11 +645,11 @@ pub async fn post(conn: &mut PgConnection, posting: &Posting, lines: &[GlLine]) 
             if rate <= Decimal::ZERO {
                 return Err(fail("the exchange rate must be positive".into()));
             }
-            // The rate is stored with 10 decimals. A finer one would be
+            // The rate is stored with RATE_PLACES decimals. A finer one would be
             // rounded on the entry and no longer explain its own amount.
-            if rate.normalize().scale() > 10 {
+            if rate.normalize().scale() > RATE_PLACES {
                 return Err(fail(
-                    "an exchange rate has at most 10 decimal places".into(),
+                    "an exchange rate has at most 18 decimal places".into(),
                 ));
             }
             (rate, decimals as u32)

@@ -108,6 +108,11 @@ impl Module for SalesModule {
                 name: "credit",
                 sql: include_str!("../migrations/0011_credit.sql"),
             },
+            Migration {
+                version: 12,
+                name: "rate_precision",
+                sql: include_str!("../migrations/0012_rate_precision.sql"),
+            },
         ]
     }
 
@@ -607,7 +612,7 @@ async fn check_addresses(
 /// The exchange rate an invoice in a foreign currency states or posted at.
 fn rate_field() -> FieldMeta {
     FieldMeta::new("fx_rate", "Exchange rate", FieldType::Decimal)
-        .rate(10)
+        .rate(erpcraft_gl::RATE_PLACES)
         .help(
             "For an order in another currency: accounting currency per unit. The rate on record \
              for the document's date when left out; once posted, the rate it was posted at.",
@@ -2141,12 +2146,11 @@ impl DocumentHandler for SalesInvoice {
                 .await?;
             }
         }
-        if body
-            .fx_rate
-            .is_some_and(|rate| rate <= Decimal::ZERO || rate.normalize().scale() > 10)
-        {
+        if body.fx_rate.is_some_and(|rate| {
+            rate <= Decimal::ZERO || rate.normalize().scale() > erpcraft_gl::RATE_PLACES
+        }) {
             return Err(Error::validation(
-                "an exchange rate is more than zero, with at most 10 decimal places",
+                "an exchange rate is more than zero, with at most 18 decimal places",
             )
             .with_field("fx_rate"));
         }

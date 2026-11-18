@@ -1041,13 +1041,13 @@ async fn a_rate_on_record_is_used_when_none_is_stated() {
     assert_eq!(dec(&tb["total_debit"]), 235.0);
 
     // A rate finer than the ledger stores is refused rather than rounded.
-    let (status, body) = post("2026-03-15", "110.00", json!("1.10000000001")).await;
+    let (status, body) = post("2026-03-15", "110.00", json!("1.1000000000000000001")).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert!(
         body["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("at most 10 decimal places"),
+            .contains("at most 18 decimal places"),
         "{body}"
     );
 

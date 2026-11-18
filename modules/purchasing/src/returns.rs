@@ -807,7 +807,7 @@ impl DocumentHandler for VendorCreditNote {
                 .readonly()
                 .help("The invoice's currency."),
                 FieldMeta::new("fx_rate", "Exchange rate", FieldType::Decimal)
-                    .rate(10)
+                    .rate(erpcraft_gl::RATE_PLACES)
                     .readonly()
                     .help("The invoice's rate: a credit note takes back what the invoice booked."),
             ],

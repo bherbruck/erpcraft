@@ -47,6 +47,11 @@ impl Module for AccountingModule {
                 name: "year_of_periods",
                 sql: include_str!("../migrations/0003_year_of_periods.sql"),
             },
+            Migration {
+                version: 4,
+                name: "rate_precision",
+                sql: include_str!("../migrations/0004_rate_precision.sql"),
+            },
         ]
     }
 
@@ -139,7 +144,8 @@ impl DocumentHandler for JournalEntry {
                         "Currency",
                         FieldType::link_by("currency", "code"),
                     ),
-                    FieldMeta::new("fx_rate", "Exchange rate", FieldType::Decimal).rate(10),
+                    FieldMeta::new("fx_rate", "Exchange rate", FieldType::Decimal)
+                        .rate(erpcraft_gl::RATE_PLACES),
                     FieldMeta::new("memo", "Memo", FieldType::Text),
                 ],
             }],
@@ -196,13 +202,13 @@ impl DocumentHandler for JournalEntry {
             // would keep a rounded rate without saying so.
             if line
                 .fx_rate
-                .is_some_and(|rate| rate.normalize().scale() > 10)
+                .is_some_and(|rate| rate.normalize().scale() > erpcraft_gl::RATE_PLACES)
             {
                 return Err(Error::line(
                     "lines",
                     n,
                     Some("fx_rate"),
-                    "an exchange rate has at most 10 decimal places",
+                    "an exchange rate has at most 18 decimal places",
                 ));
             }
         }

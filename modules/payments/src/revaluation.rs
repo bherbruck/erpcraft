@@ -91,7 +91,7 @@ impl DocumentHandler for FxRevaluation {
                         .readonly()
                         .help("What was open of the item on the day, in its currency."),
                     FieldMeta::new("rate", "Rate", FieldType::Decimal)
-                        .rate(10)
+                        .rate(erpcraft_gl::RATE_PLACES)
                         .readonly()
                         .help("The rate on record for the day."),
                     company_money("carried", "Carried at")

@@ -87,6 +87,11 @@ impl Module for PaymentsModule {
                 name: "write_off_only_and_parts",
                 sql: include_str!("../migrations/0008_write_off_only_and_parts.sql"),
             },
+            Migration {
+                version: 9,
+                name: "rate_precision",
+                sql: include_str!("../migrations/0009_rate_precision.sql"),
+            },
         ]
     }
 
@@ -399,7 +404,7 @@ impl DocumentHandler for Payment {
                      accounting currency when nothing says otherwise.",
                 ),
                 FieldMeta::new("fx_rate", "Exchange rate", FieldType::Decimal)
-                    .rate(10)
+                    .rate(erpcraft_gl::RATE_PLACES)
                     .help(
                         "For a payment in another currency: accounting currency per unit. The \
                          rate on record for the payment's date when left out; once posted, the \

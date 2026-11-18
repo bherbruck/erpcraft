@@ -874,3 +874,41 @@ async fn a_rate_recorded_the_other_way_round_is_inverted() {
     assert_eq!(dec(&invoice["body"]["fx_rate"]), 1.3, "{invoice}");
     t.stop().await;
 }
+
+/// With only USD to JPY on record, at 151.37, yen are converted with its
+/// inverse, kept to 18 places: 151,370,000 JPY is exactly 1,000,000.00
+/// USD, so a journal entry of yen against dollars balances. (At 10 places
+/// the inverse made it 1,000,000.01.)
+#[tokio::test]
+async fn a_rate_recorded_the_other_way_converts_large_amounts_exactly() {
+    let t = TestApp::start().await;
+    let c = t.company("ACME", "USD").await;
+    t.create(
+        "exchange_rate",
+        json!({ "from_currency": "USD", "to_currency": "JPY", "rate_date": "2026-01-01",
+                "rate": "151.37" }),
+    )
+    .await;
+    let (status, draft) = t
+        .post(
+            &t.admin,
+            "/api/documents/journal_entry",
+            json!({ "company_id": c.id, "doc_date": "2026-03-15", "body": { "lines": [
+                { "account_id": c.cash, "debit": "151370000", "currency": "JPY" },
+                { "account_id": c.revenue, "credit": "1000000.00" } ] } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{draft}");
+    let (status, posted) = t
+        .command(&t.admin, "journal_entry.post", json!({ "id": draft["id"] }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{posted}");
+    let (debit, rate): (String, String) =
+        sqlx::query_as("SELECT debit::text, fx_rate::text FROM gl_entry WHERE currency = 'JPY'")
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+    assert_eq!(debit, "1000000.0000");
+    assert_eq!(rate, "0.006606328863050803");
+    t.stop().await;
+}

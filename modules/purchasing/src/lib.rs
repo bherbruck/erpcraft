@@ -114,6 +114,11 @@ impl Module for PurchasingModule {
                 name: "credit",
                 sql: include_str!("../migrations/0012_credit.sql"),
             },
+            Migration {
+                version: 13,
+                name: "rate_precision",
+                sql: include_str!("../migrations/0013_rate_precision.sql"),
+            },
         ]
     }
 
@@ -1329,7 +1334,7 @@ fn terms_field(help: &str) -> FieldMeta {
 /// The exchange rate a document in a foreign currency states or posted at.
 fn rate_field() -> FieldMeta {
     FieldMeta::new("fx_rate", "Exchange rate", FieldType::Decimal)
-        .rate(10)
+        .rate(erpcraft_gl::RATE_PLACES)
         .help(
             "For an order in another currency: accounting currency per unit. The rate on record \
              for the document's date when left out; once posted, the rate it was posted at.",
@@ -1373,9 +1378,11 @@ async fn state_rate(
     doc: &Document,
     stated: Option<Decimal>,
 ) -> Result<()> {
-    if stated.is_some_and(|rate| rate <= Decimal::ZERO || rate.normalize().scale() > 10) {
+    if stated.is_some_and(|rate| {
+        rate <= Decimal::ZERO || rate.normalize().scale() > erpcraft_gl::RATE_PLACES
+    }) {
         return Err(Error::validation(
-            "an exchange rate is more than zero, with at most 10 decimal places",
+            "an exchange rate is more than zero, with at most 18 decimal places",
         )
         .with_field("fx_rate"));
     }

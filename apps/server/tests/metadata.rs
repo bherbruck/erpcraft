@@ -64,7 +64,7 @@ async fn fields_say_what_they_mean_and_what_they_start_as() {
     );
     assert_eq!(
         named(&gl_entry["fields"], "fx_rate")["decimal"],
-        json!({ "role": "rate", "scale": 10, "currency": null, "unit": null })
+        json!({ "role": "rate", "scale": 18, "currency": null, "unit": null })
     );
     assert_eq!(
         named(&entity("tax_code")["fields"], "rate")["decimal"],

@@ -76,13 +76,13 @@ async fn errors_name_the_field() {
         .post(
             &t.admin,
             "/api/entities/exchange_rate",
-            json!({ "from_currency": "EUR", "to_currency": "USD", "rate_date": "2026-03-01", "rate": "1.12345678901" }),
+            json!({ "from_currency": "EUR", "to_currency": "USD", "rate_date": "2026-03-01", "rate": "1.1234567890123456789" }),
         )
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(
         error(&body)["message"],
-        "field 'rate' has at most 10 decimal places"
+        "field 'rate' has at most 18 decimal places"
     );
     assert_eq!(error(&body)["field"], "rate");
 
