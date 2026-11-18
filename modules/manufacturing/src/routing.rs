@@ -128,7 +128,7 @@ pub(crate) async fn operations(
 /// the company's work center of its code, setup plus run time for `qty`
 /// units, at the work center's activity rate now.
 pub(crate) async fn release(
-    conn: &mut PgConnection,
+    ctx: &mut Ctx<'_>,
     company_id: Uuid,
     document_id: Uuid,
     bom_id: Uuid,
@@ -155,8 +155,9 @@ pub(crate) async fn release(
     )
     .bind(bom_id)
     .bind(company_id)
-    .fetch_all(&mut *conn)
+    .fetch_all(&mut *ctx.conn)
     .await?;
+    let inactive = ctx.policy(crate::INACTIVE_WORK_CENTER, company_id).await?;
     for (index, (seq, code, description, setup, run, center, activity, rate, active)) in
         steps.into_iter().enumerate()
     {
@@ -165,10 +166,12 @@ pub(crate) async fn release(
                 "operation {seq} is done at work center {code}, which this company does not have"
             )));
         };
-        if active == Some(false) {
-            return Err(Error::validation(format!(
-                "work center {code} of operation {seq} is inactive"
-            )));
+        let facts =
+            serde_json::json!({ "work_center_code": code, "active": active != Some(false) });
+        if let erpcraft_kernel::Decision::Refused(refusal) = inactive.evaluate(facts)? {
+            return Err(Error::validation(refusal.message.unwrap_or_else(|| {
+                format!("work center {code} of operation {seq} is inactive")
+            })));
         }
         let Some(rate) = rate else {
             return Err(Error::validation(format!(
@@ -176,7 +179,21 @@ pub(crate) async fn release(
                  cost_activity_rate"
             )));
         };
-        let hours = (setup + run * qty).round_dp(6);
+        let hours = run
+            .checked_mul(qty)
+            .and_then(|run| run.checked_add(setup))
+            .ok_or_else(|| {
+                Error::validation(format!(
+                    "operation {seq} takes more hours than can be counted for this quantity"
+                ))
+            })?
+            .round_dp(6);
+        if hours > Decimal::from(1_000_000_000_000i64) {
+            return Err(Error::validation(format!(
+                "operation {seq} would take {} hours; make less at a time",
+                hours.normalize()
+            )));
+        }
         if hours.is_zero() {
             continue;
         }
@@ -194,7 +211,7 @@ pub(crate) async fn release(
         .bind(description)
         .bind(hours)
         .bind(rate)
-        .execute(&mut *conn)
+        .execute(&mut *ctx.conn)
         .await?;
     }
     Ok(())

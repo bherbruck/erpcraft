@@ -896,6 +896,7 @@ async fn policy_points_are_described_for_interfaces_and_agents() {
             "payment.write_off",
             POSTING_DATE,
             "production_order.inactive_bom",
+            "production_order.inactive_work_center",
             "purchase_order.approve",
             PURCHASE_ORDER_CLOSED,
             "purchase_order.reopen_on_return",

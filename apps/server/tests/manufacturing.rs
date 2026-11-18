@@ -1244,3 +1244,203 @@ async fn a_component_on_the_products_account_moves_between_its_dimensions() {
     assert!(balance(cakes).await > 0.0);
     t.stop().await;
 }
+
+/// Review 7, finding: the routing's absorbed cost skips the check that the
+/// absorbed cost account carries no stock, which bill activities have.
+#[tokio::test]
+async fn review7_a_routings_absorbed_cost_is_not_credited_to_a_stock_account() {
+    let t = TestApp::start().await;
+    let p = setup(&t).await;
+    p.stock_up(&t).await;
+    let assembly = t
+        .create(
+            "cost_activity",
+            json!({ "code": "ASSY", "name": "Assembly", "kind": "labor" }),
+        )
+        .await;
+    t.create(
+        "cost_activity_rate",
+        json!({ "company_id": p.c.id, "activity_id": assembly, "rate": "30.00" }),
+    )
+    .await;
+    t.create(
+        "work_center",
+        json!({ "company_id": p.c.id, "code": "LINE1", "name": "Line 1", "activity_id": assembly, "hours_per_day": "8" }),
+    )
+    .await;
+    t.create(
+        "bom_operation",
+        json!({ "bom_id": p.bom, "seq": 10, "work_center_code": "LINE1",
+                "setup_hours": "1", "run_hours": "0.5", "description": "Bake" }),
+    )
+    .await;
+    // The finished goods account, which carries the cake.
+    t.create(
+        "account_rule",
+        json!({ "company_id": p.c.id, "purpose": "absorbed_cost", "account_id": p.finished }),
+    )
+    .await;
+    let order = p.released(&t, "3").await;
+    let (status, body) = step(&t, "complete", &order).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "absorbed routing cost was credited to the finished goods account: {body}"
+    );
+    t.stop().await;
+}
+
+/// Review 7, finding: "recorded" is whether any time was recorded, not how
+/// much: recording 3 h and then -3 h posts the whole standard as variance.
+#[tokio::test]
+async fn review7_time_recorded_and_taken_back_is_no_time_recorded() {
+    let t = TestApp::start().await;
+    let p = setup(&t).await;
+    p.stock_up(&t).await;
+    let mut accounts = vec![];
+    for code in ["5900", "5950"] {
+        accounts.push(
+            t.create("account", json!({ "company_id": p.c.id, "code": code, "name": code, "account_type": "expense" })).await,
+        );
+    }
+    for (purpose, id) in [
+        ("absorbed_cost", &accounts[0]),
+        ("production_variance", &accounts[1]),
+    ] {
+        t.create(
+            "account_rule",
+            json!({ "company_id": p.c.id, "purpose": purpose, "account_id": id }),
+        )
+        .await;
+    }
+    let assembly = t
+        .create(
+            "cost_activity",
+            json!({ "code": "ASSY", "name": "Assembly", "kind": "labor" }),
+        )
+        .await;
+    t.create(
+        "cost_activity_rate",
+        json!({ "company_id": p.c.id, "activity_id": assembly, "rate": "30.00" }),
+    )
+    .await;
+    t.create(
+        "work_center",
+        json!({ "company_id": p.c.id, "code": "LINE1", "name": "Line 1", "activity_id": assembly, "hours_per_day": "8" }),
+    )
+    .await;
+    t.create(
+        "bom_operation",
+        json!({ "bom_id": p.bom, "seq": 10, "work_center_code": "LINE1",
+                "setup_hours": "1", "run_hours": "0.5", "description": "Bake" }),
+    )
+    .await;
+    let order = p.released(&t, "3").await;
+    for hours in ["3", "-3"] {
+        let (status, body) = t
+            .command(&t.admin, "production_order.record_time",
+                json!({ "id": order["id"], "line_no": 1, "hours": hours, "worked_on": "2026-03-15" }))
+            .await;
+        assert_eq!(status, StatusCode::OK, "recording {hours} h: {body}");
+    }
+    let (status, body) = step(&t, "complete", &order).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let variance: Option<String> = sqlx::query_scalar(
+        "SELECT (sum(debit) - sum(credit))::text FROM gl_entry WHERE account_id = $1::uuid",
+    )
+    .bind(&accounts[1])
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    let variance = variance.unwrap_or_else(|| "0".into());
+    assert!(
+        variance.parse::<f64>().unwrap_or(1.0) == 0.0,
+        "no net time recorded should mean standard, without variance; variance is {variance}"
+    );
+    t.stop().await;
+}
+
+/// Review 7: a variance is not stock, an inactive work center is the
+/// company's call, and hours too large to count are refused, not a crash.
+#[tokio::test]
+async fn review7_variance_accounts_inactive_work_centers_and_huge_hours() {
+    let t = TestApp::start().await;
+    let p = setup(&t).await;
+    p.stock_up(&t).await;
+    let absorbed = t
+        .create(
+            "account",
+            json!({ "company_id": p.c.id, "code": "5900", "name": "Absorbed",
+                    "account_type": "expense" }),
+        )
+        .await;
+    t.create(
+        "account_rule",
+        json!({ "company_id": p.c.id, "purpose": "absorbed_cost", "account_id": absorbed }),
+    )
+    .await;
+    // The variance would go to the finished goods account.
+    t.create(
+        "account_rule",
+        json!({ "company_id": p.c.id, "purpose": "production_variance",
+                "account_id": p.finished }),
+    )
+    .await;
+    let assembly = t
+        .create(
+            "cost_activity",
+            json!({ "code": "ASSY", "name": "Assembly", "kind": "labor" }),
+        )
+        .await;
+    t.create(
+        "cost_activity_rate",
+        json!({ "company_id": p.c.id, "activity_id": assembly, "rate": "30.00" }),
+    )
+    .await;
+    let line1 = t
+        .create(
+            "work_center",
+            json!({ "company_id": p.c.id, "code": "LINE1", "name": "Line 1",
+                    "activity_id": assembly, "hours_per_day": "8", "active": false }),
+        )
+        .await;
+    t.create(
+        "bom_operation",
+        json!({ "bom_id": p.bom, "seq": 10, "work_center_code": "LINE1",
+                "setup_hours": "1", "run_hours": "0.5" }),
+    )
+    .await;
+    // Inactive: refused unless the company allows it.
+    let draft = p.draft(&t, "3").await;
+    let (status, body) = step(&t, "release", &draft).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(message(&body).contains("inactive"), "{body}");
+    t.create(
+        "policy_rule",
+        json!({ "company_id": p.c.id, "point": "production_order.inactive_work_center",
+                "effect": "allow", "condition": "facts.work_center_code == 'LINE1'",
+                "priority": 10 }),
+    )
+    .await;
+    let (status, order) = step(&t, "release", &draft).await;
+    assert_eq!(status, StatusCode::OK, "{order}");
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "production_order.record_time",
+            json!({ "id": order["id"], "line_no": 1, "hours": "3" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = step(&t, "complete", &order).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(message(&body).contains("production_variance"), "{body}");
+    let _ = line1;
+
+    // Hours beyond counting.
+    let (status, huge) = p.draft_with(&t, &p.bom, "99999999999999").await;
+    assert_eq!(status, StatusCode::CREATED, "{huge}");
+    let (status, body) = step(&t, "release", &huge).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    t.stop().await;
+}

@@ -32,6 +32,8 @@ pub struct ManufacturingModule;
 
 /// The policy point asked when a production order is released.
 pub const INACTIVE_BOM: &str = "production_order.inactive_bom";
+/// The policy point asked for each operation when an order is released.
+pub const INACTIVE_WORK_CENTER: &str = "production_order.inactive_work_center";
 
 impl Module for ManufacturingModule {
     fn name(&self) -> &'static str {
@@ -80,6 +82,18 @@ impl Module for ManufacturingModule {
             .boolean("active", "Whether the bill is active")
             .refuse_when("!facts.active")
             .refusal("the bill of materials is inactive"),
+            PolicyPoint::new(
+                INACTIVE_WORK_CENTER,
+                "Asked for each operation of a production order's routing when the order is \
+                 released: may it be done at this work center? Unless configured otherwise an \
+                 inactive work center is refused. A company that retires a work center but \
+                 still has orders to finish there allows it, for example with \
+                 `facts.work_center_code == 'LINE1'`.",
+            )
+            .text("work_center_code", "The code of the work center")
+            .boolean("active", "Whether the work center is active")
+            .refuse_when("!facts.active")
+            .refusal("the work center is inactive"),
         ]
     }
 
@@ -331,6 +345,29 @@ pub async fn released(
     .fetch_all(&mut *conn)
     .await?;
     Ok((needs, makes))
+}
+
+/// Whether an account carries stock: the product's or a component's
+/// inventory account, or any account an inventory account rule of the
+/// company names.
+async fn carries_stock(
+    conn: &mut PgConnection,
+    company_id: Uuid,
+    account: Uuid,
+    product_account: Uuid,
+    component_accounts: &[Uuid],
+) -> Result<bool> {
+    if account == product_account || component_accounts.contains(&account) {
+        return Ok(true);
+    }
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM account_rule WHERE company_id = $1
+                        AND purpose = 'inventory' AND account_id = $2)",
+    )
+    .bind(company_id)
+    .bind(account)
+    .fetch_one(&mut *conn)
+    .await?)
 }
 
 async fn load_order(conn: &mut PgConnection, document_id: Uuid) -> Result<Order> {
@@ -680,14 +717,7 @@ impl Command for Release {
         }
 
         // Its routing, at the company's work centers and rates now.
-        routing::release(
-            &mut *ctx.conn,
-            doc.company_id,
-            doc.id,
-            order.bom_id,
-            order.qty,
-        )
-        .await?;
+        routing::release(ctx, doc.company_id, doc.id, order.bom_id, order.qty).await?;
         // The components are set aside for it, as far as free stock goes.
         let needs: Vec<erpcraft_stock::Need> = load_components(&mut *ctx.conn, doc.id)
             .await?
@@ -853,17 +883,14 @@ impl Command for Complete {
             // account. Credited to an account that carries stock, it would
             // be debited back with the product, and stock would be worth
             // more than the ledger says.
-            let holds_stock = account == product_account
-                || accounts.contains(&account)
-                || sqlx::query_scalar::<_, bool>(
-                    "SELECT EXISTS (SELECT 1 FROM account_rule WHERE company_id = $1
-                                    AND purpose = 'inventory'
-                                    AND account_id = $2)",
-                )
-                .bind(doc.company_id)
-                .bind(account)
-                .fetch_one(&mut *ctx.conn)
-                .await?;
+            let holds_stock = carries_stock(
+                &mut *ctx.conn,
+                doc.company_id,
+                account,
+                product_account,
+                &accounts,
+            )
+            .await?;
             if holds_stock {
                 let (activity_code, account_code): (String, String) = sqlx::query_as(
                     "SELECT (SELECT code FROM cost_activity WHERE id = $1),
@@ -895,18 +922,35 @@ impl Command for Complete {
                 &[("cost_activity", operation.activity_id)],
             )
             .await?;
-            let amount = round_money(operation.hours * operation.rate, decimals);
+            if carries_stock(
+                &mut *ctx.conn,
+                doc.company_id,
+                account,
+                product_account,
+                &accounts,
+            )
+            .await?
+            {
+                return Err(Error::validation(
+                    "the account for the absorbed cost of a routing operation carries stock (an \
+                     inventory account): absorbed cost must be credited to an expense or \
+                     absorption account; change the absorbed_cost account rule",
+                ));
+            }
+            let worth = |hours: Decimal| {
+                hours
+                    .checked_mul(operation.rate)
+                    .map(|v| round_money(v, decimals))
+                    .ok_or_else(|| Error::validation("the routing's hours are too large to cost"))
+            };
+            let amount = worth(operation.hours)?;
             if !amount.is_zero() {
                 absorbed.push((account, amount, operation.id));
             }
-            let recorded: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM production_operation_time WHERE operation_id = $1)",
-            )
-            .bind(operation.id)
-            .fetch_one(&mut *ctx.conn)
-            .await?;
-            if recorded {
-                let actual = round_money(operation.actual_hours * operation.rate, decimals);
+            // Time recorded and taken back again is no time recorded: the
+            // operation counts as done in its standard time.
+            if !operation.actual_hours.is_zero() {
+                let actual = worth(operation.actual_hours)?;
                 if actual != amount {
                     variances.push((
                         account,
@@ -919,11 +963,18 @@ impl Command for Complete {
         }
         // What was consumed and absorbed is what the product is worth, to
         // the cent.
-        let total: Decimal = consumed.iter().map(|entry| -entry.value).sum::<Decimal>()
-            + absorbed
-                .iter()
-                .map(|(_, amount, _)| *amount)
-                .sum::<Decimal>();
+        let absorbed_total = absorbed
+            .iter()
+            .try_fold(Decimal::ZERO, |sum, (_, amount, _)| {
+                sum.checked_add(*amount)
+            })
+            .ok_or_else(|| Error::validation("the absorbed cost is too large"))?;
+        let total: Decimal = consumed
+            .iter()
+            .map(|entry| -entry.value)
+            .sum::<Decimal>()
+            .checked_add(absorbed_total)
+            .ok_or_else(|| Error::validation("the product's cost is too large"))?;
         let made = erpcraft_stock::post(
             ctx,
             &posting,
@@ -1039,6 +1090,20 @@ impl Command for Complete {
                 &[("work_center", center), ("item", order.item_id)],
             )
             .await?;
+            if carries_stock(
+                &mut *ctx.conn,
+                doc.company_id,
+                account,
+                product_account,
+                &accounts,
+            )
+            .await?
+            {
+                return Err(Error::validation(
+                    "the account for production_variance carries stock (an inventory account): \
+                     a variance is not stock; change the production_variance account rule",
+                ));
+            }
             let more = difference.max(Decimal::ZERO);
             let less = (-difference).max(Decimal::ZERO);
             gl.push(line(account, more, less, Some(source)));
