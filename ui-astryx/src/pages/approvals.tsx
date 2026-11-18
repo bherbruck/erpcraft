@@ -135,7 +135,6 @@ export function ApprovalsPage() {
             label={t("document.filter_status")}
             isLabelHidden
             size="sm"
-            variant="secondary"
             value={status}
             hasClear={status !== ""}
             placeholder={t("document.any_status")}

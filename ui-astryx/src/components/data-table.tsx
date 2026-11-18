@@ -176,7 +176,9 @@ export function DataTable<Row>(props: DataTableProps<Row>) {
           />
         </VStack>
       ) : null}
-      <div className="table-scroll" aria-label={props.caption}>
+      {/* A scrolling region is a tab stop, so the keyboard can scroll a table without links in it. */}
+      {/* biome-ignore lint/a11y/noNoninteractiveTabindex: scrollable region must be reachable by keyboard */}
+      <div className="table-scroll" role="region" aria-label={props.caption} tabIndex={0}>
         {body}
       </div>
       {paged ? (
