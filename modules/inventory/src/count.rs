@@ -161,6 +161,36 @@ async fn lines(conn: &mut PgConnection, id: Uuid) -> Result<Vec<Line>> {
     .await?)
 }
 
+/// The book each line is counted against, and what moved since the
+/// cut-off. Another count that posted after this one's cut-off has
+/// corrected the same level: its adjustment is a correction of the book,
+/// not goods moving, so it counts as part of the book at the cut-off, and
+/// two counts of one level never adjust one difference twice. Returns what
+/// moved per line (corrections included), and changes `lines`' book
+/// quantities.
+async fn against_book(
+    conn: &mut PgConnection,
+    doc: &Document,
+    head: &Header,
+    lines: &mut [Line],
+) -> Result<HashMap<Uuid, Decimal>> {
+    let Some(seq) = head.cut_off_seq else {
+        return Ok(HashMap::new());
+    };
+    let mut items: Vec<Uuid> = lines.iter().map(|l| l.item_id).collect();
+    items.sort();
+    items.dedup();
+    let since = counts::since_cut_off(conn, doc.company_id, seq, &items, doc.id).await?;
+    let mut moved = HashMap::new();
+    for line in lines.iter_mut() {
+        let key = (line.item_id, line.warehouse_id, line.lot.clone());
+        let (all, corrected) = since.get(&key).copied().unwrap_or_default();
+        line.book_qty += corrected;
+        moved.insert(line.id, all);
+    }
+    Ok(moved)
+}
+
 /// The warehouse and every location inside it.
 async fn subtree(conn: &mut PgConnection, warehouse_id: Uuid) -> Result<Vec<Uuid>> {
     Ok(sqlx::query_scalar(
@@ -362,25 +392,21 @@ impl DocumentHandler for StockCount {
             return Ok(json!({ "lines": [] }));
         };
         let hide = head.blind && doc.status == "counting";
+        let mut all = lines(conn, doc.id).await?;
+        // Once posted, the book stands as it was posted against.
+        let moved = if hide {
+            HashMap::new()
+        } else {
+            against_book(conn, doc, &head, &mut all).await?
+        };
         let mut rows = vec![];
-        for line in lines(conn, doc.id).await? {
-            let moved = match head.cut_off_seq {
-                Some(seq) if !hide => {
-                    let lot =
-                        lot_id(conn, doc.company_id, line.item_id, line.lot.as_deref()).await?;
-                    Some(
-                        counts::moved_since(conn, line.item_id, line.warehouse_id, lot, seq)
-                            .await?,
-                    )
-                }
-                _ => None,
-            };
+        for line in all {
             let mut row = serde_json::to_value(&line).unwrap_or_default();
             if hide {
                 row["book_qty"] = Value::Null;
             } else {
                 row["difference"] = json!(line.counted().map(|c| c - line.book_qty));
-                row["moved_since"] = json!(moved);
+                row["moved_since"] = json!(moved.get(&line.id));
             }
             rows.push(row);
         }
@@ -746,7 +772,11 @@ impl Command for Review {
         if doc.status != "counting" {
             return Err(Error::state("only a count in progress is reviewed"));
         }
-        let all = lines(&mut *ctx.conn, doc.id).await?;
+        let mut all = lines(&mut *ctx.conn, doc.id).await?;
+        let head = header(&mut *ctx.conn, doc.id)
+            .await?
+            .ok_or_else(|| Error::internal("a count without its header"))?;
+        against_book(&mut *ctx.conn, &doc, &head, &mut all).await?;
         let refused = over_tolerance(ctx, &doc, &all).await?;
         sqlx::query(
             "UPDATE stock_count_line SET recount = (line_no = ANY ($2)) OR recount
@@ -795,7 +825,15 @@ impl Command for Post {
                 doc.status
             )));
         }
-        let all = lines(&mut *ctx.conn, doc.id).await?;
+        let mut all = lines(&mut *ctx.conn, doc.id).await?;
+        let head = header(&mut *ctx.conn, doc.id)
+            .await?
+            .ok_or_else(|| Error::internal("a count without its header"))?;
+        // The levels it counts, locked before the book is read, so another
+        // count posting at once waits and is then taken into account.
+        let pairs: Vec<(Uuid, Uuid)> = all.iter().map(|l| (l.item_id, l.warehouse_id)).collect();
+        erpcraft_stock::lock_levels(&mut *ctx.conn, doc.company_id, pairs).await?;
+        against_book(&mut *ctx.conn, &doc, &head, &mut all).await?;
         if let Some(line) = all.iter().find(|l| l.counted().is_none()) {
             return Err(Error::line(
                 "lines",
@@ -1007,6 +1045,19 @@ impl Command for Propose {
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: ProposeInput) -> Result<ProposeOutput> {
         ctx.require("stock_count:read", input.company_id)?;
+        if !company::owns_all(
+            &mut *ctx.conn,
+            "warehouse",
+            &[input.warehouse_id],
+            input.company_id,
+        )
+        .await?
+        {
+            return Err(
+                Error::validation("the warehouse must belong to the company counting")
+                    .with_field("warehouse_id"),
+            );
+        }
         let date = input
             .date
             .unwrap_or_else(|| erpcraft_kernel::Utc::now().date_naive());

@@ -1137,6 +1137,21 @@ impl Ledger for StockLedger {
         &["stock_entry"]
     }
 
+    /// Taking stock back moves it: on a level a count holds, the company's
+    /// policy on movements during a count decides, as for any movement.
+    async fn before_reverse(&self, ctx: &mut Ctx<'_>, original: &Posting) -> Result<()> {
+        let pairs: Vec<(Uuid, Uuid)> = entries_of(&mut *ctx.conn, original.id)
+            .await?
+            .iter()
+            .filter(|e| !e.qty.is_zero())
+            .map(|e| (e.item_id, e.warehouse_id))
+            .collect();
+        if pairs.is_empty() {
+            return Ok(());
+        }
+        counts::ask(ctx, original.company_id, &pairs, "reversal").await
+    }
+
     /// Take back each original entry, last first, with its variance. The
     /// ledger refuses if the stock has since moved on: a receipt cannot be
     /// reversed once what it brought in has been issued. Taking back a

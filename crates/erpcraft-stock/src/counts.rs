@@ -117,7 +117,9 @@ pub async fn cut_off(conn: &mut PgConnection) -> Result<i64> {
 }
 
 /// What the book held of an item in a warehouse (of one lot, when given)
-/// at the cut-off `seq`: every entry recorded up to it.
+/// at the cut-off `seq`: what it holds now less what moved after it, so the
+/// work grows with what moved since the cut-off, not with the level's
+/// history.
 pub async fn book_at(
     conn: &mut PgConnection,
     item_id: Uuid,
@@ -125,29 +127,79 @@ pub async fn book_at(
     lot_id: Option<Uuid>,
     seq: i64,
 ) -> Result<Decimal> {
-    let qty: Option<Decimal> = match lot_id {
-        None => {
-            sqlx::query_scalar(
-                "SELECT sum(qty) FROM stock_entry
-                 WHERE item_id = $1 AND warehouse_id = $2 AND COALESCE(seq, 0) <= $3",
+    let (now, after): (Option<Decimal>, Option<Decimal>) =
+        match lot_id {
+            None => {
+                sqlx::query_as(
+                    "SELECT (SELECT qty FROM stock_level WHERE item_id = $1 AND warehouse_id = $2),
+                        (SELECT sum(qty) FROM stock_entry
+                         WHERE item_id = $1 AND warehouse_id = $2 AND seq > $3)",
+                )
+                .bind(item_id)
+                .bind(warehouse_id)
+                .bind(seq)
+                .fetch_one(&mut *conn)
+                .await?
+            }
+            Some(lot) => sqlx::query_as(
+                "SELECT (SELECT qty FROM stock_lot_level WHERE lot_id = $1 AND warehouse_id = $2),
+                        (SELECT sum(el.qty) FROM stock_entry_lot el
+                         JOIN stock_entry e ON e.id = el.entry_id
+                         WHERE el.lot_id = $1 AND e.warehouse_id = $2 AND e.seq > $3)",
             )
-            .bind(item_id)
+            .bind(lot)
             .bind(warehouse_id)
             .bind(seq)
             .fetch_one(&mut *conn)
-            .await?
-        }
-        Some(lot) => sqlx::query_scalar(
-            "SELECT sum(el.qty) FROM stock_entry_lot el JOIN stock_entry e ON e.id = el.entry_id
-                 WHERE el.lot_id = $1 AND e.warehouse_id = $2 AND COALESCE(e.seq, 0) <= $3",
-        )
-        .bind(lot)
-        .bind(warehouse_id)
-        .bind(seq)
-        .fetch_one(&mut *conn)
-        .await?,
-    };
-    Ok(qty.unwrap_or_default())
+            .await?,
+        };
+    Ok(now.unwrap_or_default() - after.unwrap_or_default())
+}
+
+/// A level, or one lot of it (by code), as a count line names it.
+pub type LevelKey = (Uuid, Uuid, Option<String>);
+
+/// What moved after the cut-off `seq`, per level of `items` and per lot:
+/// in all, and of that what the stock adjustments of posted counts other
+/// than `count_id` moved (their corrections, not goods moving). One query
+/// over the entries recorded since the cut-off.
+pub async fn since_cut_off(
+    conn: &mut PgConnection,
+    company_id: Uuid,
+    seq: i64,
+    items: &[Uuid],
+    count_id: Uuid,
+) -> Result<std::collections::HashMap<LevelKey, (Decimal, Decimal)>> {
+    let rows: Vec<(Uuid, Uuid, Option<String>, Decimal, Decimal)> = sqlx::query_as(
+        "WITH recent AS (
+             SELECT e.id, e.item_id, e.warehouse_id, e.qty,
+                    EXISTS (SELECT 1 FROM posting p
+                            JOIN document_link k ON k.to_id = p.document_id AND k.kind = 'adjustment'
+                            JOIN document c ON c.id = k.from_id AND c.doc_type = 'stock_count'
+                            WHERE p.id = e.posting_id AND k.from_id <> $4) AS by_count
+             FROM stock_entry e
+             WHERE e.seq > $2 AND e.company_id = $1 AND e.item_id = ANY ($3)
+         )
+         SELECT item_id, warehouse_id, NULL::text, sum(qty),
+                COALESCE(sum(qty) FILTER (WHERE by_count), 0)
+         FROM recent GROUP BY item_id, warehouse_id
+         UNION ALL
+         SELECT r.item_id, r.warehouse_id, l.code, sum(el.qty),
+                COALESCE(sum(el.qty) FILTER (WHERE r.by_count), 0)
+         FROM recent r JOIN stock_entry_lot el ON el.entry_id = r.id
+         JOIN stock_lot l ON l.id = el.lot_id
+         GROUP BY r.item_id, r.warehouse_id, l.code",
+    )
+    .bind(company_id)
+    .bind(seq)
+    .bind(items)
+    .bind(count_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(item, warehouse, lot, moved, counted)| ((item, warehouse, lot), (moved, counted)))
+        .collect())
 }
 
 /// Net quantity moved on a level (or lot) after the cut-off `seq`.

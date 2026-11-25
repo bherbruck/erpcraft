@@ -203,6 +203,15 @@ pub trait Ledger: Send + Sync + 'static {
         serde_json::json!({ "type": "object" })
     }
 
+    /// Asked before any ledger writes a reversal of `original`, as the
+    /// person reversing: a ledger refuses here what its company's policy
+    /// does not allow, such as stock moving while it is being counted. The
+    /// default allows everything.
+    async fn before_reverse(&self, ctx: &mut Ctx<'_>, original: &Posting) -> Result<()> {
+        let _ = (ctx, original);
+        Ok(())
+    }
+
     /// Write entries under `reversal` that cancel those under `original`.
     async fn reverse(
         &self,
@@ -1365,6 +1374,9 @@ pub async fn reverse_posting(
         .unwrap_or_default();
     crate::policy::check_posting_date(ctx, original.company_id, &doc_type, posting_date, true)
         .await?;
+    for ledger in kernel.registry().ledgers() {
+        ledger.before_reverse(ctx, &original).await?;
+    }
     let reversal: Posting = sqlx::query_as(
         "INSERT INTO posting (id, company_id, document_id, command, posting_date, memo, reverses_id, created_by)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *",
