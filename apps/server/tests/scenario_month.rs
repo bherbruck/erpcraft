@@ -716,12 +716,12 @@ async fn a_month_in_the_life_of_ohio_widgets() {
         .await;
     t.create(
         "edi_uom_xref",
-        json!({ "partner_uom": "EA", "uom": "each" }),
+        json!({ "company_id": c, "partner_uom": "EA", "uom": "each" }),
     )
     .await;
     t.create(
         "edi_item_xref",
-        json!({ "item_id": o.widget, "kind": "gtin", "value": "040000100096" }),
+        json!({ "company_id": c, "item_id": o.widget, "kind": "gtin", "value": "040000100096" }),
     )
     .await;
     // The retailer's distribution centre 07 is its shipping address.
@@ -740,7 +740,7 @@ async fn a_month_in_the_life_of_ohio_widgets() {
         .clone();
     t.create(
         "edi_location_xref",
-        json!({ "partner_id": partner, "qualifier": "92", "code": "0007", "address_id": dc07 }),
+        json!({ "company_id": c, "partner_id": partner, "qualifier": "92", "code": "0007", "address_id": dc07 }),
     )
     .await;
     let received = run(&t, "edi.receive", json!({ "content": retailer_850() })).await;
