@@ -1212,7 +1212,8 @@ impl Registry {
                     FieldType::Enum { values, .. } => Some(values.iter().collect()),
                     _ => None,
                 });
-            for state in &meta.from_states {
+            let primary_states = meta.primary_when.iter().flat_map(|w| &w.states);
+            for state in meta.from_states.iter().chain(primary_states) {
                 let known = match (&entity_states, doc_type) {
                     (Some(states), _) => states.contains(&state),
                     (None, Some(d)) => d.meta.state(state).is_some(),
@@ -1223,6 +1224,19 @@ impl Registry {
                         "command '{}' applies from state '{state}', which '{}' does not have",
                         meta.name, meta.resource
                     )));
+                }
+            }
+            if let Some(when) = &meta.primary_when {
+                for collection in when.empty.iter().chain(&when.not_empty) {
+                    let known = doc_type
+                        .is_some_and(|d| d.meta.collections.iter().any(|c| &c.name == collection));
+                    if !known {
+                        return Err(bad(format!(
+                            "command '{}' is primary by the collection '{collection}', which '{}' \
+                             does not have",
+                            meta.name, meta.resource
+                        )));
+                    }
                 }
             }
             if let Some(created) = &meta.creates

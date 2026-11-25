@@ -134,6 +134,8 @@ pub struct CommandSpec {
     pub from_states: &'static [&'static str],
     /// See [`CommandSpec::destructive`].
     pub destructive: bool,
+    /// See [`CommandSpec::primary_when`].
+    pub primary_when: Option<PrimaryWhenSpec>,
     /// See [`CommandSpec::report`].
     pub report: Option<&'static str>,
     /// See [`CommandSpec::creates`].
@@ -155,6 +157,7 @@ impl CommandSpec {
             target: None,
             from_states: &[],
             destructive: false,
+            primary_when: None,
             report: None,
             creates: None,
         }
@@ -227,6 +230,14 @@ impl CommandSpec {
         self
     }
 
+    /// When the command is the one an interface should put first on a
+    /// record: in one of these states, and with a collection of the
+    /// document empty or not. See [`PrimaryWhenSpec`].
+    pub const fn primary_when(mut self, when: PrimaryWhenSpec) -> Self {
+        self.primary_when = Some(when);
+        self
+    }
+
     /// The command creates a document of this type and returns it: the
     /// receipt that follows from an order, for example. An interface goes
     /// to the new document instead of staying on the one it started from.
@@ -241,6 +252,49 @@ impl CommandSpec {
         self.report = Some(title);
         self
     }
+}
+
+/// See [`CommandSpec::primary_when`]: the command is the primary action
+/// on a record in one of `states` (any state when empty), when the
+/// collection `empty` names has no rows and the one `not_empty` names has
+/// some. An interface takes the first command of a record that matches,
+/// else its first command that is not destructive.
+#[derive(Debug, Clone, Copy)]
+pub struct PrimaryWhenSpec {
+    pub states: &'static [&'static str],
+    pub empty: Option<&'static str>,
+    pub not_empty: Option<&'static str>,
+}
+
+impl PrimaryWhenSpec {
+    pub const fn states(states: &'static [&'static str]) -> Self {
+        PrimaryWhenSpec {
+            states,
+            empty: None,
+            not_empty: None,
+        }
+    }
+
+    pub const fn empty(mut self, collection: &'static str) -> Self {
+        self.empty = Some(collection);
+        self
+    }
+
+    pub const fn not_empty(mut self, collection: &'static str) -> Self {
+        self.not_empty = Some(collection);
+        self
+    }
+}
+
+/// See [`CommandSpec::primary_when`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct PrimaryWhen {
+    /// The states of the record it is primary in; any state when empty.
+    pub states: Vec<String>,
+    /// A collection of the document that must have no rows.
+    pub empty: Option<String>,
+    /// A collection of the document that must have rows.
+    pub not_empty: Option<String>,
 }
 
 /// What kind of thing a command's resource is.
@@ -282,6 +336,10 @@ pub struct CommandMeta {
     pub from_states: Vec<String>,
     /// The command reverses, cancels or deletes.
     pub destructive: bool,
+    /// When an interface should make the command a record's primary
+    /// action: the first command whose condition matches. Without one
+    /// matching, the first command that is not destructive.
+    pub primary_when: Option<PrimaryWhen>,
     /// Set when the command is a report to show as a page.
     pub report: Option<ReportMeta>,
     /// Set when the command creates a document of this type and returns
@@ -402,6 +460,11 @@ impl<C: Command> DynCommand for Erased<C> {
             target: false,
             from_states: spec.from_states.iter().map(|s| (*s).into()).collect(),
             destructive: spec.destructive,
+            primary_when: spec.primary_when.map(|w| PrimaryWhen {
+                states: w.states.iter().map(|s| (*s).into()).collect(),
+                empty: w.empty.map(Into::into),
+                not_empty: w.not_empty.map(Into::into),
+            }),
             report: spec.report.map(|title| ReportMeta {
                 title: title.into(),
             }),

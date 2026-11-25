@@ -37,7 +37,7 @@ pub use erpcraft_db::{Migration, PgConnection, PgPool};
 pub use schemars::{self, JsonSchema};
 
 pub use authz::{Actor, Authenticator};
-pub use command::{Command, CommandSpec, Ctx, DynCommand, Options, command};
+pub use command::{Command, CommandSpec, Ctx, DynCommand, Options, PrimaryWhenSpec, command};
 pub use document::{Document, DocumentHandler, DocumentView, Ledger, Posting};
 pub use outbox::{Event, Subscriber};
 pub use policy::{Decision, FactType, PolicyPoint};

@@ -420,6 +420,22 @@ async fn commands_describe_themselves() {
     assert_eq!(post["destructive"], false);
     assert_eq!(post["report"], Value::Null);
     assert_eq!(post["read_only"], false);
+    assert_eq!(post["primary_when"], Value::Null);
+
+    // Which action comes first on a payment run: proposing while it has
+    // no lines, approving once it has some.
+    assert_eq!(
+        command(&meta, "payment_run.propose")["primary_when"],
+        json!({ "states": ["draft"], "empty": "lines", "not_empty": null })
+    );
+    assert_eq!(
+        command(&meta, "payment_run.approve")["primary_when"],
+        json!({ "states": ["draft"], "not_empty": "lines", "empty": null })
+    );
+    assert_eq!(
+        command(&meta, "payment_run.cancel")["primary_when"],
+        Value::Null
+    );
 
     let reverse = command(&meta, "journal_entry.reverse");
     assert_eq!(reverse["label"], "Reverse");

@@ -15,8 +15,8 @@ use chrono::NaiveDate;
 use erpcraft_kernel::document::{self, Document, DocumentChange, DocumentHandler, DocumentView};
 use erpcraft_kernel::{
     CollectionMeta, Command, CommandSpec, Ctx, Decimal, DocTypeMeta, DynCommand, EntityMeta, Error,
-    FieldMeta, FieldType, JsonSchema, Migration, Module, PgConnection, PolicyPoint, Result,
-    StateMeta, async_trait, command, company, schemars,
+    FieldMeta, FieldType, JsonSchema, Migration, Module, PgConnection, PolicyPoint,
+    PrimaryWhenSpec, Result, StateMeta, async_trait, command, company, schemars,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -119,6 +119,7 @@ impl Module for PaymentRunsModule {
                 permission: "payment_run:approve",
                 from: &["draft"],
                 to: "approved",
+                primary_when: Some(PrimaryWhenSpec::states(&["draft"]).not_empty("lines")),
             }),
             command(Step {
                 name: "payment_run.cancel",
@@ -127,6 +128,7 @@ impl Module for PaymentRunsModule {
                 permission: "payment_run:cancel",
                 from: &["draft", "approved"],
                 to: "cancelled",
+                primary_when: None,
             }),
             command(Post),
             command(files::BankFile),
@@ -501,6 +503,7 @@ impl Command for Propose {
         )
         .permission("payment_run:update")
         .from_states(&["draft"])
+        .primary_when(PrimaryWhenSpec::states(&["draft"]).empty("lines"))
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: IdInput) -> Result<DocumentView> {
@@ -633,6 +636,7 @@ struct Step {
     permission: &'static str,
     from: &'static [&'static str],
     to: &'static str,
+    primary_when: Option<PrimaryWhenSpec>,
 }
 
 #[async_trait]
@@ -641,9 +645,12 @@ impl Command for Step {
     type Output = DocumentView;
 
     fn spec(&self) -> CommandSpec {
-        let spec = CommandSpec::action(self.name, self.description)
+        let mut spec = CommandSpec::action(self.name, self.description)
             .permission(self.permission)
             .from_states(self.from);
+        if let Some(when) = self.primary_when {
+            spec = spec.primary_when(when);
+        }
         if self.to == "cancelled" {
             spec.destructive()
         } else {
