@@ -103,16 +103,19 @@ fn notice(standard_carton: bool) -> ShipNotice {
                 ItemLot {
                     lot: "L-77".into(),
                     expiry: None,
+                    serial: false,
                 },
                 ItemLot {
-                    lot: "L-78".into(),
+                    lot: "SN-78".into(),
                     expiry: None,
+                    serial: true,
                 },
             ]
         } else {
             vec![ItemLot {
                 lot: "L-77".into(),
                 expiry: NaiveDate::from_ymd_opt(2026, 12, 31),
+                serial: false,
             }]
         },
     };

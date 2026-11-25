@@ -112,6 +112,11 @@ impl Module for StockModule {
                 name: "units",
                 sql: include_str!("../migrations/0012_units.sql"),
             },
+            Migration {
+                version: 13,
+                name: "tracking_reversals",
+                sql: include_str!("../migrations/0013_tracking_reversals.sql"),
+            },
         ]
     }
 
@@ -687,6 +692,19 @@ pub async fn cap_reservations(
 
 /// Remove every reservation of an order: it is done, cancelled or closed.
 pub async fn release(conn: &mut PgConnection, document_id: Uuid) -> Result<()> {
+    // The levels first, in the one order: cutting reservations back takes
+    // the level's lock and then the reservations', so releasing them takes
+    // them the same way round.
+    let held: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
+        "SELECT company_id, item_id, warehouse_id FROM stock_reservation WHERE document_id = $1",
+    )
+    .bind(document_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    if let Some((company_id, _, _)) = held.first() {
+        let pairs = held.iter().map(|(_, i, w)| (*i, *w)).collect();
+        lock_levels(conn, *company_id, pairs).await?;
+    }
     sqlx::query("DELETE FROM stock_reservation WHERE document_id = $1")
         .bind(document_id)
         .execute(&mut *conn)
@@ -953,9 +971,13 @@ pub async fn post(
         }
     }
     if !lot_entries.is_empty() {
+        // In lot order, so that two postings lock the same lots (a serial
+        // number's row, a lot's level) one way round; the levels are locked
+        // before, in their own one order.
         sqlx::query(
             "INSERT INTO stock_entry_lot (entry_id, lot_id, qty)
-             SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::numeric[])",
+             SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::numeric[]) AS r (e, l, q)
+             ORDER BY l, e",
         )
         .bind(&lot_entries)
         .bind(&lot_ids)

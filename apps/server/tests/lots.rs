@@ -1087,3 +1087,87 @@ async fn a_lot_is_traced_from_the_mill_through_the_oven_to_the_shop() {
     assert!(kinds.contains(&"purchase_receipt") && kinds.contains(&"production_order"));
     t.stop().await;
 }
+
+#[tokio::test]
+async fn lots_are_not_taken_back_once_the_item_stopped_being_tracked() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let (status, body) = f
+        .adjust(
+            &t,
+            &f.flour,
+            &f.main,
+            "5",
+            json!([{ "lot": "F-1", "qty": "5" }]),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, out) = f
+        .adjust(
+            &t,
+            &f.flour,
+            &f.main,
+            "-5",
+            json!([{ "lot": "F-1", "qty": "5" }]),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    let (status, body) = t
+        .patch(
+            &t.admin,
+            &format!("/api/entities/item/{}", f.flour),
+            json!({ "tracking": "none" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = f.run(&t, "stock_adjustment.reverse", &out).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(message(&body).contains("no longer tracked"), "{body}");
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn goods_adjusted_out_of_transit_are_on_nobodys_way() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    f.adjust(
+        &t,
+        &f.flour,
+        &f.main,
+        "4",
+        json!([{ "lot": "F-1", "qty": "4" }]),
+    )
+    .await;
+    let shipped = f
+        .draft(
+            &t,
+            "stock_transfer",
+            "2026-03-02",
+            json!({ "from_warehouse_id": f.main, "to_warehouse_id": f.houston,
+                    "transit_warehouse_id": f.transit,
+                    "lines": [{ "item_id": f.flour, "qty": "4",
+                                "lots": [{ "lot": "F-1", "qty": "4" }] }] }),
+        )
+        .await;
+    f.ok(&t, "stock_transfer.post", &shipped).await;
+    // One sack is found torn in the truck and written off.
+    let (status, body) = f
+        .adjust(
+            &t,
+            &f.flour,
+            &f.transit,
+            "-1",
+            json!([{ "lot": "F-1", "qty": "1" }]),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let receipt = f.ok(&t, "stock_transfer.receive", &shipped).await;
+    let drafted: f64 = receipt["body"]["lines"][0]["lots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| dec(&l["qty"]))
+        .sum();
+    assert_eq!(drafted, 3.0, "{receipt}");
+    t.stop().await;
+}

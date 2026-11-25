@@ -278,9 +278,39 @@ pub(crate) async fn lots_on_way(
     .bind(transfer_id)
     .fetch_all(&mut *conn)
     .await?;
+    // What is still in the transit warehouse caps it: goods adjusted out
+    // of it (found missing, damaged) are on nobody's way.
+    let held: Vec<(Uuid, String, Decimal)> = sqlx::query_as(
+        "SELECT v.item_id, l.code, v.qty FROM stock_lot_level v
+         JOIN stock_lot l ON l.id = v.lot_id
+         WHERE v.warehouse_id = (SELECT transit_warehouse_id FROM stock_transfer WHERE document_id = $1)
+           AND v.item_id IN (SELECT item_id FROM stock_transfer_line WHERE document_id = $1)",
+    )
+    .bind(transfer_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    let item_of: BTreeMap<Uuid, Uuid> =
+        sqlx::query_as("SELECT id, item_id FROM stock_transfer_line WHERE document_id = $1")
+            .bind(transfer_id)
+            .fetch_all(&mut *conn)
+            .await?
+            .into_iter()
+            .collect();
+    let mut left: BTreeMap<(Uuid, String), Decimal> = held
+        .into_iter()
+        .map(|(item, code, qty)| ((item, code), qty))
+        .collect();
     let mut out: BTreeMap<Uuid, BTreeMap<String, Decimal>> = BTreeMap::new();
     for (line, code, qty) in rows {
-        out.entry(line).or_default().insert(code, qty);
+        let Some(item) = item_of.get(&line) else {
+            continue;
+        };
+        let there = left.entry((*item, code.clone())).or_default();
+        let qty = qty.min(*there);
+        if qty > Decimal::ZERO {
+            *there -= qty;
+            out.entry(line).or_default().insert(code, qty);
+        }
     }
     Ok(out)
 }

@@ -537,11 +537,13 @@ async fn notice(ctx: &mut Ctx<'_>, made: &mut Made) -> Result<()> {
     }
 
     // The lots of each delivery line, with their expiry dates.
-    let lot_rows: Vec<(Uuid, String, Option<NaiveDate>)> = sqlx::query_as(
-        "SELECT sl.line_id, sl.lot, COALESCE(l.expiry_date, sl.expiry_date)
+    let lot_rows: Vec<(Uuid, String, Option<NaiveDate>, bool)> = sqlx::query_as(
+        "SELECT sl.line_id, sl.lot, COALESCE(l.expiry_date, sl.expiry_date),
+                it.tracking = 'serial'
          FROM stock_line_lot sl
          JOIN sales_delivery_line dl ON dl.id = sl.line_id
          JOIN sales_order_line ol ON ol.id = dl.order_line_id
+         JOIN item it ON it.id = ol.item_id
          LEFT JOIN stock_lot l
              ON l.company_id = $2 AND l.item_id = ol.item_id AND l.code = sl.lot
          WHERE sl.document_id = $1 ORDER BY sl.line_id, sl.seq",
@@ -551,11 +553,37 @@ async fn notice(ctx: &mut Ctx<'_>, made: &mut Made) -> Result<()> {
     .fetch_all(&mut *ctx.conn)
     .await?;
     let mut lots_of: HashMap<Uuid, Vec<ItemLot>> = HashMap::new();
-    for (line, lot, expiry) in lot_rows {
-        lots_of
-            .entry(line)
-            .or_default()
-            .push(ItemLot { lot, expiry });
+    // A lot code goes into an element as it is: one that holds a
+    // separator of the partner's would break the message, and the LIN's
+    // product id is at most 48 characters.
+    let separators: Vec<&str> = [
+        Some(made.partner.element_separator.as_str()),
+        Some(made.partner.component_separator.as_str()),
+        made.partner.repetition_separator.as_deref(),
+        Some(made.partner.segment_terminator.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|s| !s.is_empty())
+    .collect();
+    for (line, lot, expiry, serial) in lot_rows {
+        if lot.chars().count() > 48 || separators.iter().any(|s| lot.contains(s)) {
+            blocking(
+                &mut made.findings,
+                "lot_not_writable",
+                None,
+                format!(
+                    "Lot {lot} cannot be written in an X12 element for this partner: it is longer \
+                     than 48 characters or holds one of its separators."
+                ),
+            );
+            continue;
+        }
+        lots_of.entry(line).or_default().push(ItemLot {
+            lot,
+            expiry,
+            serial,
+        });
     }
 
     // What the cartons hold, in the partner's units, checked against the

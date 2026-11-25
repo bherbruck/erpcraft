@@ -28,10 +28,16 @@ pub(crate) fn policy() -> PolicyPoint {
         "Asked for each lot or serial number going out of a warehouse (a delivery, \
          production, a transfer, an adjustment, a return to a vendor): may this lot go? \
          Unless configured otherwise it may. A company that ships nothing expired refuses \
-         when `facts.expired`; one that keeps to first expiring, first out refuses when \
-         `!facts.first_expiring`, or asks for approval.",
+         when `facts.expired && facts.context == 'sales_delivery'` (scoped, so that expired \
+         goods can still be written off, returned or counted out); one that keeps to first \
+         expiring, first out refuses deliveries when `!facts.first_expiring`, or asks for \
+         approval.",
     )
-    .text("context", "What takes the goods out, as for stock.negative")
+    .text(
+        "context",
+        "What takes the goods out, as for stock.negative: sales_delivery, production, \
+         transfer, adjustment, purchase_return, ...",
+    )
     .text("item_code", "Code of the item")
     .text("warehouse_code", "Code of the warehouse")
     .text("lot", "The lot or serial number")
@@ -900,6 +906,36 @@ impl Command for Trace {
         .bind(input.company_id)
         .fetch_all(&mut *ctx.conn)
         .await?;
+        // What the documents and parties are, only to whoever may read
+        // them: the stock ledger's reader is not thereby a reader of
+        // purchasing or of vendors.
+        let mut movements = movements;
+        for kind in ["customer", "vendor"] {
+            let ids: Vec<Uuid> = movements
+                .iter()
+                .filter(|m| m.party_type.as_deref() == Some(kind))
+                .filter_map(|m| m.party_id)
+                .collect();
+            let readable = erpcraft_kernel::entity::readable_ids(ctx, kind, &ids).await?;
+            for m in movements
+                .iter_mut()
+                .filter(|m| m.party_type.as_deref() == Some(kind))
+            {
+                if !m.party_id.is_some_and(|id| readable.contains(&id)) {
+                    m.party_type = None;
+                    m.party_id = None;
+                    m.party_name = None;
+                }
+            }
+        }
+        for m in movements.iter_mut() {
+            if !ctx
+                .actor
+                .can(&format!("{}:read", m.doc_type), input.company_id)
+            {
+                m.number = None;
+            }
+        }
         // Forward: who received goods (deliveries out). Backward: who
         // supplied them (receipts in).
         let mut parties: Vec<TraceParty> = movements
