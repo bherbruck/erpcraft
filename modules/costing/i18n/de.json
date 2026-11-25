@@ -1,0 +1,17 @@
+{
+  "Cost version": "Kostenversion",
+  "Cost versions": "Kostenversionen",
+  "Item ids": "Artikel",
+  "Labour": "Lohn",
+  "Material": "Material",
+  "Overhead": "Gemeinkosten",
+  "Per unit of the item's stock unit, in the company's accounting currency. Left out: the sum of the parts.": "Je Lagereinheit des Artikels, in der Buchungswährung des Mandanten. Leer: die Summe der Teile.",
+  "Rolled up": "Kalkuliert",
+  "Rollup": "Kalkulieren",
+  "Standard cost": "Standardkosten",
+  "Standard costing": "Standardkostenrechnung",
+  "Standard costs": "Standardkosten",
+  "Switch to standard": "Auf Standard umstellen",
+  "Value the item at standard from activation on (its stock on hand revalued), where it is at moving average now.": "Den Artikel ab der Aktivierung zu Standardkosten bewerten (sein Bestand wird neu bewertet), wo er jetzt zum gleitenden Durchschnitt bewertet wird.",
+  "Worked out from the item's bill of materials and routing.": "Aus Stückliste und Arbeitsplan des Artikels ermittelt."
+}

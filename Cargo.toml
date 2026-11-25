@@ -37,6 +37,7 @@ erpcraft-einvoice = { path = "modules/einvoice" }
 erpcraft-planning = { path = "modules/planning" }
 erpcraft-intercompany = { path = "modules/intercompany" }
 erpcraft-payment-runs = { path = "modules/payment_runs" }
+erpcraft-costing = { path = "modules/costing" }
 erpcraft-collections = { path = "modules/collections" }
 erpcraft-pricing = { path = "crates/erpcraft-pricing" }
 erpcraft-budgets = { path = "modules/budgets" }

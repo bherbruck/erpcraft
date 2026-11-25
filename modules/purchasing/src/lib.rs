@@ -2071,7 +2071,9 @@ impl Command for PostReceipt {
                 ordered.received_value += owed;
             }
             values.push(Some(owed));
-            let variance = owed - cost;
+            // Price variance: what is owed beyond what the goods cost, and
+            // for an item at standard cost what they cost beyond standard.
+            let variance = owed - cost + entry.std_variance;
             if !variance.is_zero() {
                 gl.push(gl_line(
                     accounts.price_variance_account_id,
@@ -2948,7 +2950,16 @@ async fn landed_cost(
         // The goods it raises are what each of these lines is about.
         let scopes = places.scopes(warehouse, Some(item));
         let (on_hand, _) = erpcraft_stock::on_hand(&mut *ctx.conn, item, warehouse).await?;
-        let still = on_hand.max(Decimal::ZERO).min(qty);
+        // Goods at standard cost are worth their standard: a landed cost is
+        // a variance, for the goods on hand as for those gone.
+        let standard = erpcraft_stock::costing::method(&mut *ctx.conn, doc.company_id, item)
+            .await?
+            == erpcraft_stock::costing::Method::Standard;
+        let still = if standard {
+            Decimal::ZERO
+        } else {
+            on_hand.max(Decimal::ZERO).min(qty)
+        };
         let to_stock = if still == qty {
             got
         } else {

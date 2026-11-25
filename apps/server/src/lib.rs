@@ -30,6 +30,7 @@ pub fn modules(pool: PgPool) -> KernelBuilder {
         .module(erpcraft_sales::SalesModule)
         .module(erpcraft_payments::PaymentsModule)
         .module(erpcraft_manufacturing::ManufacturingModule)
+        .module(erpcraft_costing::CostingModule)
         .module(erpcraft_webhooks::WebhooksModule::from_env())
         .module(erpcraft_printing::PrintingModule)
         .module(erpcraft_setup::SetupModule)

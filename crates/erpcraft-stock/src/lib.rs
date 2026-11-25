@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+pub mod costing;
 pub mod counts;
 mod locations;
 pub mod lots;
@@ -120,6 +121,11 @@ impl Module for StockModule {
                 version: 13,
                 name: "tracking_reversals",
                 sql: include_str!("../migrations/0013_tracking_reversals.sql"),
+            },
+            Migration {
+                version: 14,
+                name: "standard_cost",
+                sql: include_str!("../migrations/0014_standard_cost.sql"),
             },
         ]
     }
@@ -228,6 +234,9 @@ impl Module for StockModule {
                 .search(&["code"])
                 .display(&["code"])
                 .company_field("company_id"),
+            costing::company_entity(),
+            costing::item_entity(),
+            costing::standard_entity(),
             EntityMeta::new("item_uom", "Unit of measure")
                 .field(
                     FieldMeta::new("item_id", "Item", FieldType::link("item"))
@@ -554,6 +563,12 @@ pub struct StockEntry {
     /// The policy rule that allowed this issue to take the level below
     /// zero. `None` for every entry that did not.
     pub negative_rule_id: Option<Uuid>,
+    /// Not zero only for a receipt of an item kept at standard cost: what
+    /// the caller said the goods cost less their standard value. It is not
+    /// stock value: the caller posts it where its kind of difference goes
+    /// (purchase price variance, production variances, `stock_variance`),
+    /// a debit when positive.
+    pub std_variance: Decimal,
 }
 
 impl StockEntry {
@@ -561,12 +576,13 @@ impl StockEntry {
     /// variance. For a receipt it is the cost the caller stated, and what
     /// the other side of the receipt is posted at.
     pub fn cost(&self) -> Decimal {
-        self.value + self.variance
+        self.value + self.variance + self.std_variance
     }
 }
 
 const ENTRY_COLUMNS: &str = "id, line_no, source_line_id, item_id, warehouse_id, qty, value, \
-                             unit_cost, qty_after, value_after, variance, negative_rule_id";
+                             unit_cost, qty_after, value_after, variance, negative_rule_id, \
+                             std_variance";
 
 // ------------------------------------------------------------- reservations
 
@@ -1140,6 +1156,8 @@ struct StockEntryRow {
     value_after: Option<String>,
     /// Value that went to stock variance.
     variance: Option<String>,
+    /// Of a receipt at standard cost: what it cost beyond its standard.
+    std_variance: Option<String>,
     /// The lots or serial numbers moved, for a tracked item: a list of
     /// `{ lot, qty }`, quantities as decimal text, the way the entry goes.
     lots: Option<Vec<Value>>,
@@ -1283,6 +1301,7 @@ impl Ledger for StockLedger {
                 'qty', e.qty::text, 'value', e.value::text, 'unit_cost', e.unit_cost::text,
                 'qty_after', e.qty_after::text, 'value_after', e.value_after::text,
                 'variance', e.variance::text,
+                'std_variance', e.std_variance::text,
                 'lots', (SELECT jsonb_agg(jsonb_build_object('lot', sl.code, 'qty', el.qty::text)
                                           ORDER BY sl.code)
                          FROM stock_entry_lot el JOIN stock_lot sl ON sl.id = el.lot_id

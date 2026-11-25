@@ -351,6 +351,59 @@ pub async fn released(
     Ok((needs, makes))
 }
 
+/// The variance of a product made at standard, split where its standard
+/// says what it is made of: material (what the components left stock for,
+/// less the standard material of what was made) and the rest, labour and
+/// overhead at the rates absorbed against the standard's. A standard whose
+/// parts do not add up to it is not split.
+async fn standard_variances(
+    conn: &mut PgConnection,
+    company_id: Uuid,
+    order: &Order,
+    consumed: &[erpcraft_stock::StockEntry],
+    std_variance: Decimal,
+) -> Result<Vec<(&'static str, Decimal)>> {
+    if std_variance.is_zero() {
+        return Ok(vec![]);
+    }
+    let standard = erpcraft_stock::costing::standard(conn, company_id, order.item_id)
+        .await?
+        .unwrap_or_default();
+    let parts = standard.material_cost + standard.labour_cost + standard.overhead_cost;
+    if parts.is_zero() || parts != standard.unit_cost {
+        return Ok(vec![("production_variance", std_variance)]);
+    }
+    let decimals = company::currency_decimals(conn, company_id).await?;
+    let actual_material: Decimal = consumed.iter().map(|e| -e.value).sum();
+    let material = actual_material - round_money(standard.material_cost * order.qty, decimals);
+    let rate = std_variance - material;
+    Ok([
+        ("material_variance", material),
+        ("production_rate_variance", rate),
+    ]
+    .into_iter()
+    .filter(|(_, amount)| !amount.is_zero())
+    .collect())
+}
+
+/// The account for a production variance of `purpose`, else the one for
+/// `production_variance`.
+async fn production_variance_account(
+    conn: &mut PgConnection,
+    company_id: Uuid,
+    purpose: &str,
+    item_id: Uuid,
+) -> Result<Uuid> {
+    let scopes = [("item", item_id)];
+    match erpcraft_gl::account_for(conn, company_id, purpose, &scopes).await {
+        Ok(account) => Ok(account),
+        Err(_) if purpose != "production_variance" => {
+            erpcraft_gl::account_for(conn, company_id, "production_variance", &scopes).await
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Whether an account carries stock: the product's or a component's
 /// inventory account, or any account an inventory account rule of the
 /// company names.
@@ -1061,6 +1114,10 @@ impl Command for Complete {
         // of it had left before it was made: the part of its cost that
         // differs from what the missing goods left stock for.
         let variance: Decimal = made.iter().map(|entry| entry.variance).sum();
+        // A product kept at standard cost comes in at its standard: what
+        // the order consumed and absorbed beyond it is a production
+        // variance, not stock value.
+        let std_variance: Decimal = made.iter().map(|entry| entry.std_variance).sum();
 
         // The value moves from each component's account to the product's.
         // A component kept on the product's own account, with the same
@@ -1124,7 +1181,7 @@ impl Command for Complete {
         // The product's account takes what came from other accounts, less
         // the variance, which is not stock value.
         let moved: Decimal = gl.iter().map(|l| l.credit).sum();
-        let to_product = moved - variance;
+        let to_product = moved - variance - std_variance;
         if !to_product.is_zero() {
             gl.push(line(
                 product_account,
@@ -1145,6 +1202,25 @@ impl Command for Complete {
                 account,
                 variance.max(Decimal::ZERO),
                 (-variance).max(Decimal::ZERO),
+                None,
+            ));
+        }
+        for (purpose, amount) in standard_variances(
+            &mut *ctx.conn,
+            doc.company_id,
+            &order,
+            &consumed,
+            std_variance,
+        )
+        .await?
+        {
+            let account =
+                production_variance_account(&mut *ctx.conn, doc.company_id, purpose, order.item_id)
+                    .await?;
+            gl.push(line(
+                account,
+                amount.max(Decimal::ZERO),
+                (-amount).max(Decimal::ZERO),
                 None,
             ));
         }

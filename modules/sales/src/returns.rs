@@ -450,8 +450,10 @@ impl Command for PostReturn {
                 gl.push(gl_line(inventory, entry.value, Decimal::ZERO, line.id));
             }
             // Goods that came back onto stock below zero: the part of their
-            // cost that differs from what the missing goods left for.
-            if !entry.variance.is_zero() {
+            // cost that differs from what the missing goods left for; and
+            // for an item at standard cost, what they cost beyond standard.
+            let variance = entry.variance + entry.std_variance;
+            if !variance.is_zero() {
                 let account = erpcraft_gl::account_for(
                     &mut *ctx.conn,
                     doc.company_id,
@@ -461,8 +463,8 @@ impl Command for PostReturn {
                 .await?;
                 gl.push(gl_line(
                     account,
-                    entry.variance.max(Decimal::ZERO),
-                    (-entry.variance).max(Decimal::ZERO),
+                    variance.max(Decimal::ZERO),
+                    (-variance).max(Decimal::ZERO),
                     line.id,
                 ));
             }

@@ -470,7 +470,9 @@ async fn move_stock(
     .await?;
     // Not zero only where the destination stood below zero: the part of
     // what arrived that is not stock value there.
-    let variance = arrived[0].variance;
+    // Covering a shortfall, or at standard cost what the goods left for
+    // beyond the destination's standard.
+    let variance = arrived[0].variance + arrived[0].std_variance;
     let source = Some(source_line_id);
     if leaves != arrives || leaves_dims != arrives_dims {
         gl.extend(signed(arrives, arrived[0].value, source).map(|l| l.about(&to_scopes)));
@@ -578,10 +580,12 @@ impl Command for PostAdjustment {
                     inventory_account(ctx, &doc, entry.item_id, entry.warehouse_id).await?;
                 gl.extend(signed(inventory, entry.value, entry.source_line_id));
             }
-            if !entry.variance.is_zero() {
+            // Below zero covered, or at standard cost beyond the standard.
+            let difference = entry.variance + entry.std_variance;
+            if !difference.is_zero() {
                 let variance =
                     variance_account(ctx, &doc, entry.item_id, entry.warehouse_id).await?;
-                gl.extend(signed(variance, entry.variance, entry.source_line_id));
+                gl.extend(signed(variance, difference, entry.source_line_id));
             }
             gl.extend(signed(offset, -entry.cost(), entry.source_line_id));
         }
