@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::partner;
 use crate::policy::{AUTO_APPROVE, AUTO_DRAFT, DUPLICATE_ORDER};
 use crate::proposal::{self, Choices, Finding, Proposal, Severity};
-use crate::x12::po850::PurchaseOrder;
+use crate::x12::po850::{DateOf, PurchaseOrder};
 
 pub const PERMISSION: &str = "edi:draft";
 
@@ -142,6 +142,8 @@ pub async fn draft(ctx: &mut Ctx<'_>, request: Request) -> Result<DocumentView> 
         "customer_id": customer_id,
         "currency": proposal.currency,
         "shipping_address_id": proposal.ship_to.address_id,
+        "customer_reference": Some(proposal.order.number.trim()).filter(|n| !n.is_empty()),
+        "requested_date": requested(&proposal.order).map(|d| d.date),
         "lines": lines,
     });
     let doc_date = proposal
@@ -246,11 +248,20 @@ async fn order_line_ids(ctx: &mut Ctx<'_>, view: &DocumentView) -> Result<Vec<Uu
     .await?)
 }
 
-/// The memo of the draft: the partner's order number, its dates and what
-/// a person accepted, until the sales order has fields of its own for
-/// them.
+/// The day the order asks for the goods: its requested delivery date
+/// (DTM 002), else its requested ship date (DTM 010).
+fn requested(order: &PurchaseOrder) -> Option<&DateOf> {
+    ["002", "010"]
+        .iter()
+        .find_map(|qualifier| order.dates.iter().find(|d| d.qualifier == *qualifier))
+}
+
+/// The memo of the draft: where it came from, the dates the sales order
+/// has no field for and what a person accepted. The partner's order
+/// number is the order's customer reference and the date it asks for its
+/// requested date.
 fn memo(partner_code: &str, order: &PurchaseOrder, notes: &[&Finding]) -> String {
-    let mut memo = format!("EDI order {} from partner {partner_code}", order.number);
+    let mut memo = format!("EDI order from partner {partner_code}");
     if !order.release.is_empty() {
         memo.push_str(&format!(", release {}", order.release));
     }
@@ -258,7 +269,11 @@ fn memo(partner_code: &str, order: &PurchaseOrder, notes: &[&Finding]) -> String
         memo.push_str(&format!(", dated {date}"));
     }
     memo.push('.');
+    let requested = requested(order);
     for date in &order.dates {
+        if requested.is_some_and(|r| std::ptr::eq(r, date)) {
+            continue;
+        }
         let what = match date.qualifier.as_str() {
             "002" => "Delivery requested",
             "010" => "Ship requested",
@@ -445,4 +460,49 @@ pub async fn dismiss(ctx: &mut Ctx<'_>, message_id: Uuid, reason: &str) -> Resul
         .execute(&mut *ctx.conn)
         .await?;
     Ok(json!({ "id": row.id, "state": "dismissed", "reason": reason.trim() }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn dated(qualifier: &str, day: u32) -> DateOf {
+        DateOf {
+            qualifier: qualifier.into(),
+            date: NaiveDate::from_ymd_opt(2026, 12, day).unwrap(),
+        }
+    }
+
+    #[test]
+    fn the_requested_date_is_the_delivery_date_else_the_ship_date() {
+        let mut order = PurchaseOrder {
+            number: "PO-1".into(),
+            dates: vec![dated("037", 1), dated("010", 3), dated("010", 4)],
+            ..PurchaseOrder::default()
+        };
+        assert_eq!(
+            requested(&order).map(|d| d.date),
+            Some(dated("010", 3).date)
+        );
+        // The date that became the requested date leaves the memo; the
+        // second ship date, the same kind, stays.
+        let memo = memo("ACME", &order, &[]);
+        assert_eq!(
+            memo,
+            "EDI order from partner ACME. Ship not before: 2026-12-01. \
+             Ship requested: 2026-12-04."
+        );
+        order.dates.push(dated("002", 9));
+        assert_eq!(
+            requested(&order).map(|d| d.date),
+            Some(dated("002", 9).date)
+        );
+        assert!(memo_of(&order).contains("Ship requested: 2026-12-03."));
+        assert!(!memo_of(&order).contains("2026-12-09"));
+    }
+
+    fn memo_of(order: &PurchaseOrder) -> String {
+        memo("ACME", order, &[])
+    }
 }

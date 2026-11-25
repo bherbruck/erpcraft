@@ -353,13 +353,19 @@ async fn an_order_is_received_acknowledged_proposed_and_drafted() {
 
     // To the cent what the order says: 48 x 12.50 + 120 x 31.20 + 24 x 7.95.
     assert_eq!(dec(&order["summary"]["total_net"]), 600.0 + 3744.0 + 190.8);
-    assert!(
-        order["memo"]
-            .as_str()
-            .unwrap()
-            .contains("EDI order 4500018842"),
+    // The partner's order number is the order's customer reference; the
+    // order asks for no delivery or ship date, so its window stays in the
+    // memo.
+    assert_eq!(order["body"]["customer_reference"], "4500018842", "{order}");
+    assert_eq!(
+        order["summary"]["customer_reference"], "4500018842",
         "{order}"
     );
+    assert_eq!(order["body"]["requested_date"], Value::Null, "{order}");
+    let memo = order["memo"].as_str().unwrap();
+    assert!(memo.starts_with("EDI order from partner"), "{memo}");
+    assert!(!memo.contains("4500018842"), "{memo}");
+    assert!(memo.contains("Ship not before: 2026-12-01."), "{memo}");
 
     // What the order said is kept as sent.
     let kept: (
@@ -1879,7 +1885,11 @@ async fn the_audit_log_keeps_a_hash_of_the_file_not_the_file() {
     assert_eq!(status, StatusCode::CONFLICT, "{other}");
     // A refused file is redacted too.
     let (status, _) = t
-        .command(&t.admin, "edi.receive", json!({ "content_base64": "not base64!" }))
+        .command(
+            &t.admin,
+            "edi.receive",
+            json!({ "content_base64": "not base64!" }),
+        )
         .await;
     assert!(status.is_client_error());
     let (input,): (Value,) = sqlx::query_as(

@@ -118,6 +118,11 @@ impl Module for SalesModule {
                 name: "list_indexes",
                 sql: include_str!("../migrations/0013_list_indexes.sql"),
             },
+            Migration {
+                version: 14,
+                name: "order_reference",
+                sql: include_str!("../migrations/0014_order_reference.sql"),
+            },
         ]
     }
 
@@ -900,9 +905,16 @@ struct OrderBody {
     /// One of the customer's addresses its goods go to; its default
     /// shipping address when omitted.
     shipping_address_id: Option<Uuid>,
+    /// What the customer calls the order: its purchase order number.
+    customer_reference: Option<String>,
+    /// The day the customer asks for the goods.
+    requested_date: Option<NaiveDate>,
     #[serde(default)]
     lines: Vec<OrderLineInput>,
 }
+
+/// The most a customer's reference may be, in characters.
+const REFERENCE_MAX: usize = 100;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -966,6 +978,11 @@ impl DocumentHandler for SalesOrder {
                 ),
                 billing_field("customer_id"),
                 shipping_field("customer_id"),
+                FieldMeta::new("customer_reference", "Customer reference", FieldType::Text).help(
+                    "What the customer calls the order, such as its purchase order number.",
+                ),
+                FieldMeta::new("requested_date", "Requested date", FieldType::Date)
+                    .help("The day the customer asks for the goods."),
             ],
             collections: vec![CollectionMeta {
                 name: "lines".into(),
@@ -1046,13 +1063,17 @@ impl DocumentHandler for SalesOrder {
                     .currency_in("currency")
                     .readonly()
                     .help("The lines at their prices, without tax, in the order's currency: an order carries none."),
+                FieldMeta::new("customer_reference", "Customer reference", FieldType::Text)
+                    .readonly(),
+                FieldMeta::new("requested_date", "Requested date", FieldType::Date).readonly(),
             ]
             .into_iter()
             .chain(erpcraft_tax::lines::discount_and_charge_fields())
             .collect(),
             // 1: currency, accounting totals and their declarations.
             // 2: discounts and charges.
-            summary_version: 2,
+            // 3: the customer's reference and requested date.
+            summary_version: 3,
             ..DocTypeMeta::default()
         }
     }
@@ -1088,6 +1109,7 @@ impl DocumentHandler for SalesOrder {
             line.discount_percent = line.discount_percent.filter(|p| !p.is_zero());
             line.discount_amount = line.discount_amount.filter(|a| !a.is_zero());
         }
+        let reference = order_reference(body.customer_reference.as_deref())?;
         let warehouses: Vec<Uuid> = body.lines.iter().filter_map(|l| l.warehouse_id).collect();
         if !company::owns_all(&mut *ctx.conn, "warehouse", &warehouses, doc.company_id).await? {
             return Err(Error::validation(
@@ -1112,13 +1134,16 @@ impl DocumentHandler for SalesOrder {
         // The customer's terms unless the order names others.
         sqlx::query(
             "INSERT INTO sales_order (document_id, customer_id, currency, payment_terms_id,
-                 billing_address_id, shipping_address_id)
+                 billing_address_id, shipping_address_id, customer_reference, requested_date)
              VALUES ($1, $2, $3,
-                     COALESCE($4, (SELECT payment_terms_id FROM customer WHERE id = $2)), $5, $6)
+                     COALESCE($4, (SELECT payment_terms_id FROM customer WHERE id = $2)), $5, $6,
+                     $7, $8)
              ON CONFLICT (document_id) DO UPDATE SET customer_id = EXCLUDED.customer_id,
                 currency = EXCLUDED.currency, payment_terms_id = EXCLUDED.payment_terms_id,
                 billing_address_id = EXCLUDED.billing_address_id,
-                shipping_address_id = EXCLUDED.shipping_address_id",
+                shipping_address_id = EXCLUDED.shipping_address_id,
+                customer_reference = EXCLUDED.customer_reference,
+                requested_date = EXCLUDED.requested_date",
         )
         .bind(doc.id)
         .bind(body.customer_id)
@@ -1126,6 +1151,8 @@ impl DocumentHandler for SalesOrder {
         .bind(body.payment_terms_id)
         .bind(body.billing_address_id)
         .bind(body.shipping_address_id)
+        .bind(reference)
+        .bind(body.requested_date)
         .execute(&mut *ctx.conn)
         .await?;
         let line_ids = document::line_ids(
@@ -1207,19 +1234,26 @@ impl DocumentHandler for SalesOrder {
             "total_net": total,
             "total_discount": discount,
             "total_charges": charges,
+            "customer_reference": body["customer_reference"].as_str()
+                .map(str::trim).filter(|r| !r.is_empty()),
+            "requested_date": body["requested_date"].as_str(),
         }))
     }
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
-        let (customer, currency, terms, billing, shipping): (
+        #[allow(clippy::type_complexity)]
+        let (customer, currency, terms, billing, shipping, reference, requested): (
             Uuid,
             String,
             Option<Uuid>,
             Option<Uuid>,
             Option<Uuid>,
+            Option<String>,
+            Option<NaiveDate>,
         ) = sqlx::query_as(
             "SELECT o.customer_id, COALESCE(o.currency, c.base_currency), o.payment_terms_id,
-                    o.billing_address_id, o.shipping_address_id
+                    o.billing_address_id, o.shipping_address_id, o.customer_reference,
+                    o.requested_date
              FROM sales_order o
              JOIN company c ON c.id = $2 WHERE o.document_id = $1",
         )
@@ -1244,9 +1278,26 @@ impl DocumentHandler for SalesOrder {
             "payment_terms_id": terms,
             "billing_address_id": billing,
             "shipping_address_id": shipping,
+            "customer_reference": reference,
+            "requested_date": requested,
             "lines": lines,
         }))
     }
+}
+
+/// A customer's reference trimmed, `None` when blank; refused when longer
+/// than [`REFERENCE_MAX`].
+fn order_reference(reference: Option<&str>) -> Result<Option<String>> {
+    let Some(reference) = reference.map(str::trim).filter(|r| !r.is_empty()) else {
+        return Ok(None);
+    };
+    if reference.chars().count() > REFERENCE_MAX {
+        return Err(Error::validation(format!(
+            "a customer reference is at most {REFERENCE_MAX} characters"
+        ))
+        .with_field("customer_reference"));
+    }
+    Ok(Some(reference.to_owned()))
 }
 
 #[derive(Deserialize, JsonSchema)]
