@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { RouterProvider } from "react-router";
 import { createAppRouter } from "./app/router";
 import { finishSingleSignOn } from "./app/sso";
+import { TooltipProvider } from "./components/ui/tooltip";
 import "./index.css";
 
 const root = document.getElementById("root");
@@ -13,7 +14,10 @@ const mount = root;
 void finishSingleSignOn().then(() => {
   createRoot(mount).render(
     <StrictMode>
-      <RouterProvider router={createAppRouter()} />
+      {/* Every tooltip of the app (field help, the keys of the lines) shares one provider. */}
+      <TooltipProvider delayDuration={300}>
+        <RouterProvider router={createAppRouter()} />
+      </TooltipProvider>
     </StrictMode>,
   );
 });

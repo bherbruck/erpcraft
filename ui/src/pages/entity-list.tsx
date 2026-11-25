@@ -5,13 +5,13 @@ import { api } from "@/api/client";
 import type { EntityMeta, EntityRecord } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
 import { Button } from "@/components/button";
-import { useColumnChoice } from "@/components/column-chooser";
-import { type Column, DataTable } from "@/components/data-table";
-import { FieldValue, isNumeric, Withheld } from "@/components/field-value";
+import { FieldValue } from "@/components/field-value";
+import { fieldColumn, ListGrid } from "@/components/list-grid";
 import { PageHeader } from "@/components/page";
 import { SavedViews } from "@/components/saved-views";
 import { SearchBox } from "@/components/search-box";
 import { t } from "@/i18n/t";
+import { useListUrl } from "@/lib/list-url";
 import {
   COMPANY,
   canEntity,
@@ -23,7 +23,7 @@ import {
   listFields,
 } from "@/lib/meta";
 import { paths } from "@/lib/paths";
-import { pageFromUrl, useUrlState } from "@/lib/url-state";
+import { useUrlState } from "@/lib/url-state";
 import { useAsync } from "@/lib/use-async";
 import { hasCommandPage } from "./command-page";
 import { SETUP_COMMAND } from "./company-setup";
@@ -48,8 +48,7 @@ function EntityList({ entity }: { entity: EntityMeta }) {
   const { code, company } = useCompany();
   const url = useUrlState();
   const q = url.get("q");
-  const sort = url.get("sort");
-  const page = pageFromUrl(url.get("page"));
+  const { sort, page, size, setQuery } = useListUrl(PAGE_SIZE);
   const scoped = isCompanyScoped(entity);
   const searchable = entity.search.length > 0;
   const canCreate =
@@ -58,48 +57,44 @@ function EntityList({ entity }: { entity: EntityMeta }) {
   const waitingForCompany = scoped && company === null;
 
   const list = useAsync(
-    waitingForCompany ? null : `${entity.name}|${company?.id ?? ""}|${q}|${sort}|${page}`,
+    waitingForCompany ? null : `${entity.name}|${company?.id ?? ""}|${q}|${sort.join()}|${page}|${size}`,
     (signal) =>
       api.run(
         "entity.list",
         {
           entity: entity.name,
           q: searchable && q ? q : null,
-          sort: sort ? [sort] : [],
+          sort,
           filters: scoped && company ? { company_id: company.id } : {},
-          limit: PAGE_SIZE,
-          offset: (page - 1) * PAGE_SIZE,
+          limit: size,
+          offset: (page - 1) * size,
         },
         { signal },
       ),
   );
 
-  const columns = useMemo<Column<EntityRecord>[]>(
+  const fields = useMemo(() => listFields(meta, entity), [meta, entity]);
+  const columns = useMemo(
     () =>
-      listFields(meta, entity).map((field, index) => ({
-        id: field.name,
-        header: field.label,
-        align: isNumeric(field) ? "end" : "start",
-        sortField: field.name,
-        // When something was recorded matters rarely in a list; wide tables start with their first columns.
-        defaultHidden: field.type.kind === "timestamp" || index >= MAX_COLUMNS,
-        cell: (record) =>
+      fields.map((field, index) =>
+        fieldColumn<EntityRecord>(
+          field,
           // A field the user may read on some records only arrives without a value on the others.
-          !(field.name in record) && fieldReach(meta, entity.name, field.name, "read") === "some" ? (
-            <Withheld />
-          ) : (
-            <FieldValue field={field} value={record[field.name]} />
-          ),
-      })),
-    [meta, entity],
+          (record) =>
+            !(field.name in record) && fieldReach(meta, entity.name, field.name, "read") === "some"
+              ? t("value.withheld")
+              : record[field.name],
+          // When something was recorded matters rarely in a list; wide tables start with their first columns.
+          { hidden: field.type.kind === "timestamp" || index >= MAX_COLUMNS },
+        ),
+      ),
+    [fields, meta, entity.name],
   );
-
-  const {
-    visible,
-    chooser,
-    chosen: chosenColumns,
-    choose: chooseColumns,
-  } = useColumnChoice(`entity.${entity.name}`, columns);
+  // Amounts and quantities are shown as the record page shows them: with their currency or unit.
+  const decimals = useMemo(
+    () => new Map(fields.filter((field) => field.type.kind === "decimal").map((field) => [field.name, field])),
+    [fields],
+  );
 
   const setUrl = url.set;
   const onSearch = useCallback((next: string) => setUrl({ q: next, page: null }, { replace: true }), [setUrl]);
@@ -145,30 +140,36 @@ function EntityList({ entity }: { entity: EntityMeta }) {
           </>
         }
       />
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        {searchable ? (
-          <SearchBox value={q} onChange={onSearch} label={t("list.search", { label: entity.plural })} />
-        ) : null}
-        <div className="ms-auto flex gap-2">
-          <SavedViews tableKey={`entity.${entity.name}`} columns={chosenColumns} onColumns={chooseColumns} />
-          {chooser}
-        </div>
-      </div>
-      <DataTable
-        caption={entity.plural}
-        columns={visible}
+      <ListGrid<EntityRecord>
+        key={`${entity.name}|${q}`}
+        id={`entity.${entity.name}`}
+        label={entity.plural}
+        columns={columns}
         rows={waitingForCompany ? [] : list.data?.items}
-        rowKey={(record) => record.id}
-        rowHref={(record) => paths.entityRecord(code, entity.name, record.id)}
+        total={list.data?.total ?? 0}
         loading={list.loading}
         error={list.error}
         onRetry={list.reload}
         sort={sort}
-        onSort={(next) => url.set({ sort: next, page: null })}
         page={page}
-        pageSize={PAGE_SIZE}
-        total={list.data?.total ?? 0}
-        onPage={(next) => url.set({ page: next === 1 ? null : String(next) })}
+        size={size}
+        onQuery={setQuery}
+        rowHref={(record) => paths.entityRecord(code, entity.name, record.id)}
+        linkColumn={columns[0]?.id ?? "id"}
+        decorate={(columnId, record) => {
+          const field = decimals.get(columnId);
+          return field && columnId in record ? <FieldValue field={field} value={record[columnId]} /> : undefined;
+        }}
+        toolbar={
+          <div className="flex flex-wrap items-center gap-2">
+            {searchable ? (
+              <SearchBox value={q} onChange={onSearch} label={t("list.search", { label: entity.plural })} />
+            ) : null}
+            <div className="ms-auto">
+              <SavedViews tableKey={`entity.${entity.name}`} columns={null} onColumns={() => undefined} />
+            </div>
+          </div>
+        }
         empty={
           waitingForCompany ? (
             <p>{t("list.needs_company", { label: entity.plural })}</p>

@@ -1,5 +1,5 @@
-import { Plus, Printer, Trash2, X } from "lucide-react";
-import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Ellipsis, FileCode, FileDown, Mail, Printer, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import { ApiError, api } from "@/api/client";
@@ -14,19 +14,25 @@ import { ActionButtons, ActionDialog, useFollowOn } from "@/components/command-a
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { DateInput } from "@/components/date-input";
 import { plainSource, useDecimalHeader } from "@/components/decimal-value";
-import { PdfButton, SendButton, SentMessages } from "@/components/document-mail";
+import { SendDialog, SentMessages, usePdfDownload } from "@/components/document-mail";
 import { FieldInput, type FieldValues, initialValues, toEditable } from "@/components/field-input";
-import { FieldValue, isNumeric } from "@/components/field-value";
+import { FieldValue } from "@/components/field-value";
 import { FormField } from "@/components/form-field";
 import { History } from "@/components/history";
+import { LinesGrid } from "@/components/lines-grid";
 import { PageHeader, Section, Tabs } from "@/components/page";
 import { Postings } from "@/components/postings";
 import type { FieldContext } from "@/components/references";
 import { StatusBadge } from "@/components/status-badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { NativeSelect } from "@/components/ui/native-select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { UnsavedDialog, useUnsavedGuard } from "@/components/unsaved-guard";
 import { t } from "@/i18n/t";
 import { formatCalendarDate, formatTimestamp, todayCalendarDate } from "@/lib/dates";
@@ -37,7 +43,7 @@ import { newKey } from "@/lib/text";
 import { useUrlState } from "@/lib/url-state";
 import { useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
-import { EinvoiceExportButton } from "./einvoice-parts";
+import { ExportDialog, useExportable } from "./einvoice-parts";
 import { NotFoundPage } from "./not-found";
 
 export function DocumentPage() {
@@ -169,13 +175,6 @@ function snapshot(docType: DocTypeMeta, form: FormState): string {
   return JSON.stringify({ doc_date: form.docDate, memo: form.memo, body: bodyOf(docType, form) });
 }
 
-/** The fields a line grid shows: not the line's id, and not its stored number, which is the row number. */
-function lineFields(collection: CollectionMeta): FieldMeta[] {
-  return collection.fields.filter(
-    (field) => !(field.readonly && (field.type.kind === "uuid" || field.name === "line_no")),
-  );
-}
-
 function problemsOf(error: ApiError, docType: DocTypeMeta): Problems | null {
   if (error.collection && error.line !== null) {
     const entry = {
@@ -191,334 +190,6 @@ function problemsOf(error: ApiError, docType: DocTypeMeta): Problems | null {
     return { header: { [error.field]: error.message }, lines: {} };
   }
   return null;
-}
-
-// ------------------------------------------------------------------ line grid
-
-function ColumnHeader({ field, editable }: { field: FieldMeta; editable: boolean }) {
-  const label = useDecimalHeader(field);
-  return (
-    <TableHead className={cn(isNumeric(field) && "text-end")} title={field.help ?? undefined}>
-      {label}
-      {editable && field.required && !field.readonly ? (
-        <>
-          <span aria-hidden="true" className="text-destructive">
-            {t("field.required_mark")}
-          </span>
-          <span className="sr-only">{t("field.required")}</span>
-        </>
-      ) : null}
-    </TableHead>
-  );
-}
-
-/** One kind a line can be, and the fields that make it that kind. */
-interface LineKind {
-  label: string;
-  fields: string[];
-}
-
-function LineGrid({
-  collection,
-  lines,
-  editable,
-  companyId,
-  header,
-  headerFields,
-  problems,
-  kinds,
-  onChange,
-}: {
-  collection: CollectionMeta;
-  /** What a line is, one of (stock, a charge, an account), as the document type declares. */
-  kinds: LineKind[] | null;
-  lines: Line[];
-  editable: boolean;
-  companyId: string | null;
-  /** The document's header values, which references on a line can depend on. */
-  header: FieldValues;
-  headerFields: FieldMeta[];
-  problems: Problems["lines"][string] | undefined;
-  onChange: (lines: Line[], touched?: { line: number; field: string }) => void;
-}) {
-  const [focusLine, setFocusLine] = useState<string | null>(null);
-  const gridRef = useRef<HTMLTableSectionElement>(null);
-
-  // After a line is added, the cursor goes to its first field.
-  useEffect(() => {
-    if (!focusLine) return;
-    const row = gridRef.current?.querySelector(`[data-line="${focusLine}"]`);
-    // The first field of the line, past the switch of what kind of line it is (that is usually left as it is).
-    row?.querySelector<HTMLElement>("input, select:not([data-line-kind]), button[role='combobox']")?.focus();
-    setFocusLine(null);
-  }, [focusLine]);
-
-  function add(): void {
-    const line = newLine(collection);
-    onChange([...lines, line]);
-    setFocusLine(line.key);
-  }
-
-  function remove(key: string): void {
-    onChange(lines.filter((line) => line.key !== key));
-  }
-
-  function onCellKey(event: ReactKeyboardEvent<HTMLElement>, line: Line, isLast: boolean): void {
-    // Enter in a field of the last line starts the next line.
-    if (
-      event.key === "Enter" &&
-      isLast &&
-      event.target instanceof HTMLInputElement &&
-      event.target.type !== "checkbox"
-    ) {
-      event.preventDefault();
-      add();
-    } else if ((event.ctrlKey || event.metaKey) && event.key === "Delete") {
-      event.preventDefault();
-      remove(line.key);
-    }
-  }
-
-  const fields = lineFields(collection);
-  const contextFields = [...headerFields, ...collection.fields];
-  // The fields of the kinds share one column, where the first of them would be.
-  const kindFields = new Set((kinds ?? []).flatMap((kind) => kind.fields));
-  const firstKindField = fields.find((field) => kindFields.has(field.name))?.name;
-  const visible = fields.filter(
-    (field) =>
-      field.name === firstKindField || (!kindFields.has(field.name) && (editable || !isEmptyColumn(field, lines))),
-  );
-  // A line with nothing of any kind filled in yet is of the kind chosen for it, or the first.
-  const [chosenKind, setChosenKind] = useState<Record<string, number>>({});
-  const fieldByName = (name: string): FieldMeta | undefined => fields.find((field) => field.name === name);
-  // A kind made of a line of the document the header names (an order line) cannot be had while
-  // the header names none, as on an invoice without an order.
-  const usable = (kind: LineKind): boolean =>
-    kind.fields.every((name) => {
-      const type = fieldByName(name)?.type;
-      return type?.kind !== "line_link" || !isBlank(header[type.document_field]);
-    });
-  const firstUsable = Math.max(0, (kinds ?? []).findIndex(usable));
-  const kindOf = (line: Line): number => {
-    const filled = (kinds ?? []).findIndex((kind) => kind.fields.some((name) => !isBlank(line.values[name])));
-    return filled >= 0 ? filled : (chosenKind[line.key] ?? firstUsable);
-  };
-
-  function changeKind(line: Line, next: number): void {
-    setChosenKind((previous) => ({ ...previous, [line.key]: next }));
-    // A line is one kind: the fields of the others are emptied.
-    const cleared: FieldValues = { ...line.values };
-    (kinds ?? []).forEach((kind, index) => {
-      if (index !== next) for (const name of kind.fields) cleared[name] = null;
-    });
-    onChange(lines.map((other) => (other.key === line.key ? { ...other, values: cleared } : other)));
-  }
-
-  return (
-    <div className="rounded-md border bg-card">
-      <Table aria-label={collection.label}>
-        <TableHeader>
-          <TableRow>
-            <TableHead className="w-8 text-end">{t("lines.number")}</TableHead>
-            {visible.map((field) =>
-              field.name === firstKindField && kinds ? (
-                <TableHead key="kind">{kinds.map((kind) => kind.label).join(t("lines.kind_or"))}</TableHead>
-              ) : (
-                <ColumnHeader key={field.name} field={field} editable={editable} />
-              ),
-            )}
-            {editable ? <TableHead className="w-8" /> : null}
-          </TableRow>
-        </TableHeader>
-        <TableBody ref={gridRef}>
-          {lines.map((line, index) => {
-            const number = index + 1;
-            const problem = problems?.[number];
-            const context: FieldContext = { header, line: line.values, fields: contextFields };
-            return [
-              <TableRow
-                key={line.key}
-                data-line={line.key}
-                className={cn(problem && "bg-destructive-soft/40")}
-                aria-invalid={problem ? true : undefined}
-              >
-                <TableCell className="text-end text-sm tabular-nums text-muted-foreground">{number}</TableCell>
-                {visible.map((field) => {
-                  if (field.name === firstKindField && kinds) {
-                    const active = kindOf(line);
-                    const kind = kinds[active];
-                    const kindErrors = (kind?.fields ?? [])
-                      .map((name) => problem?.fields[name])
-                      .filter((message): message is string => Boolean(message));
-                    return (
-                      <TableCell key="kind" className={cn(editable ? "px-1 py-1 align-top" : "whitespace-nowrap")}>
-                        <div className="flex items-start gap-1">
-                          {editable && kinds.length > 1 ? (
-                            <NativeSelect
-                              data-line-kind
-                              className="w-32 shrink-0"
-                              aria-label={t("lines.kind", { line: number })}
-                              value={kinds[active]?.label ?? ""}
-                              onChange={(event) =>
-                                changeKind(
-                                  line,
-                                  kinds.findIndex((option) => option.label === event.target.value),
-                                )
-                              }
-                            >
-                              {kinds.map((option) => (
-                                <option key={option.label} value={option.label}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </NativeSelect>
-                          ) : null}
-                          {(kind?.fields ?? []).map((name) => {
-                            const part = fieldByName(name);
-                            if (!part) return null;
-                            return editable && !part.readonly ? (
-                              <div key={name} className="min-w-52">
-                                <FieldInput
-                                  field={part}
-                                  value={line.values[name]}
-                                  companyId={companyId}
-                                  context={context}
-                                  invalid={Boolean(problem?.fields[name])}
-                                  aria-label={t("lines.cell", { field: part.label, line: number })}
-                                  onKeyDown={(event) => onCellKey(event, line, index === lines.length - 1)}
-                                  onChange={(value) =>
-                                    onChange(
-                                      lines.map((other) =>
-                                        other.key === line.key
-                                          ? { ...other, values: { ...other.values, [name]: value } }
-                                          : other,
-                                      ),
-                                      { line: number, field: name },
-                                    )
-                                  }
-                                />
-                              </div>
-                            ) : (
-                              <span key={name} className="me-2">
-                                <FieldValue field={part} value={line.values[name]} context={context} linkify />
-                              </span>
-                            );
-                          })}
-                        </div>
-                        {kindErrors.map((message) => (
-                          <p key={message} role="alert" className="px-1 pt-0.5 text-start text-sm text-destructive">
-                            {message}
-                          </p>
-                        ))}
-                      </TableCell>
-                    );
-                  }
-                  const cellEditable = editable && !field.readonly;
-                  const error = problem?.fields[field.name];
-                  const errorId = `line-${collection.name}-${number}-${field.name}-error`;
-                  return (
-                    <TableCell
-                      key={field.name}
-                      className={cn(
-                        cellEditable ? "min-w-28 px-1 py-1 align-top" : "whitespace-nowrap",
-                        (field.type.kind === "link" ||
-                          field.type.kind === "line_link" ||
-                          field.type.kind === "lookup" ||
-                          field.type.kind === "document_link") &&
-                          "min-w-52",
-                        isNumeric(field) && "text-end",
-                      )}
-                    >
-                      {cellEditable ? (
-                        <>
-                          <FieldInput
-                            field={field}
-                            value={line.values[field.name]}
-                            companyId={companyId}
-                            context={context}
-                            invalid={Boolean(error)}
-                            aria-describedby={error ? errorId : undefined}
-                            aria-label={t("lines.cell", { field: field.label, line: number })}
-                            onKeyDown={(event) => onCellKey(event, line, index === lines.length - 1)}
-                            onChange={(value) =>
-                              onChange(
-                                lines.map((other) =>
-                                  other.key === line.key
-                                    ? { ...other, values: { ...other.values, [field.name]: value } }
-                                    : other,
-                                ),
-                                { line: number, field: field.name },
-                              )
-                            }
-                          />
-                          {error ? (
-                            <p id={errorId} role="alert" className="px-1 pt-0.5 text-start text-sm text-destructive">
-                              {error}
-                            </p>
-                          ) : null}
-                        </>
-                      ) : (
-                        <>
-                          <FieldValue field={field} value={line.values[field.name]} context={context} linkify />
-                          {error ? (
-                            <p role="alert" className="text-sm text-destructive">
-                              {error}
-                            </p>
-                          ) : null}
-                        </>
-                      )}
-                    </TableCell>
-                  );
-                })}
-                {editable ? (
-                  <TableCell className="px-1 py-1 align-top">
-                    {/* Out of the Tab order so Tab runs field to field; Ctrl+Delete removes the line from the keyboard. */}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      tabIndex={-1}
-                      aria-label={t("lines.remove", { line: number })}
-                      title={t("lines.remove_hint", { line: number })}
-                      onClick={() => remove(line.key)}
-                    >
-                      <X aria-hidden="true" />
-                    </Button>
-                  </TableCell>
-                ) : null}
-              </TableRow>,
-              problem?.line ? (
-                <TableRow key={`${line.key}-problem`} className="bg-destructive-soft/40 hover:bg-destructive-soft/40">
-                  <TableCell />
-                  <TableCell colSpan={visible.length + (editable ? 1 : 0)} className="pt-0 text-sm text-destructive">
-                    <span role="alert">{problem.line}</span>
-                  </TableCell>
-                </TableRow>
-              ) : null,
-            ];
-          })}
-        </TableBody>
-      </Table>
-      {lines.length === 0 ? (
-        <p className="px-3 py-4 text-center text-sm text-muted-foreground">
-          {t("lines.empty", { label: collection.label })}
-        </p>
-      ) : null}
-      {editable ? (
-        <div className="flex items-center gap-3 border-t px-2 py-1.5">
-          <Button variant="ghost" size="sm" onClick={add}>
-            <Plus aria-hidden="true" />
-            {t("lines.add")}
-          </Button>
-          <span className="hidden text-sm text-muted-foreground md:inline">{t("lines.hint")}</span>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-/** A read-only column with no value on any line is left out of a locked document. */
-function isEmptyColumn(field: FieldMeta, lines: Line[]): boolean {
-  return lines.length > 0 && lines.every((line) => isBlank(line.values[field.name]));
 }
 
 // ------------------------------------------------------------------ totals
@@ -801,6 +472,17 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
 
   const status = doc?.status ?? docType.initial_state;
   const actions = useMemo(() => (doc ? recordActions(meta, docType.name, doc.status) : []), [meta, docType.name, doc]);
+  // The next step is the first action that neither ends nor undoes anything (Approve, Post); the
+  // rest wait behind "More actions" with printing, the PDF and sending.
+  const primaryAction = actions.find((action) => !action.destructive) ?? null;
+  const otherActions = actions.filter((action) => action !== primaryAction);
+  const exportable = useExportable();
+  const pdf = usePdfDownload(docType.name, id ?? "");
+  const [dialog, setDialog] = useState<"send" | "einvoice" | null>(null);
+  // Who the document is with, for the line under its title.
+  const party = docType.fields.find(
+    (field) => field.type.kind === "link" && ["customer", "vendor"].includes(field.type.entity),
+  );
   const followOn = useFollowOn((created, createdId) => {
     forgetDocuments();
     navigate(paths.doc(code, created, createdId));
@@ -855,6 +537,11 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
   }
 
   const fieldError = (name: string): string | undefined => problems.header[name];
+  // The currency the lines' prices are in: the document's own, else its company's.
+  const documentCurrency =
+    typeof form.header.currency === "string" && form.header.currency !== ""
+      ? form.header.currency
+      : (docCompany?.base_currency ?? null);
   const lineProblemCount = Object.values(problems.lines).reduce((sum, lines) => sum + Object.keys(lines).length, 0);
 
   return (
@@ -883,6 +570,27 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
           )
         }
         badges={ready ? <StatusBadge status={status} docType={docType} /> : <Skeleton className="h-5 w-14" />}
+        meta={
+          ready && !isNew ? (
+            <>
+              {party && form.header[party.name] ? (
+                <span>
+                  <FieldValue
+                    field={party}
+                    value={form.header[party.name]}
+                    context={{ header, fields: contextFields }}
+                  />
+                </span>
+              ) : null}
+              <span>{formatCalendarDate(form.docDate)}</span>
+              {doc?.created_by_name ? (
+                <span>
+                  {t("document.created_by_short", { name: doc.created_by_name, at: formatTimestamp(doc.created_at) })}
+                </span>
+              ) : null}
+            </>
+          ) : null
+        }
         actions={
           <>
             {saved && !dirty ? (
@@ -890,9 +598,11 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
             ) : dirty ? (
               <output className="text-sm text-muted-foreground">{t("record.unsaved")}</output>
             ) : null}
-            {doc ? (
+            {/* One primary action: saving while there is something to save, else the next step. */}
+            {primaryAction && doc && !(canWrite && (dirty || isNew)) ? (
               <ActionButtons
-                actions={actions}
+                actions={[primaryAction]}
+                primary
                 running={followOn.running}
                 disabledReason={dirty ? t("record.save_first") : null}
                 onChoose={(action) => {
@@ -901,38 +611,91 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
                 }}
               />
             ) : null}
-            {doc ? <EinvoiceExportButton docType={docType.name} id={doc.id} locked={locked} /> : null}
-            {doc && locked ? (
-              <SendButton docType={docType.name} id={doc.id} onSent={() => url.set({ tab: "sent" })} />
-            ) : null}
-            {doc ? <PdfButton docType={docType.name} id={doc.id} /> : null}
-            {doc && canRun(meta, "document.render") ? (
-              <Button asChild variant="outline">
-                <Link to={paths.print(code, docType.name, doc.id)}>
-                  <Printer aria-hidden="true" />
-                  {t("print.print")}
-                </Link>
-              </Button>
-            ) : null}
-            {doc && !locked && doc.postings.length === 0 && canDoc(meta, docType.name, "delete") ? (
-              <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
-                <Trash2 aria-hidden="true" />
-                {t("action.delete")}
-              </Button>
-            ) : null}
-            {canWrite ? (
-              <Button
-                onClick={() => void save()}
-                busy={saving}
-                disabled={!ready || (!dirty && !isNew)}
-                title={t("record.save_hint")}
-              >
+            {canWrite && (dirty || isNew) ? (
+              <Button onClick={() => void save()} busy={saving} disabled={!ready} title={t("record.save_hint")}>
                 {isNew ? t("record.create") : t("action.save")}
               </Button>
+            ) : null}
+            {doc ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="icon" aria-label={t("document.more_actions")} data-more-actions="">
+                    <Ellipsis aria-hidden="true" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-52">
+                  {otherActions.map((action) => (
+                    <DropdownMenuItem
+                      key={action.action}
+                      variant={action.destructive ? "destructive" : "default"}
+                      disabled={dirty || (followOn.running != null && followOn.running !== action.action)}
+                      title={dirty ? t("record.save_first") : action.command.description}
+                      onSelect={() => {
+                        if (action.creates) void followOn.run(action, doc.id);
+                        else url.set({ action: action.action });
+                      }}
+                    >
+                      {action.label}
+                    </DropdownMenuItem>
+                  ))}
+                  {otherActions.length > 0 ? <DropdownMenuSeparator /> : null}
+                  {locked && canRun(meta, "document.send") ? (
+                    <DropdownMenuItem onSelect={() => setDialog("send")}>
+                      <Mail aria-hidden="true" />
+                      {findCommand(meta, "document.send")?.label}
+                    </DropdownMenuItem>
+                  ) : null}
+                  {locked && exportable.includes(docType.name) ? (
+                    <DropdownMenuItem onSelect={() => setDialog("einvoice")}>
+                      <FileCode aria-hidden="true" />
+                      {t("einvoice.export")}
+                    </DropdownMenuItem>
+                  ) : null}
+                  {canRun(meta, "document.render_pdf") ? (
+                    <DropdownMenuItem disabled={pdf.busy} onSelect={pdf.run}>
+                      <FileDown aria-hidden="true" />
+                      {t("pdf.download")}
+                    </DropdownMenuItem>
+                  ) : null}
+                  {canRun(meta, "document.render") ? (
+                    <DropdownMenuItem asChild>
+                      <Link to={paths.print(code, docType.name, doc.id)}>
+                        <Printer aria-hidden="true" />
+                        {t("print.print")}
+                      </Link>
+                    </DropdownMenuItem>
+                  ) : null}
+                  {!locked && doc.postings.length === 0 && canDoc(meta, docType.name, "delete") ? (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem variant="destructive" onSelect={() => setConfirmDelete(true)}>
+                        <Trash2 aria-hidden="true" />
+                        {t("action.delete")}
+                      </DropdownMenuItem>
+                    </>
+                  ) : null}
+                </DropdownMenuContent>
+              </DropdownMenu>
             ) : null}
           </>
         }
       />
+      {pdf.error ? <Alert className="mb-4">{t("pdf.failed_because", { reason: pdf.error })}</Alert> : null}
+      {doc && dialog === "send" ? (
+        <SendDialog
+          docType={docType.name}
+          id={doc.id}
+          title={findCommand(meta, "document.send")?.label ?? ""}
+          onClose={() => setDialog(null)}
+          onSent={() => {
+            setDialog(null);
+            url.set({ tab: "sent" });
+          }}
+        />
+      ) : null}
+      {doc && dialog === "einvoice" ? (
+        <ExportDialog docType={docType.name} id={doc.id} onClose={() => setDialog(null)} />
+      ) : null}
 
       {!isNew ? (
         <Tabs
@@ -1143,9 +906,11 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
                   {doc ? t("document.no_server_lines") : t("document.server_lines")}
                 </p>
               ) : ready ? (
-                <LineGrid
+                <LinesGrid
                   collection={collection}
                   lines={form.collections[collection.name] ?? []}
+                  newLine={() => newLine(collection)}
+                  currency={documentCurrency}
                   editable={canWrite && !serverLines(collection)}
                   kinds={
                     docType.alternatives.find((alternative) => alternative.collection === collection.name)?.one_of ??

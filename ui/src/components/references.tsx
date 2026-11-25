@@ -50,7 +50,7 @@ function isObject(value: Json | undefined): value is JsonObject {
 }
 
 /** A value of the line the field is in, or else of the header. */
-function contextValue(context: FieldContext | undefined, name: string): Json | undefined {
+export function contextValue(context: FieldContext | undefined, name: string): Json | undefined {
   const own = context?.line?.[name];
   return own !== undefined && own !== null ? own : context?.header[name];
 }
@@ -162,13 +162,17 @@ export function DocumentLinkValue({
 type LineLinkType = Extract<FieldType, { kind: "line_link" }>;
 
 /** The lines of a collection of a document, as they are stored. */
-function linesOf(body: JsonObject, collection: string): JsonObject[] {
+export function linesOf(body: JsonObject, collection: string): JsonObject[] {
   const lines = body[collection];
   return Array.isArray(lines) ? lines.filter(isObject) : [];
 }
 
 /** Labels of the records the link fields of some lines point to, by entity and id. */
-async function linkLabels(fields: FieldMeta[], lines: JsonObject[], signal: AbortSignal): Promise<Map<string, string>> {
+export async function linkLabels(
+  fields: FieldMeta[],
+  lines: JsonObject[],
+  signal: AbortSignal,
+): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   await Promise.all(
     fields.map(async (field) => {
@@ -295,7 +299,7 @@ export function LineLinkValue({ type, value, context }: { type: LineLinkType; va
 type LookupType = Extract<FieldType, { kind: "lookup" }>;
 
 /** The inputs of a lookup's command, read from the record; `null` while one is missing. */
-function lookupParams(type: LookupType, context: FieldContext | undefined): JsonObject | null {
+export function lookupParams(type: LookupType, context: FieldContext | undefined): JsonObject | null {
   const input: JsonObject = {};
   for (const [name, param] of Object.entries(type.params)) {
     if (param.from === "value") {
@@ -312,7 +316,7 @@ function lookupParams(type: LookupType, context: FieldContext | undefined): Json
 type Format = "date" | "decimal" | "text";
 
 /** How each field of a command's output rows is to be shown, from its output schema. */
-function rowFormats(command: CommandMeta | undefined, rows: string): Record<string, Format> {
+export function rowFormats(command: CommandMeta | undefined, rows: string): Record<string, Format> {
   const schema = command && isObject(command.output_schema) ? command.output_schema : {};
   const resolve = (node: Json | undefined): JsonObject => {
     if (!isObject(node)) return {};
@@ -354,13 +358,13 @@ function useRowDescriber(type: LookupType): (row: JsonObject) => PickerOption {
 }
 
 /** `limit` for a command that takes one; a command that lists everything (`party.get`) refuses it. */
-function withLimit(command: CommandMeta | undefined, input: JsonObject, limit: number): JsonObject {
+export function withLimit(command: CommandMeta | undefined, input: JsonObject, limit: number): JsonObject {
   const schema = command && isObject(command.input_schema) ? command.input_schema : {};
   const properties = isObject(schema.properties) ? schema.properties : {};
   return "limit" in properties ? { ...input, limit } : input;
 }
 
-async function lookupRows(
+export async function lookupRows(
   type: LookupType,
   input: JsonObject,
   signal: AbortSignal,

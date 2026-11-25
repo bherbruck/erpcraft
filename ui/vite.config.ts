@@ -8,7 +8,12 @@ const SERVER = process.env.ERPCRAFT_URL ?? "http://127.0.0.1:8600";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
-    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
+    alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+      // The headless grid, used from its source in the repository, with this app's React.
+      "@erpcraft/grid": fileURLToPath(new URL("../packages/grid/src/index.ts", import.meta.url)),
+    },
+    dedupe: ["react", "react-dom", "@tanstack/react-table", "@tanstack/react-virtual"],
   },
   server: {
     port: 5173,

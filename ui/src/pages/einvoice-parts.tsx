@@ -38,7 +38,7 @@ export function DocumentLinkLabel({ docType, id }: { docType: string; id: string
 }
 
 /** The document types `einvoice.export` takes, from its schema. */
-function useExportable(): string[] {
+export function useExportable(): string[] {
   const { meta } = useApp();
   const command = findCommand(meta, EXPORT);
   if (!command || !canRun(meta, EXPORT)) return [];
@@ -77,7 +77,7 @@ function download(name: string, mediaType: string, text: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function ExportDialog({ docType, id, onClose }: { docType: string; id: string; onClose: () => void }) {
+export function ExportDialog({ docType, id, onClose }: { docType: string; id: string; onClose: () => void }) {
   const { meta } = useApp();
   const command = findCommand(meta, EXPORT);
   const inputs = command ? commandInputs(command) : [];

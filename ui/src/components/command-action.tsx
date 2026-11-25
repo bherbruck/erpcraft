@@ -35,9 +35,12 @@ export function ActionButtons({
   actions,
   disabledReason,
   running,
+  primary = false,
   onChoose,
 }: {
   actions: ResourceAction[];
+  /** The page's one primary action: drawn as the solid button. */
+  primary?: boolean;
   /** Why the actions cannot be used right now, such as unsaved changes. */
   disabledReason?: string | null;
   /** The follow-on action being run, if any. */
@@ -49,7 +52,7 @@ export function ActionButtons({
       {actions.map((action) => (
         <Button
           key={action.action}
-          variant={action.destructive ? "destructive" : "outline"}
+          variant={action.destructive ? "destructive" : primary ? "default" : "outline"}
           disabled={Boolean(disabledReason) || (running != null && running !== action.action)}
           busy={running === action.action}
           title={disabledReason ?? action.command.description}

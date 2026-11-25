@@ -652,8 +652,7 @@ const shots: Shot[] = [
   },
   {
     name: "48-sales-order-discounts",
-    // Stock, charge and account lines side by side need the width.
-    width: 1920,
+    // Stock, charge and account lines side by side, at the width of a laptop: the net stays in view.
     path: async () =>
       `${base}/d/sales_order/${await byMemo("sales_order", "Demo: order with a discount and freight (draft)")}`,
   },

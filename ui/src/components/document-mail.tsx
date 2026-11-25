@@ -38,6 +38,29 @@ function downloadBase64(name: string, mediaType: string, base64: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/** Downloads the document's PDF; `error` is the server's words when it could not be made. */
+export function usePdfDownload(
+  docType: string,
+  id: string,
+): {
+  busy: boolean;
+  error: string | null;
+  run: () => void;
+} {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = (): void => {
+    setBusy(true);
+    setError(null);
+    api
+      .run("document.render_pdf", { doc_type: docType, id })
+      .then((pdf) => downloadBase64(pdf.filename, pdf.content_type, pdf.data))
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setBusy(false));
+  };
+  return { busy, error, run };
+}
+
 /** Downloads the document as the PDF the server renders. */
 export function PdfButton({ docType, id }: { docType: string; id: string }) {
   const { meta } = useApp();
@@ -124,7 +147,7 @@ export function SendButton({
   );
 }
 
-function SendDialog({
+export function SendDialog({
   docType,
   id,
   title,

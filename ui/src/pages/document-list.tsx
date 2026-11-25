@@ -1,15 +1,14 @@
+import type { GridColumn } from "@erpcraft/grid";
 import { Plus } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 import { api } from "@/api/client";
-import type { DocTypeMeta, DocumentSummary, FieldMeta, JsonObject } from "@/api/types";
+import type { DocTypeMeta, DocumentSummary, JsonObject } from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
 import { BulkBar, type BulkResult, BulkResults } from "@/components/bulk-actions";
 import { Button } from "@/components/button";
-import { useColumnChoice } from "@/components/column-chooser";
-import { type Column, DataTable } from "@/components/data-table";
-import { useDecimalHeader } from "@/components/decimal-value";
-import { Empty, FieldValue, isNumeric } from "@/components/field-value";
+import { currencyInHeader } from "@/components/decimal-value";
+import { fieldColumn, ListGrid } from "@/components/list-grid";
 import { Lookup } from "@/components/lookup";
 import { PageHeader } from "@/components/page";
 import { SavedViews } from "@/components/saved-views";
@@ -18,9 +17,10 @@ import { StatusBadge } from "@/components/status-badge";
 import { NativeSelect } from "@/components/ui/native-select";
 import { t } from "@/i18n/t";
 import { formatCalendarDate, formatTimestamp } from "@/lib/dates";
+import { useListUrl } from "@/lib/list-url";
 import { canDoc, canEntity, canRun, findDocType, withoutSource } from "@/lib/meta";
 import { paths } from "@/lib/paths";
-import { pageFromUrl, useUrlState } from "@/lib/url-state";
+import { useUrlState } from "@/lib/url-state";
 import { useAsync } from "@/lib/use-async";
 import { hasCommandPage } from "./command-page";
 import { NotFoundPage } from "./not-found";
@@ -41,10 +41,9 @@ function summaryOf(doc: DocumentSummary): JsonObject {
   return typeof doc.summary === "object" && doc.summary !== null && !Array.isArray(doc.summary) ? doc.summary : {};
 }
 
-/** The header of a summary column: money in the company's currency says which. */
-function SummaryHeader({ field }: { field: FieldMeta }) {
-  return <>{useDecimalHeader(field)}</>;
-}
+/** The column of checkboxes that chooses documents for a bulk action. */
+const CHOSEN = "_chosen";
+type Row = DocumentSummary & JsonObject;
 
 function DocumentList({ docType }: { docType: DocTypeMeta }) {
   const { meta } = useApp();
@@ -52,8 +51,8 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
   const url = useUrlState();
   const q = url.get("q");
   const status = url.get("status");
-  const sort = url.get("sort");
-  const page = pageFromUrl(url.get("page"));
+  const { sort, page, size, setQuery } = useListUrl(PAGE_SIZE);
+  const { currencyDecimals } = useApp();
   const canCreate = canDoc(meta, docType.name, "create") && company !== null;
 
   // Who a document is with, as a filter: the summary's links to records.
@@ -68,7 +67,7 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
   const filterKey = JSON.stringify(summaryFilter);
 
   const list = useAsync(
-    company ? `${docType.name}|${company.id}|${q}|${status}|${sort}|${page}|${filterKey}` : null,
+    company ? `${docType.name}|${company.id}|${q}|${status}|${sort.join()}|${page}|${size}|${filterKey}` : null,
     (signal) =>
       api.run(
         "document.list",
@@ -79,113 +78,13 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
           status: status || null,
           summary: summaryFilter,
           // Newest first unless the user chose otherwise.
-          sort: sort ? [sort] : ["-doc_date", "-created_at"],
-          limit: PAGE_SIZE,
-          offset: (page - 1) * PAGE_SIZE,
+          sort: sort.length > 0 ? sort : ["-doc_date", "-created_at"],
+          limit: size,
+          offset: (page - 1) * size,
         },
         { signal },
       ),
   );
-
-  const columns = useMemo<Column<DocumentSummary>[]>(() => {
-    const header = (name: string, fallback: string): string =>
-      meta.document_header.find((field) => field.name === name)?.label ?? fallback;
-    // A summary shows who the document is with by name; a link to the party,
-    // or to a document whose label names the party again, starts hidden.
-    const named = docType.summary.some((field) => field.type.kind === "text");
-    const summary = docType.summary.map(
-      (field): Column<DocumentSummary> => ({
-        id: `summary.${field.name}`,
-        header: field.label,
-        headerNode: field.type.kind === "decimal" ? <SummaryHeader field={field} /> : undefined,
-        sortField:
-          field.type.kind === "link" || field.type.kind === "document_link" ? undefined : `summary.${field.name}`,
-        align: isNumeric(field) ? "end" : "start",
-        // A figure that repeats another in the accounting currency (`total_value`, `*_accounting`)
-        // starts hidden: in a single-currency company it says the same twice.
-        defaultHidden:
-          ((field.type.kind === "link" || field.type.kind === "document_link") && named) ||
-          field.type.kind === "entity_link" ||
-          field.name.endsWith("_accounting") ||
-          (field.name === "total_value" && docType.summary.some((other) => other.name === "total_gross")),
-        // Names stay on one line; the memo takes what width is left.
-        className: "whitespace-nowrap",
-        cell: (doc) => {
-          const values = summaryOf(doc);
-          return (
-            <FieldValue
-              field={field}
-              value={values[field.name]}
-              context={{ header: values, fields: docType.summary }}
-            />
-          );
-        },
-      }),
-    );
-    return [
-      {
-        id: "number",
-        header: header("number", t("document.number")),
-        sortField: "number",
-        cell: (doc) =>
-          doc.number ? (
-            <span className="whitespace-nowrap font-medium tabular-nums">{doc.number}</span>
-          ) : (
-            <span className="whitespace-nowrap text-muted-foreground">{t("document.unnumbered")}</span>
-          ),
-      },
-      {
-        id: "doc_date",
-        header: header("doc_date", t("document.date")),
-        sortField: "doc_date",
-        cell: (doc) => <span className="whitespace-nowrap">{formatCalendarDate(doc.doc_date)}</span>,
-      },
-      {
-        id: "status",
-        header: header("status", t("document.status")),
-        sortField: "status",
-        cell: (doc) => <StatusBadge status={doc.status} docType={docType} />,
-      },
-      ...summary,
-      {
-        id: "memo",
-        header: header("memo", t("document.memo")),
-        cell: (doc) => doc.memo || <Empty />,
-        className: "w-full min-w-48",
-      },
-      {
-        id: "created_by_name",
-        header: header("created_by_name", t("document.created_by_column")),
-        defaultHidden: true,
-        cell: (doc) => <span className="whitespace-nowrap">{doc.created_by_name ?? <Empty />}</span>,
-      },
-      {
-        id: "created_at",
-        header: header("created_at", t("document.created")),
-        sortField: "created_at",
-        defaultHidden: true,
-        cell: (doc) => (
-          <span className="whitespace-nowrap text-muted-foreground">{formatTimestamp(doc.created_at)}</span>
-        ),
-      },
-      {
-        id: "updated_at",
-        header: header("updated_at", t("document.updated")),
-        sortField: "updated_at",
-        defaultHidden: true,
-        cell: (doc) => (
-          <span className="whitespace-nowrap text-muted-foreground">{formatTimestamp(doc.updated_at)}</span>
-        ),
-      },
-    ];
-  }, [docType, meta.document_header]);
-
-  const {
-    visible,
-    chooser,
-    chosen: chosenColumns,
-    choose: chooseColumns,
-  } = useColumnChoice(`document.${docType.name}`, columns);
 
   // Documents chosen for one action on all of them, kept across pages of the list.
   const [chosen, setChosen] = useState<Map<string, DocumentSummary>>(() => new Map());
@@ -193,6 +92,122 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
   const canBulk = meta.commands.some(
     (command) => command.resource === docType.name && command.target && !command.read_only && command.creates === null,
   );
+
+  const choose = (doc: DocumentSummary, on: boolean): void =>
+    setChosen((previous) => {
+      const next = new Map(previous);
+      if (on) next.set(doc.id, doc);
+      else next.delete(doc.id);
+      return next;
+    });
+
+  // The grid's columns: the header, the state, the type's summary and the memo.
+  const columns = useMemo<GridColumn<Row>[]>(() => {
+    const header = (name: string, fallback: string): string =>
+      meta.document_header.find((field) => field.name === name)?.label ?? fallback;
+    // A summary shows who the document is with by name; a link to the party,
+    // or to a document whose label names the party again, starts hidden.
+    const named = docType.summary.some((field) => field.type.kind === "text");
+    const text = (
+      id: string,
+      label: string,
+      read: (doc: Row) => string | null,
+      extra: Partial<GridColumn<Row>> = {},
+    ): GridColumn<Row> => ({
+      id,
+      header: label,
+      type: "text",
+      field: id,
+      filterable: false,
+      searchable: false,
+      value: (doc) => read(doc),
+      ...extra,
+    });
+    const timestamp = (id: "created_at" | "updated_at", label: string): GridColumn<Row> => ({
+      id,
+      header: label,
+      type: "datetime",
+      field: id,
+      filterable: false,
+      searchable: false,
+      hidden: true,
+      value: (doc) => doc[id],
+      format: (v) => (typeof v === "string" ? formatTimestamp(v) : ""),
+    });
+    const chooser: GridColumn<Row>[] = canBulk
+      ? [
+          {
+            id: CHOSEN,
+            header: t("list.select"),
+            type: "boolean",
+            sortable: false,
+            filterable: false,
+            searchable: false,
+            hideable: false,
+            width: 72,
+            pin: "left",
+            editable: true,
+            value: (doc) => chosen.has(doc.id),
+          },
+        ]
+      : [];
+    return [
+      ...chooser,
+      text("number", header("number", t("document.number")), (doc) => doc.number ?? t("document.unnumbered"), {
+        hideable: false,
+        // A number is read whole: it does not give up width to the memo.
+        minWidth: 150,
+      }),
+      {
+        id: "doc_date",
+        header: header("doc_date", t("document.date")),
+        type: "date",
+        field: "doc_date",
+        filterable: false,
+        searchable: false,
+        value: (doc) => doc.doc_date,
+        format: (v) => (typeof v === "string" ? formatCalendarDate(v) : ""),
+      },
+      {
+        id: "status",
+        header: header("status", t("document.status")),
+        type: "state",
+        field: "status",
+        filterable: false,
+        searchable: false,
+        options: docType.states.map((state) => ({ value: state.name, label: state.label })),
+        value: (doc) => doc.status,
+      },
+      ...docType.summary.map((field) =>
+        fieldColumn<Row>(field, (doc) => summaryOf(doc)[field.name], {
+          id: `summary.${field.name}`,
+          // Money in the company's currency says which in its header.
+          header:
+            currencyInHeader(field) && company
+              ? t("value.in_currency", { label: field.label, currency: company.base_currency })
+              : field.label,
+          sortField: field.type.kind === "link" || field.type.kind === "document_link" ? null : `summary.${field.name}`,
+          decimals: currencyDecimals[company?.base_currency ?? ""] ?? 2,
+          // A figure that repeats another in the accounting currency (`total_value`, `*_accounting`)
+          // starts hidden: in a single-currency company it says the same twice.
+          hidden:
+            ((field.type.kind === "link" || field.type.kind === "document_link") && named) ||
+            field.type.kind === "entity_link" ||
+            field.name.endsWith("_accounting") ||
+            (field.name === "total_value" && docType.summary.some((other) => other.name === "total_gross")),
+        }),
+      ),
+      text("memo", header("memo", t("document.memo")), (doc) => doc.memo, { sortable: false }),
+      text(
+        "created_by_name",
+        header("created_by_name", t("document.created_by_column")),
+        (doc) => doc.created_by_name ?? null,
+        { hidden: true, sortable: false },
+      ),
+      timestamp("created_at", header("created_at", t("document.created"))),
+      timestamp("updated_at", header("updated_at", t("document.updated"))),
+    ];
+  }, [docType, meta.document_header, chosen, canBulk, currencyDecimals, company]);
 
   const setUrl = url.set;
   const onSearch = useCallback((next: string) => setUrl({ q: next, page: null }, { replace: true }), [setUrl]);
@@ -244,43 +259,6 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
           </>
         }
       />
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <SearchBox value={q} onChange={onSearch} label={t("list.search", { label: docType.plural })} />
-        <NativeSelect
-          aria-label={t("document.filter_status")}
-          className="w-40"
-          value={status}
-          onChange={(event) => url.set({ status: event.target.value, page: null })}
-        >
-          <option value="">{t("document.any_status")}</option>
-          {docType.states.map((state) => (
-            <option key={state.name} value={state.name}>
-              {state.label}
-            </option>
-          ))}
-        </NativeSelect>
-        {partyFilters.map((field) =>
-          field.type.kind === "link" ? (
-            <Lookup
-              key={field.name}
-              aria-label={t("document.filter_by", { label: field.label })}
-              placeholder={t("document.any_of", { label: field.label })}
-              className="w-64 max-w-full"
-              entity={field.type.entity}
-              keyField={field.type.key}
-              value={url.get(`${SUMMARY_FILTER}${field.name}`) || null}
-              companyId={company?.id}
-              allowCreate={false}
-              recordLink={false}
-              onChange={(next) => url.set({ [`${SUMMARY_FILTER}${field.name}`]: next, page: null })}
-            />
-          ) : null,
-        )}
-        <div className="ms-auto flex gap-2">
-          <SavedViews tableKey={`document.${docType.name}`} columns={chosenColumns} onColumns={chooseColumns} />
-          {chooser}
-        </div>
-      </div>
       {bulk ? (
         <BulkResults docType={docType} action={bulk.action} results={bulk.results} onClose={() => setBulk(null)} />
       ) : null}
@@ -296,36 +274,76 @@ function DocumentList({ docType }: { docType: DocTypeMeta }) {
           }}
         />
       ) : null}
-      <DataTable
-        caption={docType.plural}
-        selection={
-          canBulk
-            ? {
-                selected: new Set(chosen.keys()),
-                label: (doc) => t("bulk.choose", { number: doc.number ?? doc.memo ?? doc.id }),
-                onToggle: (doc, on) =>
-                  setChosen((previous) => {
-                    const next = new Map(previous);
-                    if (on) next.set(doc.id, doc);
-                    else next.delete(doc.id);
-                    return next;
-                  }),
-              }
-            : undefined
-        }
-        columns={visible}
-        rows={company ? list.data?.items : []}
-        rowKey={(doc) => doc.id}
-        rowHref={(doc) => paths.doc(code, docType.name, doc.id)}
+      <ListGrid<Row>
+        key={`${docType.name}|${q}|${status}|${filterKey}`}
+        id={`document.${docType.name}`}
+        label={docType.plural}
+        columns={columns}
+        rows={company ? (list.data?.items as Row[] | undefined) : []}
+        total={list.data?.total ?? 0}
         loading={list.loading}
         error={list.error}
         onRetry={list.reload}
         sort={sort}
-        onSort={(next) => url.set({ sort: next, page: null })}
         page={page}
-        pageSize={PAGE_SIZE}
-        total={list.data?.total ?? 0}
-        onPage={(next) => url.set({ page: next === 1 ? null : String(next) })}
+        size={size}
+        onQuery={setQuery}
+        rowHref={(doc) => paths.doc(code, docType.name, doc.id)}
+        linkColumn="number"
+        decorate={(columnId, doc) =>
+          columnId === "status" ? <StatusBadge status={doc.status} docType={docType} /> : undefined
+        }
+        check={
+          canBulk
+            ? {
+                columnId: CHOSEN,
+                label: (doc) => t("bulk.choose", { number: doc.number ?? doc.memo ?? doc.id }),
+                onToggle: choose,
+              }
+            : undefined
+        }
+        // The choice column takes typing, paste and Delete like any cell: y/n, x, 1/0.
+        onEdit={(changes) => {
+          for (const change of changes) if (change.columnId === CHOSEN) choose(change.row, change.newValue === true);
+        }}
+        toolbar={
+          <div className="flex flex-wrap items-center gap-2">
+            <SearchBox value={q} onChange={onSearch} label={t("list.search", { label: docType.plural })} />
+            <NativeSelect
+              aria-label={t("document.filter_status")}
+              className="w-36"
+              value={status}
+              onChange={(event) => url.set({ status: event.target.value, page: null })}
+            >
+              <option value="">{t("document.any_status")}</option>
+              {docType.states.map((state) => (
+                <option key={state.name} value={state.name}>
+                  {state.label}
+                </option>
+              ))}
+            </NativeSelect>
+            {partyFilters.map((field) =>
+              field.type.kind === "link" ? (
+                <Lookup
+                  key={field.name}
+                  aria-label={t("document.filter_by", { label: field.label })}
+                  placeholder={t("document.any_of", { label: field.label })}
+                  className="w-52 max-w-full"
+                  entity={field.type.entity}
+                  keyField={field.type.key}
+                  value={url.get(`${SUMMARY_FILTER}${field.name}`) || null}
+                  companyId={company?.id}
+                  allowCreate={false}
+                  recordLink={false}
+                  onChange={(next) => url.set({ [`${SUMMARY_FILTER}${field.name}`]: next, page: null })}
+                />
+              ) : null,
+            )}
+            <div className="ms-auto">
+              <SavedViews tableKey={`document.${docType.name}`} columns={null} onColumns={() => undefined} />
+            </div>
+          </div>
+        }
         empty={
           !company ? (
             <p>{t("list.needs_company", { label: docType.plural })}</p>

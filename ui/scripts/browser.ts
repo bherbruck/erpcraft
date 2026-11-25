@@ -222,6 +222,14 @@ export async function launchBrowser(port: number): Promise<Browser> {
     await Bun.sleep(60);
   }
 
+  async function press(name: string, modifiers = 0): Promise<void> {
+    const code = KEY_CODES[name] ?? name.toUpperCase().charCodeAt(0);
+    const event = { key: name, code: name, windowsVirtualKeyCode: code, nativeVirtualKeyCode: code, modifiers };
+    await send("Input.dispatchKeyEvent", { type: "keyDown", ...event });
+    await send("Input.dispatchKeyEvent", { type: "keyUp", ...event });
+    await Bun.sleep(80);
+  }
+
   await send("Runtime.enable");
   await send("Page.enable");
   await send("Network.enable");
@@ -283,17 +291,28 @@ export async function launchBrowser(port: number): Promise<Browser> {
       if (found !== true) throw new Error(`no select matches ${selector}`);
       await settle();
     },
-    async key(name, modifiers = 0) {
-      const code = KEY_CODES[name] ?? name.toUpperCase().charCodeAt(0);
-      const event = { key: name, code: name, windowsVirtualKeyCode: code, nativeVirtualKeyCode: code, modifiers };
-      await send("Input.dispatchKeyEvent", { type: "keyDown", ...event });
-      await send("Input.dispatchKeyEvent", { type: "keyUp", ...event });
-      await Bun.sleep(80);
-    },
+    key: press,
     async click(text, selector = "button") {
       const found = await evaluate(
         `(() => { const e = [...document.querySelectorAll(${quoted(selector)})].find((b) => b.textContent.trim() === ${quoted(text)} && !b.disabled); if (!e) return false; e.click(); return true; })()`,
       );
+      if (found !== true && selector === "button") {
+        // Not a button on the page: a person would look in the page's "More actions" menu next.
+        const opened = await evaluate(
+          `(() => { const t = document.querySelector("[data-more-actions]"); if (!t) return false; t.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "mouse" })); return true; })()`,
+        );
+        if (opened === true) {
+          await settle();
+          const chosen = await evaluate(
+            `(() => { const e = [...document.querySelectorAll("[role=menuitem]")].find((m) => m.textContent.trim() === ${quoted(text)} && !m.hasAttribute("data-disabled")); if (!e) { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); return false; } e.click(); return true; })()`,
+          );
+          if (chosen === true) {
+            await settle();
+            return;
+          }
+          await press("Escape");
+        }
+      }
       if (found !== true) throw new Error(`nothing to click: ${selector} with the text "${text}"`);
       await settle();
     },

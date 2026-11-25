@@ -26,12 +26,15 @@ export function PageHeader({
   crumbs,
   title,
   badges,
+  meta,
   actions,
   sticky = false,
 }: {
   crumbs?: Crumb[];
   title: ReactNode;
   badges?: ReactNode;
+  /** One line under the title: who the record is with, its date, who made it. */
+  meta?: ReactNode;
   actions?: ReactNode;
   sticky?: boolean;
 }) {
@@ -67,6 +70,9 @@ export function PageHeader({
         {badges}
         <div className="flex flex-1 flex-wrap items-center justify-end gap-2">{actions}</div>
       </div>
+      {meta ? (
+        <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">{meta}</div>
+      ) : null}
     </div>
   );
 }
