@@ -27,7 +27,11 @@ import { paths } from "@/lib/paths";
 import { newKey } from "@/lib/text";
 import { useUrlState } from "@/lib/url-state";
 import { useAsync } from "@/lib/use-async";
+import { canDelegate, DelegationsPanel } from "./delegations";
 import { NotFoundPage } from "./not-found";
+
+/** The tab of the inbox where approvals are handed on. */
+const DELEGATIONS = "delegations";
 
 // The statuses a request goes through, as `approval.list` names them. Its schema
 // lists them in prose only, so they are listed here with how each looks.
@@ -81,8 +85,10 @@ export function ApprovalsPage() {
   const scope = url.get("scope") || scopes[0]?.value || "to_approve";
   const status = url.get("status");
   const label = useCommandLabel();
-  const requests = useAsync(list && canRun(meta, list.name) ? `approvals|${scope}|${status}` : null, (signal) =>
-    api.runNamed("approval.list", { scope, status: status || null, limit: 200 }, { signal }),
+  const delegating = canDelegate(meta);
+  const requests = useAsync(
+    list && canRun(meta, list.name) && scope !== DELEGATIONS ? `approvals|${scope}|${status}` : null,
+    (signal) => api.runNamed("approval.list", { scope, status: status || null, limit: 200 }, { signal }),
   );
   const rows = isList(requests.data) ? requests.data.items : undefined;
 
@@ -130,38 +136,48 @@ export function ApprovalsPage() {
       <PageHeader title={list.label} />
       <Tabs
         current={scope}
-        tabs={scopes.map((option) => ({
-          id: option.value,
-          label: scopeLabel(option.value),
-          to: `?${new URLSearchParams({ scope: option.value, ...(status ? { status } : {}) })}`,
-        }))}
+        tabs={[
+          ...scopes.map((option) => ({
+            id: option.value,
+            label: scopeLabel(option.value),
+            to: `?${new URLSearchParams({ scope: option.value, ...(status ? { status } : {}) })}`,
+          })),
+          // Handing one's approvals to someone else while away, for those who may.
+          ...(delegating ? [{ id: DELEGATIONS, label: t("delegation.title"), to: `?scope=${DELEGATIONS}` }] : []),
+        ]}
       />
-      <div className="mb-3 flex items-center gap-2">
-        <NativeSelect
-          aria-label={t("document.filter_status")}
-          className="w-44"
-          value={status}
-          onChange={(event) => url.set({ status: event.target.value })}
-        >
-          <option value="">{t("document.any_status")}</option>
-          {Object.entries(STATUSES).map(([name, known]) => (
-            <option key={name} value={name}>
-              {t(known.label)}
-            </option>
-          ))}
-        </NativeSelect>
-      </div>
-      <DataTable
-        caption={list.label}
-        columns={columns}
-        rows={rows}
-        rowKey={(r) => r.id}
-        rowHref={(r) => paths.approval(code, r.id)}
-        loading={requests.loading}
-        error={requests.error}
-        onRetry={requests.reload}
-        empty={<p>{scope === "to_approve" ? t("approval.nothing_to_approve") : t("approval.none")}</p>}
-      />
+      {scope === DELEGATIONS && delegating ? (
+        <DelegationsPanel />
+      ) : (
+        <>
+          <div className="mb-3 flex items-center gap-2">
+            <NativeSelect
+              aria-label={t("document.filter_status")}
+              className="w-44"
+              value={status}
+              onChange={(event) => url.set({ status: event.target.value })}
+            >
+              <option value="">{t("document.any_status")}</option>
+              {Object.entries(STATUSES).map(([name, known]) => (
+                <option key={name} value={name}>
+                  {t(known.label)}
+                </option>
+              ))}
+            </NativeSelect>
+          </div>
+          <DataTable
+            caption={list.label}
+            columns={columns}
+            rows={rows}
+            rowKey={(r) => r.id}
+            rowHref={(r) => paths.approval(code, r.id)}
+            loading={requests.loading}
+            error={requests.error}
+            onRetry={requests.reload}
+            empty={<p>{scope === "to_approve" ? t("approval.nothing_to_approve") : t("approval.none")}</p>}
+          />
+        </>
+      )}
     </>
   );
 }

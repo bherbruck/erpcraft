@@ -161,12 +161,25 @@ export function referenceSource(
       },
       label: (value) => labels.get(field.name, value) ?? shortId(value),
       prefetch: async (lines, header, signal) => {
-        const inputs = new Map<string, JsonObject>();
+        // The rows the lines hold, by their keys where the command takes them (`by_keys`): a row
+        // past the first page, or one that can no longer be chosen, is still named.
+        const inputs = new Map<string, { input: JsonObject; keys: Set<string> }>();
         for (const values of lines) {
           const input = lookupParams(type, context(values, header));
-          if (input && values[field.name]) inputs.set(JSON.stringify(input), input);
+          const value = text(values[field.name]);
+          if (!input || !value) continue;
+          const key = JSON.stringify(input);
+          const entry = inputs.get(key) ?? { input, keys: new Set<string>() };
+          entry.keys.add(value);
+          inputs.set(key, entry);
         }
-        await Promise.all([...inputs.values()].map((input) => load(input, signal).catch(() => [])));
+        await Promise.all(
+          [...inputs.values()].map(({ input, keys }) =>
+            (type.by_keys ? load({ ...input, [type.by_keys]: [...keys] }, signal) : load(input, signal)).catch(
+              () => [],
+            ),
+          ),
+        );
       },
       blocked: (values, header) => {
         if (lookupParams(type, context(values, header))) return null;

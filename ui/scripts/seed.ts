@@ -333,7 +333,7 @@ const checking = await ensure(
 await ensure(
   "bank_account_number",
   { company_id: company, bank_account_id: checking },
-  { iban: "US00EXAMPLE000000001" },
+  { iban: "GB33BUKB20201555555555" },
 );
 const junRent = await ensureDoc("journal_entry", company, "Demo: storage rent from checking", "2026-06-03", () => ({
   lines: [
@@ -710,6 +710,61 @@ if (dc07) {
     { partner_id: partner, qualifier: "92", code: "0007" },
     { address_id: asString(dc07.id) },
   );
+}
+
+// ------------------------------------------------------------ sites, transfers, payment runs
+
+// Goods on the road are stock of their own, and what never arrives is a loss.
+for (const [purpose, code, name, type] of [
+  ["inventory_in_transit", "1350", "Inventory in transit", "asset"],
+  ["transit_loss", "5400", "Transit losses", "expense"],
+] as const) {
+  const id = await ensure("account", { company_id: company, code }, { name, account_type: type });
+  await ensure("account_rule", { company_id: company, purpose }, { account_id: id });
+}
+
+// A second site with a tree of locations, and a warehouse for goods on the road between sites.
+const dayton = await ensure("site", { company_id: company, code: "DAY" }, { name: "Dayton plant" });
+const daytonStore = await ensure(
+  "warehouse",
+  { company_id: company, code: "DAY" },
+  { name: "Dayton stores", site_id: dayton },
+);
+await ensure(
+  "warehouse",
+  { company_id: company, code: "DAY-A" },
+  { name: "Aisle A", site_id: dayton, parent_id: daytonStore },
+);
+await ensure(
+  "warehouse",
+  { company_id: company, code: "DAY-B" },
+  { name: "Aisle B", site_id: dayton, parent_id: daytonStore },
+);
+const transit = await ensure(
+  "warehouse",
+  { company_id: company, code: "TRANSIT" },
+  { name: "On the road", transit: true },
+);
+
+// Gadgets shipped from the main warehouse to Dayton: on their way until received.
+const transfer = await ensureDoc("stock_transfer", company, "Demo: gadgets to Dayton", "2026-06-01", () => ({
+  from_warehouse_id: warehouse,
+  to_warehouse_id: daytonStore,
+  transit_warehouse_id: transit,
+  lines: [line({ item_id: gadget, qty: "10" })],
+}));
+await advance("stock_transfer", transfer, "draft", "post");
+
+// The vendors' bills due by year end, proposed for one run from the bank account.
+const run = await ensureDoc("payment_run", company, "Demo: pay what is due", "2026-06-30", () => ({
+  bank_account_id: account("1000"),
+  due_by: "2026-12-31",
+  take_discounts: false,
+  lines: [],
+}));
+if (run.status === "draft" && asArray(run.body.lines).length === 0) {
+  await session.run("payment_run.propose", { id: run.id });
+  log("payment_run.propose", "done");
 }
 
 console.log(`\n${created} created, ${found} already there.`);

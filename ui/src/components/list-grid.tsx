@@ -22,9 +22,11 @@ import { peekLinkLabel, shortId, useLinkLabelsVersion } from "@/lib/link-labels"
 import { enumLabel } from "@/lib/meta";
 import { Alert } from "./alert";
 import { Button } from "./button";
-import { type GridCheck, type GridDecorate, shadcnGridSlots } from "./grid-skin";
+import { type GridCheck, type GridDecorate, gridLabels, shadcnGridSlots } from "./grid-skin";
 import { fitWidths } from "./grid-widths";
 
+/** The grid's words, translated once. */
+const GRID_LABELS = gridLabels();
 const ROW_HEIGHT = 34;
 
 function typeOf(field: FieldMeta): ColumnType {
@@ -234,7 +236,8 @@ export function ListGrid<R extends JsonObject>({
   // The grid is as tall as its page of rows, so the page scrolls as one and nothing jumps when
   // the rows arrive: before they do, it keeps the room of the rows it is waiting for.
   const shownRows = rows?.length ?? Math.min(size, 10);
-  const height = ROW_HEIGHT * (Math.max(shownRows, 3) + 1) + 2;
+  // The header row is a little taller than a body row (h-10), and the scroller has a border.
+  const height = ROW_HEIGHT * Math.max(shownRows, 3) + 40 + 4;
 
   // Enter (or Ctrl+Enter) on a cell of the link column opens the record, as the link would.
   const onKeyDownCapture = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -286,6 +289,7 @@ export function ListGrid<R extends JsonObject>({
           rowHeight={ROW_HEIGHT}
           height={height}
           slots={slots}
+          labels={GRID_LABELS}
           layoutStorage={localStorageLayout("erpcraft.grid.")}
           onEdit={onEdit}
           toolbarExtra={toolbar}

@@ -15,7 +15,8 @@ import { FieldValue, Withheld } from "@/components/field-value";
 import { FormField } from "@/components/form-field";
 import { History } from "@/components/history";
 import { LINE_PICKERS } from "@/components/line-pickers";
-import { PageHeader, Tabs } from "@/components/page";
+import { PageHeader, Section, Tabs } from "@/components/page";
+import { RecordTree, treesLinkingTo } from "@/components/record-tree";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -695,6 +696,18 @@ function EntityForm({ entity, id, custom }: { entity: EntityMeta; id: string | n
         {original && isParty(entity.name) ? <PartyPanel partyType={entity.name} id={original.id} /> : null}
         {original && entity.name === EDI_MESSAGE ? <EdiProposalPanel messageId={original.id} /> : null}
         {original ? <AttachedRecords entity={entity} id={original.id} /> : null}
+        {original
+          ? treesLinkingTo(meta, entity).map(({ tree, field }) => (
+              <Section key={tree.name} title={t("tree.at", { label: tree.plural })}>
+                <RecordTree
+                  meta={meta}
+                  entity={tree}
+                  filters={{ [field.name]: original.id }}
+                  empty={t("tree.none_here", { label: tree.plural, record: entity.label })}
+                />
+              </Section>
+            ))
+          : null}
         {original && children.length > 0
           ? children.map((child) => (
               <ChildRecords key={child.name} parent={entity} parentId={original.id} child={child} />

@@ -669,11 +669,34 @@ const shots: Shot[] = [
     },
   },
   {
+    name: "61-payment-run",
+    path: async () => `${base}/d/payment_run/${await byMemo("payment_run", "Demo: pay what is due")}`,
+  },
+  {
+    name: "62-stock-transfer-in-transit",
+    path: async () => `${base}/d/stock_transfer/${await byMemo("stock_transfer", "Demo: gadgets to Dayton")}`,
+    height: 1100,
+  },
+  { name: "63-location-tree", path: `${base}/e/warehouse?view=tree` },
+  {
+    name: "64-site",
+    path: async () =>
+      `${base}/e/site/${asString((await first("entity.list", { entity: "site", filters: { company_id: companyId, code: "DAY" } })).id)}`,
+  },
+  { name: "65-delegations", path: `${base}/approvals?scope=delegations` },
+  {
     // Last of the company's pictures: it leaves a form with unsaved changes.
     name: "21-line-error",
     path: `${base}/d/purchase_order/${await doc("purchase_order", "draft")}`,
     act: async (browser) => {
-      await browser.fill('[aria-label="Quantity, line 1"]', "-4");
+      // The quantity of the first line, typed into its cell of the grid.
+      await browser.evaluate(
+        `(() => { const col = [...document.querySelectorAll("[data-grid-header] [role=columnheader]")].findIndex((h) => h.textContent.trim() === "Quantity"); const c = document.querySelector('[data-grid-body] [data-row="0"][data-col="' + col + '"]'); c?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); c?.focus(); })()`,
+      );
+      await browser.key("-");
+      await browser.insert("4");
+      // Tab, not Enter: Enter on the last line would add one.
+      await browser.key("Tab");
       await browser.click("Save");
     },
   },

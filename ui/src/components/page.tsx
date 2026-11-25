@@ -95,13 +95,24 @@ export function Tabs({ tabs, current }: { tabs: { id: string; label: string; to:
   );
 }
 
-export function Section({ title, children, aside }: { title: string; children: ReactNode; aside?: ReactNode }) {
+export function Section({
+  title,
+  children,
+  aside,
+}: {
+  /** Null where the content names itself (a grid with the title in its toolbar). */
+  title: string | null;
+  children: ReactNode;
+  aside?: ReactNode;
+}) {
   return (
     <section className="space-y-2">
-      <div className="flex items-center justify-between gap-2">
-        <h2 className="text-base font-semibold">{title}</h2>
-        {aside}
-      </div>
+      {title !== null || aside ? (
+        <div className="flex items-center justify-between gap-2">
+          {title !== null ? <h2 className="text-base font-semibold">{title}</h2> : null}
+          {aside}
+        </div>
+      ) : null}
       {children}
     </section>
   );

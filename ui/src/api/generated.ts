@@ -4,11 +4,11 @@
 /** Any JSON value. Used where a command's schema leaves a value open. */
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
-export type EntityName = "account" | "account_rule" | "asset" | "asset_class" | "asset_settings" | "bank_account_number" | "bank_csv_mapping" | "bom" | "bom_activity" | "bom_line" | "bom_operation" | "charge" | "company" | "cost_activity" | "cost_activity_rate" | "currency" | "customer" | "dimension" | "dimension_rule" | "dimension_set" | "dimension_value" | "edi_interchange" | "edi_item_xref" | "edi_location_xref" | "edi_message" | "edi_partner" | "edi_uom_xref" | "einvoice_import" | "exchange_rate" | "fiscal_period" | "gl_entry" | "intercompany_document" | "intercompany_party" | "intercompany_rule" | "item" | "payment_terms" | "payment_terms_instalment" | "payment_terms_step" | "policy_rule" | "print_template" | "purchasing_settings" | "reorder_rule" | "role" | "sales_settings" | "site" | "sso_provider" | "stock_entry" | "tax_code" | "tax_code_component" | "tax_rule" | "tax_settings" | "user" | "vendor" | "warehouse" | "webhook" | "work_center";
+export type EntityName = "account" | "account_rule" | "asset" | "asset_class" | "asset_settings" | "bank_account_number" | "bank_csv_mapping" | "bom" | "bom_activity" | "bom_line" | "bom_operation" | "charge" | "company" | "consolidation_group" | "consolidation_member" | "cost_activity" | "cost_activity_rate" | "currency" | "customer" | "dimension" | "dimension_rule" | "dimension_set" | "dimension_value" | "edi_interchange" | "edi_item_xref" | "edi_location_xref" | "edi_message" | "edi_partner" | "edi_settings" | "edi_uom_xref" | "einvoice_import" | "exchange_rate" | "fiscal_period" | "gl_entry" | "intercompany_document" | "intercompany_party" | "intercompany_rule" | "item" | "party_bank_account" | "payment_hold" | "payment_terms" | "payment_terms_instalment" | "payment_terms_step" | "policy_rule" | "print_template" | "purchasing_settings" | "reorder_rule" | "role" | "sales_settings" | "site" | "sso_provider" | "stock_entry" | "tax_area" | "tax_code" | "tax_code_component" | "tax_exemption" | "tax_registration" | "tax_rule" | "tax_settings" | "user" | "vendor" | "warehouse" | "webhook" | "work_center";
 
-export type DocTypeName = "asset_disposal" | "bank_statement" | "depreciation_run" | "fx_revaluation" | "journal_entry" | "payment" | "production_order" | "purchase_order" | "purchase_receipt" | "purchase_return" | "sales_credit" | "sales_credit_note" | "sales_delivery" | "sales_invoice" | "sales_order" | "sales_return" | "stock_adjustment" | "stock_transfer" | "stock_transfer_receipt" | "vendor_credit" | "vendor_credit_note" | "vendor_invoice" | "year_end_close";
+export type DocTypeName = "asset_disposal" | "bank_statement" | "depreciation_run" | "fx_revaluation" | "journal_entry" | "payment" | "payment_run" | "production_order" | "purchase_order" | "purchase_receipt" | "purchase_return" | "sales_credit" | "sales_credit_note" | "sales_delivery" | "sales_invoice" | "sales_order" | "sales_return" | "stock_adjustment" | "stock_transfer" | "stock_transfer_receipt" | "vendor_credit" | "vendor_credit_note" | "vendor_invoice" | "year_end_close";
 
-export type ModuleName = "accounting" | "assets" | "auth" | "banking" | "edi" | "einvoice" | "gl" | "intercompany" | "inventory" | "kernel" | "mail" | "manufacturing" | "open_items" | "party" | "payments" | "planning" | "printing" | "purchasing" | "sales" | "setup" | "stock" | "tax" | "webhooks";
+export type ModuleName = "accounting" | "assets" | "auth" | "banking" | "edi" | "einvoice" | "gl" | "intercompany" | "inventory" | "kernel" | "mail" | "manufacturing" | "open_items" | "party" | "payment_runs" | "payments" | "planning" | "printing" | "purchasing" | "sales" | "setup" | "stock" | "tax" | "webhooks";
 
 /**
  * Approve a pending request. Its requester never can. When as many distinct people as the rule asks have approved, the command runs, once, as the person who asked, with exactly the input they gave, and its result is kept on the request. If what it was about has changed since it was asked for, it does not run and the request is stale.
@@ -40,7 +40,7 @@ export type ApprovalDelegateInput = {
 export type ApprovalDelegationsInput = Record<string, never>;
 
 /**
- * End a delegation of the caller's approvals today; one that has not started is ended before it starts. Decisions already made in their place stand.
+ * End a delegation of the caller's approvals now; one that has not started never will. The delegation stays on record, marked ended. Decisions already made in their place stand. Days are UTC days.
  */
 export type ApprovalEndDelegationInput = {
   /** The delegation. */
@@ -341,7 +341,7 @@ export type CompanyLogoRemoveInput = {
 };
 
 /**
- * Upload the company's logo, printed on its letterhead: a PNG or JPEG of at most 512 KiB, in base64. It replaces the one before. Takes the right to change the company.
+ * Upload the company's logo, printed on its letterhead: a PNG or JPEG of at most 512 KiB and 4096 pixels across and down, in base64. It replaces the one before. What it returns, and what the record of the change keeps, is the image's size and SHA-256, not the image. Takes the right to change the company.
  */
 export type CompanyLogoSetInput = {
   /** The company. */
@@ -370,6 +370,10 @@ export type CompanySetupInput = {
   first_year: number;
   /** The new company's name. */
   name: string;
+  /** `monthly` (the default): each fiscal year is opened as twelve
+   * periods, named YYYY-MM, so that a month can be closed on its own;
+   * `yearly`: one period per fiscal year. */
+  periods?: "monthly" | "yearly";
   /** The month the fiscal year starts in, 1 to 12. The template's when
    * omitted (January in the built-in templates). */
   start_month?: number | null;
@@ -377,6 +381,28 @@ export type CompanySetupInput = {
   template: string;
   /** How many fiscal years to open, 1 to 5. 1 when omitted. */
   years?: number | null;
+};
+
+/**
+ * Consolidated financial statements of a group of companies of this database, in the group's reporting currency: each member's accounts, added up by account code, translated by the current rate method (assets and liabilities at the closing rate of `to`, income and expenses of the period at the average rate of its days, equity and older results at the rate of each entry's day), with the currency translation adjustment in equity; intercompany open balances at `to` and intercompany revenue of the period eliminated per intercompany rule between members, each with its two sides and their difference. A report only: nothing is posted. `rates` overrides the closing and average rate of a currency. Takes the right to read ledger entries in every member.
+ */
+export type ConsolidationReportInput = {
+  /** First day of the period of the income statement. */
+  from: string;
+  /** The consolidation group. */
+  group_id: string;
+  /** Rates to use instead of those on record, per currency. */
+  rates?: Array<{
+    /** The same over the period, for income and expenses. */
+    average?: string | number | null;
+    /** Reporting-currency units per unit of `currency` at `to`, for assets
+     * and liabilities. */
+    closing?: string | number | null;
+    /** A member's accounting currency. */
+    currency: string;
+  }>;
+  /** Last day of the period, and the day of the balance sheet. */
+  to: string;
 };
 
 /**
@@ -479,7 +505,7 @@ export type DocumentListInput = {
 };
 
 /**
- * The emails a document was sent with: to whom, the subject and text, who sent it, when it left, the Message-ID, and whether it is still waiting or was given up. Takes the right to read the document.
+ * The emails a document was sent with: to whom, the subject and text, who sent it, when it left, the Message-ID, and whether it is still waiting or was given up. The server's own answer to a failure shows only to someone who may change the company. Takes the right to read the document.
  */
 export type DocumentMessagesInput = {
   /** Document type. */
@@ -535,7 +561,7 @@ export type DocumentRenderPdfInput = {
 };
 
 /**
- * Send a document by email as a PDF (the one document.render_pdf makes), to the contact email its party has on record unless other addresses are given, through the company's SMTP server (smtp_settings.set). The message is recorded on the document and leaves once the command commits; the outbox tries again while the server cannot be reached. The company's policy document.send decides who may send what; by default a draft is not sent. Takes the right to read the document.
+ * Send a document by email as a PDF (the one document.render_pdf makes), to the contact email its party has on record unless other addresses are given, through the company's SMTP server (smtp_settings.set). The message is recorded on the document and leaves once the command commits; the outbox tries again while the server cannot be reached. The company's policy document.send decides who may send what; by default a draft is not sent, and a document goes only to its party's addresses on record. Takes the right <doc_type>:send, such as sales_invoice:send, besides the right to read the document.
  */
 export type DocumentSendInput = {
   /** Addresses it is copied to. */
@@ -598,6 +624,72 @@ export type EdiInterchangeMarkSentInput = {
 };
 
 /**
+ * Send a message again: the same bytes with the same control numbers, so the partner's own duplicate check works. Its interchange is ready to send once more. A corrected message is not a resend: make a new one with edi.generate.
+ */
+export type EdiMessageResendInput = {
+  /** A message sent. */
+  id: string;
+};
+
+/**
+ * Pack a delivery one carton per case of the partner's unit (a case of 6 is one carton of 6), for goods that ship in their own cases. Refused for a line that is no whole number of cases: pack that one with edi_shipment.pack.
+ */
+export type EdiShipmentAutoPackInput = {
+  /** A sales delivery for an order that came by EDI. */
+  delivery_id: string;
+};
+
+/**
+ * Record how a delivery to an EDI partner is packed: the carrier and its papers, the pallets and the cartons on them, and which delivery line's goods are in which carton. Each pallet and carton gets an SSCC from the company's GS1 prefix (edi_settings), never issued twice. Packing again replaces what was recorded; the old SSCCs are not reused. The shipment is packed when its cartons hold exactly what the delivery delivers.
+ */
+export type EdiShipmentPackInput = {
+  /** The bill of lading number. */
+  bill_of_lading?: string | null;
+  /** The carrier's name. */
+  carrier_name?: string | null;
+  /** The carrier's SCAC, two to four capitals. */
+  carrier_scac?: string | null;
+  /** A sales delivery for an order that came by EDI. */
+  delivery_id: string;
+  /** When the carrier expects to deliver. */
+  estimated_delivery?: string | null;
+  /** The shipment's gross weight. */
+  gross_weight?: string | number | null;
+  /** The pallets and cartons, in order. Each gets an SSCC. */
+  packs: Array<{
+    /** `pallet` or `carton`. */
+    kind: "pallet" | "carton";
+    /** What a carton holds; a pallet holds cartons and has none. */
+    lines?: Array<{
+      /** A line of the delivery. */
+      delivery_line_id: string;
+      /** How much of it is in this carton, in the item's own unit. */
+      qty: string | number;
+    }>;
+    /** For a carton on a pallet: the pallet's place in `packs`, from 1. */
+    parent?: number | null;
+    /** The pack's weight. */
+    weight?: string | number | null;
+  }>;
+  /** The service level. */
+  service?: string | null;
+  /** When the goods leave. */
+  shipped_at?: string | null;
+  /** The carrier's PRO or tracking number. */
+  tracking?: string | null;
+  /** The weight's unit, such as LB or KG. */
+  weight_uom?: string | null;
+};
+
+/**
+ * Ship a packed delivery to an EDI partner: check that its cartons hold exactly what it delivers, post it with sales_delivery.post (every check of a delivery applies), and make its ship notice (856), all in one transaction. If anything fails, nothing is posted.
+ */
+export type EdiShipmentShipInput = {
+  /** A sales delivery for an order that came by EDI. */
+  delivery_id: string;
+};
+
+/**
  * End a message received that nobody will draft, saying why. It stays on record with its bytes.
  */
 export type EdiDismissInput = {
@@ -614,6 +706,10 @@ export type EdiDraftInput = {
   /** The proposal's notes were read: draft anyway. They are written into
    * the draft's memo. */
   accept_notes?: boolean;
+  /** Drafted by automation as the partner's run-as user: the policy
+   * edi.auto_draft decides instead of accept_notes, and edi.auto_approve
+   * whether the draft is approved at once. */
+  automatic?: boolean;
   /** The item for a line, by the partner's line id (PO101), where the
    * proposal found none or the wrong one. */
   items?: {
@@ -644,6 +740,37 @@ export type EdiExplainInput = {
   content?: string | null;
   /** A message on record: its set is explained. */
   message_id?: string | null;
+};
+
+/**
+ * Make the message a partner is owed for a document: the 855 for an approved sales order, the 856 for a posted and packed delivery, the 810 for a posted invoice or credit note. It quotes the partner's order number, line ids, item numbers and units as they were received. It is read back and checked against the books (the quantities of the delivery, the invoice's total to the cent); one that fails is kept as invalid with what is wrong, and no bytes are fixed for it. Otherwise its control numbers are taken and its bytes stored, ready to send. A message rejected by the partner is replaced by a new one. The policies edi.send and edi_invoice.before_asn decide whether it may go.
+ */
+export type EdiGenerateInput = {
+  /** `sales_order` for an 855, `sales_delivery` for an 856,
+   * `sales_invoice` or `sales_credit_note` for an 810. */
+  doc_type: string;
+  /** The approved order or posted document. */
+  id: string;
+  /** `855`, `856` or `810`. */
+  message: string;
+  /** Show the message and what is wrong with it; store nothing. */
+  preview?: boolean;
+};
+
+/**
+ * The GS1-128 label of a pallet or carton: its SSCC, where it goes, the carrier, the partner's order number, which carton of how many, and the label as ZPL for a label printer.
+ */
+export type EdiLabelInput = {
+  /** A pallet or carton. */
+  pack_id: string;
+};
+
+/**
+ * What EDI waits for somebody on: orders received and not drafted, messages to send that failed their checks, messages the partner rejected, messages sent and not acknowledged within the partner's hours, messages ready and not sent, and deliveries of EDI orders posted without a ship notice.
+ */
+export type EdiPendingInput = {
+  /** The company. */
+  company_id: string;
 };
 
 /**
@@ -849,6 +976,14 @@ export type FiscalPeriodReopenInput = {
 };
 
 /**
+ * Divide an open fiscal period, such as a fiscal year, into one period per month (named YYYY-MM), so that each month can be closed on its own. Entries already posted stay in the months whose dates contain them. Refused for a closed period, one of a single month, and one a year-end close refers to. A year-end close of the divided year names its first month as `first_period_id`.
+ */
+export type FiscalPeriodSplitMonthsInput = {
+  /** The fiscal period to divide: a fiscal year, usually. */
+  id: string;
+};
+
+/**
  * Revalue, as of the revaluation's date, every payable and receivable still open in a currency other than the accounting currency at the rate on record for that day. The difference from what each item is carried at is posted to its payables or receivables account against unrealized exchange gain or loss (the accounts for fx_unrealized_gain and fx_unrealized_loss, else fx_gain and fx_loss). The revaluation is reversed the next day at once when that day's period is open; otherwise reverse it with fx_revaluation.reverse once it is.
  */
 export type FxRevaluationPostInput = {
@@ -1013,8 +1148,12 @@ export type OpenItemAgingInput = {
  * What a company owes its vendors (payables) and is owed by its customers (receivables), invoice by invoice, oldest first, with the amount still open on each and the document it came from (left out when the caller may not read that document). Use the item ids to allocate a payment.
  */
 export type OpenItemListInput = {
-  /** The day `overdue_min` and `overdue_max` count from. Today when
-   * omitted. What is open is still what is open now. */
+  /** The items as they were at the end of this day: those posted by then,
+   * with what was open of each then (settlements and parts as postings
+   * dated on or before it left them, so an item paid later is listed as
+   * open), and what it was carried at with the revaluations standing that
+   * day. `overdue_min` and `overdue_max` count from it too. Omitted: what
+   * is open now, overdue counted from today. */
   as_of?: string | null;
   /** The company to report on. */
   company_id: string;
@@ -1152,6 +1291,58 @@ export type PartySetInput = {
     /** As the authority writes it, such as DE123456789. */
     value: string;
   }> | null;
+};
+
+/**
+ * Approve a reviewed payment run, asking the policy payment_run.approve (facts: total, count of payments, lines, currency). The run is then locked, ready to post.
+ */
+export type PaymentRunApproveInput = {
+  /** Payment run id. */
+  id: string;
+};
+
+/**
+ * The bank file of a posted payment run, one credit per payment, to hand to the bank (nothing is sent): `sepa`, an ISO 20022 pain.001.001.09 SEPA credit transfer in EUR from the bank account's IBAN and BIC to each vendor's default bank account; `nacha`, a NACHA ACH file of CCD (or PPD) credits in USD from the bank account's routing number and ACH company ID to each vendor's routing and account number. The invoices' references go with each credit. Takes the right to read the run and vendors' bank accounts.
+ */
+export type PaymentRunBankFileInput = {
+  /** `sepa` or `nacha`. */
+  format: "sepa" | "nacha";
+  /** Payment run id. */
+  id: string;
+  /** For NACHA: the standard entry class, `CCD` (the default) or `PPD`. */
+  sec_code?: "CCD" | "PPD";
+};
+
+/**
+ * Cancel a payment run that is not posted: its items can be proposed again.
+ */
+export type PaymentRunCancelInput = {
+  /** Payment run id. */
+  id: string;
+};
+
+/**
+ * Pay an approved payment run: one outgoing payment per vendor through the run's bank account, dated the run's date, with its lines' amounts and discounts, drafted and posted with payment.post, so the payments module's rights, checks and policies hold for each. All or nothing. Each payment is linked to the run.
+ */
+export type PaymentRunPostInput = {
+  /** Payment run id. */
+  id: string;
+};
+
+/**
+ * Fill a draft payment run with what is due: every vendor open item in the run's currency due by `due_by`, or (with take_discounts) offering an early-payment discount still open on the pay date, which is then taken; net of the vendor's credits in that currency. Held vendors and items (payment_hold), items on another run that is not cancelled, and vendors whose items come to nothing or less are left out. Replaces the run's lines; review them, then approve.
+ */
+export type PaymentRunProposeInput = {
+  /** Payment run id. */
+  id: string;
+};
+
+/**
+ * Send the remittance advice of a posted payment run: each payment by email to its vendor with document.send (the payment's PDF lists the invoices it pays), to the contact email the vendor has on record. A vendor without one is listed as skipped. Takes the right to send documents.
+ */
+export type PaymentRunSendRemittancesInput = {
+  /** Payment run id. */
+  id: string;
 };
 
 /**
@@ -1667,8 +1858,9 @@ export type SmtpSettingsSetInput = {
   from_name?: string | null;
   /** The SMTP server, such as smtp.example.com. */
   host: string;
-  /** The password. Kept, never returned. Left out: the one on record
-   * stays; empty: none. */
+  /** The password. Kept as given, never returned. Left out: the one on
+   * record stays, unless the host, port, user or security changes,
+   * which clears it; empty: none. */
   password?: string | null;
   /** 587 for STARTTLS, 465 for TLS; the usual one for the security when
    * omitted. */
@@ -1960,7 +2152,7 @@ export type StockOnHandInput = {
 };
 
 /**
- * Stock on hand set aside for lines of open sales orders and released production orders, per order line: what each holds now. An order reserves what free stock covers when it is approved or released, holds less as its goods leave, and lets go when it is done, cancelled or closed.
+ * Stock on hand set aside for lines of open sales orders and released production orders, per order line: what each holds now. An order reserves what free stock covers when it is approved or released, holds less as its goods leave, and lets go when it is done, cancelled or closed; when other movements leave less on hand than is reserved, the latest reservations are cut back first. The order and its number are shown only to someone who may read that kind of order. Paged: limit (50, at most 500) and offset.
  */
 export type StockReservationsInput = {
   /** The company whose reservations are listed. */
@@ -1969,14 +2161,65 @@ export type StockReservationsInput = {
   document_id?: string | null;
   /** Only this item. */
   item_id?: string | null;
+  /** At most this many rows: 50 by default, 500 at most. */
+  limit?: number | null;
+  /** How many rows to skip first, for the next page. */
+  offset?: number | null;
   /** Only this warehouse. */
   warehouse_id?: string | null;
 };
 
 /**
- * Tax by code for a company over a range of posting dates: the net amount taxed and the tax, separately for tax collected from customers and tax paid to vendors. Reversals count in the period they were posted in. This is the raw material for a tax return, not the return of any country.
+ * Import a rate table: which tax codes are charged where. One CSV row per jurisdiction of an area (country, region, post code range, city, from a date); the rows of one area, in order, become a group of their codes. A code is created where it does not exist and refused where it exists at another rate (a rate change is a new code). An open area of the same place that started earlier ends the day before a new one. Optionally gives a company's accounts to codes it has none for. Takes tax_area:import for all companies.
+ */
+export type TaxAreaImportInput = {
+  /** With the company: the account for tax collected on the new codes. */
+  collected_account_id?: string | null;
+  /** With both accounts: give each code that this company has no
+   * accounts for these. */
+  company_id?: string | null;
+  /** The rate table, CSV with a header: one row per jurisdiction of an
+   * area. Required columns `country`, `code`, `rate`; optional `region`,
+   * `postcode_from`, `postcode_to`, `city`, `valid_from`, `valid_to`,
+   * `name`, `authority`, `registration` (`region`, the default, or
+   * `country`) and `source`. */
+  csv: string;
+  /** With the company: the account for tax paid on the new codes. */
+  paid_account_id?: string | null;
+};
+
+/**
+ * Sales exempted under customers' exemption certificates over a range of posting dates: per certificate, the customer, its number, where it holds, the reason and the net amount exempted.
+ */
+export type TaxExemptionsInput = {
+  /** The company to report on. */
+  company_id: string;
+  /** First posting date to include. */
+  from: string;
+  /** Last posting date to include. */
+  to: string;
+};
+
+/**
+ * The EU One-Stop Shop return of a company for a quarter: per member state of consumption and rate, the base and the VAT of sales to consumers taxed there, and the corrections (credits and reversals posted in the quarter) of sales of earlier quarters. Needs a One-Stop Shop registration (tax_registration, scheme oss).
+ */
+export type TaxOssReportInput = {
+  /** The company registered for the One-Stop Shop. */
+  company_id: string;
+  /** 1 to 4. */
+  quarter: number;
+  /** The calendar year of the quarter. */
+  year: number;
+};
+
+/**
+ * Tax by code for a company over a range of posting dates: the net amount taxed and the tax, separately for tax collected from customers and tax paid to vendors. Reversals count in the period they were posted in. With by_place, a row per code and place the goods went to. This is the raw material for a tax return, not the return of any country.
  */
 export type TaxReportInput = {
+  /** A row per code and place (the country and region the goods went
+   * to, as the document kept them), as a US state's or a province's
+   * return needs. */
+  by_place?: boolean;
   /** The company to report on. */
   company_id: string;
   /** First posting date to include. */
@@ -2291,6 +2534,8 @@ export type DelegationView = {
   /** Who decides in their place. */
   delegate_id: string;
   delegate_name: string;
+  /** When it was ended, if it was: it counts no more. */
+  ended_at: string | null;
   ends_on: string;
   id: string;
   reason: string | null;
@@ -2475,8 +2720,12 @@ export type PostingView = {
       base: string | null;
       /** Tax code. */
       code: string | null;
+      /** Where the goods went, as the document kept it. */
+      country_code: string | null;
       /** `collected` or `paid`. */
       direction: string | null;
+      /** The exemption certificate the sale was exempt under. */
+      exemption_id: string | null;
       /** Entry id. */
       id: string | null;
       /** Position within the posting, from 1. */
@@ -2485,6 +2734,7 @@ export type PostingView = {
       name: string | null;
       /** Percent. */
       rate: string | null;
+      region: string | null;
       /** The document line the entry comes from. */
       source_line_id: string | null;
       tax_code_id: string | null;
@@ -2675,11 +2925,93 @@ export type UnmatchedLine = {
   unmatched: string;
 };
 
+export type FiscalYear = {
+  /** Its first period: the close's `first_period_id` (the same as the
+   * last for a yearly period). */
+  first_period_id: string;
+  /** Its last period: the close's `fiscal_period_id`. */
+  last_period_id: string;
+  /** FY2026, or FY2026/27 for a year that does not start in January. */
+  name: string;
+};
+
 export type RoleAccount = {
   /** The account's code. */
   code: string;
   /** The account's id. */
   id: string;
+};
+
+export type Row = {
+  code: string;
+  /** Translated plus eliminated. */
+  consolidated: string;
+  /** What eliminations take off (or put on), in the same direction. */
+  eliminated: string;
+  name: string;
+  /** The members' balances translated into the reporting currency,
+   * positive in the section's natural direction. */
+  translated: string;
+};
+
+export type Section = {
+  rows: Array<Row>;
+  total: string;
+};
+
+export type BalanceSheet = {
+  assets: Section;
+  /** What translation leaves: assets less liabilities beyond equity and
+   * results, all members. */
+  cta: string;
+  /** Equity accounts, then the currency translation adjustment and the
+   * intercompany difference as rows of their own. */
+  equity: Section;
+  /** What the members' open balances with each other differ by. */
+  intercompany_difference: string;
+  liabilities: Section;
+  /** Income less expenses not closed to equity, translated. */
+  net_income: string;
+  total_assets: string;
+  /** Liabilities, equity and net income: equal to total_assets. */
+  total_liabilities_and_equity: string;
+};
+
+export type Elimination = {
+  /** The buyer's side in the reporting currency. */
+  buyer_amount: string;
+  buyer_code: string;
+  /** Seller's side less buyer's side. */
+  difference: string;
+  /** Balances: both sides are taken out in full, each from its own
+   * account; this is the part they agree on. Trading: the seller's
+   * revenue, taken off income and off expenses alike. */
+  eliminated: string;
+  /** `balance`: open receivables against open payables at `to`.
+   * `trading`: the seller's revenue against the buyer's purchases in the
+   * period. */
+  kind: string;
+  rule_id: string;
+  /** The seller's side in the reporting currency. */
+  seller_amount: string;
+  seller_code: string;
+};
+
+export type IncomeStatement = {
+  /** With a row "Intercompany cost eliminated". */
+  expenses: Section;
+  income: Section;
+  net_income: string;
+};
+
+export type Member = {
+  average_rate: string;
+  closing_rate: string;
+  code: string;
+  company_id: string;
+  /** The member's own translation adjustment, in the reporting currency. */
+  cta: string;
+  currency: string;
 };
 
 export type Document = {
@@ -2750,21 +3082,45 @@ export type PartyView = {
   vat_id: string | null;
 };
 
-export type ExplainedSegment = {
-  /** For a message, the position in its set (the ST is 1), as an
-   * acknowledgement names it; for a file, the place in the file. */
-  position: number;
-  /** What it says, in a sentence. */
-  says: string;
-  tag: string;
-  /** The segment as it stands in the file. */
-  text: string;
+export type InterchangeOut = {
+  company_id: string | null;
+  control: string | null;
+  direction: string;
+  error: string | null;
+  id: string;
+  partner_id: string | null;
+  sha256: string;
+  size: number;
+  state: string;
+  usage: string | null;
 };
 
-export type CustomerRef = {
-  code: string;
+export type MessageOut = {
+  ack_message_id: string | null;
+  /** The partner's order number. */
+  business_key: string | null;
+  control: string | null;
+  direction: string;
+  doc_type: string | null;
+  document_id: string | null;
+  /** `[{severity, code, line, message}]`. */
+  findings: Json;
+  group_control: string | null;
   id: string;
-  name: string;
+  /** None for a message to send that failed its checks. */
+  interchange_id: string | null;
+  message: string;
+  position: number | null;
+  state: string;
+};
+
+export type PackOut = {
+  id: string;
+  kind: string;
+  /** `[{delivery_line_id, qty}]`. */
+  lines: Json;
+  parent_id: string | null;
+  sscc: string;
 };
 
 export type Severity = "blocking" | "note";
@@ -2777,6 +3133,67 @@ export type Finding = {
   line: string | null;
   message: string;
   severity: Severity;
+};
+
+export type ExplainedSegment = {
+  /** For a message, the position in its set (the ST is 1), as an
+   * acknowledgement names it; for a file, the place in the file. */
+  position: number;
+  /** What it says, in a sentence. */
+  says: string;
+  tag: string;
+  /** The segment as it stands in the file. */
+  text: string;
+};
+
+export type Generated = {
+  findings: Array<Finding>;
+  /** The message on record; none for a preview. */
+  message: MessageOut | null;
+  /** The message's segments, each with what it says. */
+  segments: Array<ExplainedSegment>;
+  /** `ready`, or `invalid` with the findings that say why. */
+  state: string;
+  /** The message this one replaces. */
+  supersedes: string | null;
+};
+
+export type PendingDelivery = {
+  /** The delivery. */
+  delivery_id: string;
+  /** The delivery's date. */
+  doc_date: string;
+  /** The delivery's number. */
+  number: string | null;
+  /** The partner's order number. */
+  order_number: string;
+  /** Whether its packing is recorded and complete. */
+  packed: boolean;
+  /** The partner's code. */
+  partner_code: string;
+};
+
+export type PendingMessage = {
+  /** When the partner's acknowledgement was due. */
+  ack_due_at: string | null;
+  /** When it was received or made. */
+  created_at: string;
+  /** The message's kind, such as 850 or 810. */
+  message: string;
+  /** The message. */
+  message_id: string;
+  /** The partner's order number. */
+  order_number: string | null;
+  /** The partner's code. */
+  partner_code: string;
+  /** The message's state. */
+  state: string;
+};
+
+export type CustomerRef = {
+  code: string;
+  id: string;
+  name: string;
 };
 
 export type ProposedLine = {
@@ -2817,38 +3234,6 @@ export type ShipTo = {
   how: string;
   /** The ship-to as the order names it: role, name, qualifier and code. */
   sent: Json;
-};
-
-export type MessageOut = {
-  ack_message_id: string | null;
-  /** The partner's order number. */
-  business_key: string | null;
-  control: string | null;
-  direction: string;
-  doc_type: string | null;
-  document_id: string | null;
-  /** `[{severity, code, line, message}]`. */
-  findings: Json;
-  group_control: string | null;
-  id: string;
-  /** None for a message to send that failed its checks. */
-  interchange_id: string | null;
-  message: string;
-  position: number | null;
-  state: string;
-};
-
-export type InterchangeOut = {
-  company_id: string | null;
-  control: string | null;
-  direction: string;
-  error: string | null;
-  id: string;
-  partner_id: string | null;
-  sha256: string;
-  size: number;
-  state: string;
-  usage: string | null;
 };
 
 export type EinvoiceExportFinding = {
@@ -3138,7 +3523,7 @@ export type ReportRow = {
   name: string;
 };
 
-export type Section = {
+export type GlBalanceSheetSection = {
   rows: Array<ReportRow>;
   total: string;
 };
@@ -3151,6 +3536,11 @@ export type BalanceSheetGroup = {
   total_assets: string;
   total_equity: string;
   total_liabilities: string;
+};
+
+export type GlIncomeStatementSection = {
+  rows: Array<ReportRow>;
+  total: string;
 };
 
 export type IncomeStatementGroup = {
@@ -3654,6 +4044,10 @@ export type PartyAging = {
 export type ListedItem = {
   account_id: string;
   amount: string;
+  /** What the item is carried at in the accounting currency: what is open
+   * of it at the rates booked, plus the revaluations standing (on
+   * `as_of`, when given). What the ledger holds for it. */
+  carried: string;
   company_id: string;
   /** The currency of the document: what a payment settles it in. */
   currency: string;
@@ -3776,6 +4170,14 @@ export type TaxIdRecord = {
   scheme: string;
   /** As the authority writes it, such as DE123456789. */
   value: string;
+};
+
+export type Sent = {
+  /** The message recorded on the payment, when it was sent. */
+  message_id: string | null;
+  payment_id: string;
+  /** Why it was not sent, such as a vendor without an email address. */
+  skipped: string | null;
 };
 
 export type Suggestion = {
@@ -4023,16 +4425,46 @@ export type OnHandRow = {
 };
 
 export type ReservationRow = {
+  /** What kind of order it is set aside for. */
   doc_type: string;
-  /** The order it is set aside for, its type and number. */
-  document_id: string;
+  /** The order, its number and its line: only for a caller who may read
+   * that kind of order in the company. */
+  document_id: string | null;
   item_id: string;
-  /** The order's line. */
-  line_id: string;
+  line_id: string | null;
   number: string | null;
   qty: string;
   updated_at: string;
   warehouse_id: string;
+};
+
+export type ExemptionRow = {
+  /** Net sales exempted under it in the range (credits below zero). */
+  base: string;
+  certificate_number: string;
+  country_code: string;
+  customer_code: string;
+  customer_id: string;
+  exemption_id: string;
+  reason: string;
+  region: string | null;
+};
+
+export type OssCorrection = {
+  base: string;
+  country_code: string;
+  quarter: number;
+  vat: string;
+  /** The period corrected. */
+  year: number;
+};
+
+export type OssRow = {
+  base: string;
+  /** The member state of consumption. */
+  country_code: string;
+  rate: string;
+  vat: string;
 };
 
 export type TaxReportReportRow = {
@@ -4040,10 +4472,13 @@ export type TaxReportReportRow = {
   collected: string;
   /** Net sales taxed with this code, and the tax charged on them. */
   collected_base: string;
+  /** With `by_place`: where the goods went. */
+  country_code: string | null;
   name: string;
   paid: string;
   /** Net purchases taxed with this code, and the tax vendors charged. */
   paid_base: string;
+  region: string | null;
   tax_code_id: string;
 };
 
@@ -4144,6 +4579,8 @@ export type ApprovalDelegateOutput = {
   /** Who decides in their place. */
   delegate_id: string;
   delegate_name: string;
+  /** When it was ended, if it was: it counts no more. */
+  ended_at: string | null;
   ends_on: string;
   id: string;
   reason: string | null;
@@ -4163,6 +4600,8 @@ export type ApprovalEndDelegationOutput = {
   /** Who decides in their place. */
   delegate_id: string;
   delegate_name: string;
+  /** When it was ended, if it was: it counts no more. */
+  ended_at: string | null;
   ends_on: string;
   id: string;
   reason: string | null;
@@ -4508,6 +4947,9 @@ export type CompanyLogoGetOutput = {
   content_type: string | null;
   /** The image in base64; absent when the company has no logo. */
   data: string | null;
+  /** Its SHA-256, in hex: what the record of a change keeps, rather than
+   * the image. */
+  sha256: string | null;
   /** Its size in bytes. */
   size: number | null;
 };
@@ -4518,6 +4960,9 @@ export type CompanyLogoRemoveOutput = {
   content_type: string | null;
   /** The image in base64; absent when the company has no logo. */
   data: string | null;
+  /** Its SHA-256, in hex: what the record of a change keeps, rather than
+   * the image. */
+  sha256: string | null;
   /** Its size in bytes. */
   size: number | null;
 };
@@ -4528,6 +4973,9 @@ export type CompanyLogoSetOutput = {
   content_type: string | null;
   /** The image in base64; absent when the company has no logo. */
   data: string | null;
+  /** Its SHA-256, in hex: what the record of a change keeps, rather than
+   * the image. */
+  sha256: string | null;
   /** Its size in bytes. */
   size: number | null;
 };
@@ -4539,8 +4987,10 @@ export type CompanySetupOutput = {
   asset_classes: Array<string>;
   /** The company as created. */
   company: Json;
-  /** The fiscal periods opened, by name. */
+  /** The fiscal periods opened, by name: 2026-01 … 2026-12, or FY2026. */
   fiscal_periods: Array<string>;
+  /** The fiscal years, each with its first and last period. */
+  fiscal_years: Array<FiscalYear>;
   /** What was not set up, and why: a module that is not installed. */
   notes: Array<string>;
   /** Which account does which job: role, then the account's code and id. */
@@ -4553,6 +5003,17 @@ export type CompanySetupOutput = {
   template: string;
   /** The warehouse created, if the template has one. */
   warehouse_id: string | null;
+};
+
+export type ConsolidationReportOutput = {
+  balance_sheet: BalanceSheet;
+  currency: string;
+  eliminations: Array<Elimination>;
+  from: string;
+  group_id: string;
+  income_statement: IncomeStatement;
+  members: Array<Member>;
+  to: string;
 };
 
 export type DepreciationRunPostOutput = {
@@ -4792,6 +5253,36 @@ export type EdiInterchangeMarkSentOutput = {
   usage: string | null;
 };
 
+export type EdiMessageResendOutput = {
+  interchange: InterchangeOut;
+  message: MessageOut;
+};
+
+export type EdiShipmentAutoPackOutput = {
+  delivery_id: string;
+  /** What keeps the shipment from being packed, in sentences. */
+  missing: Array<string>;
+  packs: Array<PackOut>;
+  /** `packed` when the cartons hold exactly what the delivery delivers. */
+  state: string;
+};
+
+export type EdiShipmentPackOutput = {
+  delivery_id: string;
+  /** What keeps the shipment from being packed, in sentences. */
+  missing: Array<string>;
+  packs: Array<PackOut>;
+  /** `packed` when the cartons hold exactly what the delivery delivers. */
+  state: string;
+};
+
+export type EdiShipmentShipOutput = {
+  /** The delivery as `sales_delivery.post` returned it. */
+  delivery: Json;
+  /** The ship notice made for it. */
+  notice: Generated;
+};
+
 export type EdiDismissOutput = {
   id: string;
   reason: string;
@@ -4828,6 +5319,56 @@ export type EdiDraftOutput = {
 
 export type EdiExplainOutput = {
   segments: Array<ExplainedSegment>;
+};
+
+export type EdiGenerateOutput = {
+  findings: Array<Finding>;
+  /** The message on record; none for a preview. */
+  message: MessageOut | null;
+  /** The message's segments, each with what it says. */
+  segments: Array<ExplainedSegment>;
+  /** `ready`, or `invalid` with the findings that say why. */
+  state: string;
+  /** The message this one replaces. */
+  supersedes: string | null;
+};
+
+export type EdiLabelOutput = {
+  bill_of_lading: string | null;
+  carrier: string | null;
+  /** What the barcode carries in human-readable form: `(00)` and the
+   * SSCC. */
+  element_string: string;
+  kind: string;
+  /** This pack's place among the delivery's packs of its kind, and how
+   * many there are. */
+  number: number;
+  of: number;
+  /** The partner's order number. */
+  order_number: string;
+  pack_id: string;
+  ship_from: string | null;
+  /** The ship-to as the partner's order named it. */
+  ship_to: Array<string>;
+  /** The eighteen digits. */
+  sscc: string;
+  /** The label for a ZPL printer, 4 by 6 inches at 203 dpi. */
+  zpl: string;
+};
+
+export type EdiPendingOutput = {
+  /** Deliveries of EDI orders posted with no ship notice made. */
+  deliveries_without_notice: Array<PendingDelivery>;
+  /** Messages to send that failed their checks. */
+  invalid: Array<PendingMessage>;
+  /** Messages sent and not acknowledged in the partner's hours. */
+  overdue: Array<PendingMessage>;
+  /** Orders received and not yet drafted or dismissed. */
+  proposals: Array<PendingMessage>;
+  /** Ready to send, waiting for someone to send them. */
+  ready: Array<PendingMessage>;
+  /** Messages the partner rejected and nothing has replaced. */
+  rejected: Array<PendingMessage>;
 };
 
 export type EdiProposalOutput = {
@@ -4972,6 +5513,8 @@ export type FiscalPeriodCloseOutput = Json;
 
 export type FiscalPeriodReopenOutput = Json;
 
+export type FiscalPeriodSplitMonthsOutput = Json;
+
 export type FxRevaluationPostOutput = {
   /** The content the document's type defines. See the fields and
    * collections of the type in `meta.describe`. */
@@ -5053,15 +5596,15 @@ export type GlAccountLedgerOutput = {
 export type GlBalanceSheetOutput = {
   as_of: string | null;
   /** Balances are debit minus credit. */
-  assets: Section;
+  assets: GlBalanceSheetSection;
   company_id: string;
   currency: string;
   /** Balances are credit minus debit. */
-  equity: Section;
+  equity: GlBalanceSheetSection;
   /** With `group_by_dimension_id`: the totals of each value. */
   groups: Array<BalanceSheetGroup>;
   /** Balances are credit minus debit. */
-  liabilities: Section;
+  liabilities: GlBalanceSheetSection;
   /** Income minus expenses over all entries up to `as_of`, closing
    * entries included: the result that has not been closed to an equity
    * account. A closed year adds nothing to it. */
@@ -5077,12 +5620,12 @@ export type GlIncomeStatementOutput = {
   company_id: string;
   currency: string;
   /** Balances are debit minus credit. */
-  expenses: Section;
+  expenses: GlIncomeStatementSection;
   from: string;
   /** With `group_by_dimension_id`: the totals of each value. */
   groups: Array<IncomeStatementGroup>;
   /** Balances are credit minus debit. */
-  income: Section;
+  income: GlIncomeStatementSection;
   /** Total income minus total expenses. */
   net_income: string;
   to: string;
@@ -5238,7 +5781,10 @@ export type OpenItemListOutput = {
   items: Array<ListedItem>;
   /** How many items match. */
   total: number;
-  /** What all matching items still owe, together. */
+  /** What they are carried at with revaluations standing: the balance of
+   * their accounts in the ledger (on `as_of`, when given). */
+  total_carried: string;
+  /** What all matching items still owe, together, at the rates booked. */
   total_open: string;
 };
 
@@ -5265,6 +5811,134 @@ export type PartySetOutput = {
   party_type: string;
   profile: Profile | null;
   tax_ids: Array<TaxIdRecord>;
+};
+
+export type PaymentRunApproveOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
+};
+
+export type PaymentRunBankFileOutput = {
+  /** The file, as text. */
+  content: string;
+  content_type: string;
+  /** Credits in the file. */
+  count: number;
+  currency: string;
+  file_name: string;
+  total: string;
+};
+
+export type PaymentRunCancelOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
+};
+
+export type PaymentRunPostOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
+};
+
+export type PaymentRunProposeOutput = {
+  /** The content the document's type defines. See the fields and
+   * collections of the type in `meta.describe`. */
+  body: Json;
+  company_id: string;
+  created_at: string;
+  created_by: string;
+  /** The name of the user who created the document, for whoever may
+   * read the document. Present where a document is read or listed. */
+  created_by_name: string | null;
+  doc_date: string;
+  doc_type: string;
+  id: string;
+  /** Only the linked documents the reader may read. */
+  links: Array<LinkedDocument>;
+  locked: boolean;
+  memo: string | null;
+  number: string | null;
+  postings: Array<PostingView>;
+  status: string;
+  /** The figures the document's type keeps with every document: see
+   * `summary` of the type in `meta.describe`. A figure that is not
+   * known yet, such as a value that posting sets, is null. */
+  summary: Json;
+  updated_at: string;
+  version: number;
+};
+
+export type PaymentRunSendRemittancesOutput = {
+  id: string;
+  sent: Array<Sent>;
 };
 
 export type PaymentApplyCreditOutput = {
@@ -6707,6 +7381,44 @@ export type StockOnHandOutput = {
 export type StockReservationsOutput = {
   company_id: string;
   rows: Array<ReservationRow>;
+  /** How many reservations match, whatever the page. */
+  total: number;
+};
+
+export type TaxAreaImportOutput = {
+  areas_created: number;
+  /** Open areas of the same place that started earlier, ended the day
+   * before a new one. */
+  areas_ended: number;
+  areas_unchanged: number;
+  codes_created: number;
+  groups_created: number;
+  settings_created: number;
+};
+
+export type TaxExemptionsOutput = {
+  company_id: string;
+  from: string;
+  rows: Array<ExemptionRow>;
+  to: string;
+  total_base: string;
+};
+
+export type TaxOssReportOutput = {
+  company_id: string;
+  /** Credits and reversals posted in the quarter of sales of earlier
+   * quarters. */
+  corrections: Array<OssCorrection>;
+  /** The member state of identification. */
+  country_code: string;
+  currency: string;
+  from: string;
+  /** Sales to consumers taxed in each member state of consumption, by
+   * rate, in the quarter. */
+  rows: Array<OssRow>;
+  to: string;
+  total_base: string;
+  total_vat: string;
 };
 
 export type TaxReportOutput = {
@@ -7134,6 +7846,7 @@ export interface CommandOutputs {
   "company_logo.remove": CompanyLogoRemoveOutput;
   "company_logo.set": CompanyLogoSetOutput;
   "company.setup": CompanySetupOutput;
+  "consolidation.report": ConsolidationReportOutput;
   "depreciation_run.post": DepreciationRunPostOutput;
   "depreciation_run.reverse": DepreciationRunReverseOutput;
   "document.create": DocumentCreateOutput;
@@ -7149,9 +7862,16 @@ export interface CommandOutputs {
   "document.update": DocumentUpdateOutput;
   "edi_interchange.content": EdiInterchangeContentOutput;
   "edi_interchange.mark_sent": EdiInterchangeMarkSentOutput;
+  "edi_message.resend": EdiMessageResendOutput;
+  "edi_shipment.auto_pack": EdiShipmentAutoPackOutput;
+  "edi_shipment.pack": EdiShipmentPackOutput;
+  "edi_shipment.ship": EdiShipmentShipOutput;
   "edi.dismiss": EdiDismissOutput;
   "edi.draft": EdiDraftOutput;
   "edi.explain": EdiExplainOutput;
+  "edi.generate": EdiGenerateOutput;
+  "edi.label": EdiLabelOutput;
+  "edi.pending": EdiPendingOutput;
   "edi.proposal": EdiProposalOutput;
   "edi.receive": EdiReceiveOutput;
   "einvoice.export": EinvoiceExportOutput;
@@ -7165,6 +7885,7 @@ export interface CommandOutputs {
   "entity.update": EntityUpdateOutput;
   "fiscal_period.close": FiscalPeriodCloseOutput;
   "fiscal_period.reopen": FiscalPeriodReopenOutput;
+  "fiscal_period.split_months": FiscalPeriodSplitMonthsOutput;
   "fx_revaluation.post": FxRevaluationPostOutput;
   "fx_revaluation.reverse": FxRevaluationReverseOutput;
   "gl.account_ledger": GlAccountLedgerOutput;
@@ -7181,6 +7902,12 @@ export interface CommandOutputs {
   "outbox.list": OutboxListOutput;
   "party.get": PartyGetOutput;
   "party.set": PartySetOutput;
+  "payment_run.approve": PaymentRunApproveOutput;
+  "payment_run.bank_file": PaymentRunBankFileOutput;
+  "payment_run.cancel": PaymentRunCancelOutput;
+  "payment_run.post": PaymentRunPostOutput;
+  "payment_run.propose": PaymentRunProposeOutput;
+  "payment_run.send_remittances": PaymentRunSendRemittancesOutput;
   "payment.apply_credit": PaymentApplyCreditOutput;
   "payment.draft": PaymentDraftOutput;
   "payment.post": PaymentPostOutput;
@@ -7249,6 +7976,9 @@ export interface CommandOutputs {
   "stock.availability": StockAvailabilityOutput;
   "stock.on_hand": StockOnHandOutput;
   "stock.reservations": StockReservationsOutput;
+  "tax_area.import": TaxAreaImportOutput;
+  "tax.exemptions": TaxExemptionsOutput;
+  "tax.oss_report": TaxOssReportOutput;
   "tax.report": TaxReportOutput;
   "user.activate": UserActivateOutput;
   "user.assign_role": UserAssignRoleOutput;
@@ -7307,6 +8037,7 @@ export interface CommandInputs {
   "company_logo.remove": CompanyLogoRemoveInput;
   "company_logo.set": CompanyLogoSetInput;
   "company.setup": CompanySetupInput;
+  "consolidation.report": ConsolidationReportInput;
   "depreciation_run.post": DepreciationRunPostInput;
   "depreciation_run.reverse": DepreciationRunReverseInput;
   "document.create": DocumentCreateInput;
@@ -7322,9 +8053,16 @@ export interface CommandInputs {
   "document.update": DocumentUpdateInput;
   "edi_interchange.content": EdiInterchangeContentInput;
   "edi_interchange.mark_sent": EdiInterchangeMarkSentInput;
+  "edi_message.resend": EdiMessageResendInput;
+  "edi_shipment.auto_pack": EdiShipmentAutoPackInput;
+  "edi_shipment.pack": EdiShipmentPackInput;
+  "edi_shipment.ship": EdiShipmentShipInput;
   "edi.dismiss": EdiDismissInput;
   "edi.draft": EdiDraftInput;
   "edi.explain": EdiExplainInput;
+  "edi.generate": EdiGenerateInput;
+  "edi.label": EdiLabelInput;
+  "edi.pending": EdiPendingInput;
   "edi.proposal": EdiProposalInput;
   "edi.receive": EdiReceiveInput;
   "einvoice.export": EinvoiceExportInput;
@@ -7338,6 +8076,7 @@ export interface CommandInputs {
   "entity.update": EntityUpdateInput;
   "fiscal_period.close": FiscalPeriodCloseInput;
   "fiscal_period.reopen": FiscalPeriodReopenInput;
+  "fiscal_period.split_months": FiscalPeriodSplitMonthsInput;
   "fx_revaluation.post": FxRevaluationPostInput;
   "fx_revaluation.reverse": FxRevaluationReverseInput;
   "gl.account_ledger": GlAccountLedgerInput;
@@ -7354,6 +8093,12 @@ export interface CommandInputs {
   "outbox.list": OutboxListInput;
   "party.get": PartyGetInput;
   "party.set": PartySetInput;
+  "payment_run.approve": PaymentRunApproveInput;
+  "payment_run.bank_file": PaymentRunBankFileInput;
+  "payment_run.cancel": PaymentRunCancelInput;
+  "payment_run.post": PaymentRunPostInput;
+  "payment_run.propose": PaymentRunProposeInput;
+  "payment_run.send_remittances": PaymentRunSendRemittancesInput;
   "payment.apply_credit": PaymentApplyCreditInput;
   "payment.draft": PaymentDraftInput;
   "payment.post": PaymentPostInput;
@@ -7422,6 +8167,9 @@ export interface CommandInputs {
   "stock.availability": StockAvailabilityInput;
   "stock.on_hand": StockOnHandInput;
   "stock.reservations": StockReservationsInput;
+  "tax_area.import": TaxAreaImportInput;
+  "tax.exemptions": TaxExemptionsInput;
+  "tax.oss_report": TaxOssReportInput;
   "tax.report": TaxReportInput;
   "user.activate": UserActivateInput;
   "user.assign_role": UserAssignRoleInput;
@@ -7452,4 +8200,4 @@ export interface CommandInputs {
 export type CommandName = keyof CommandInputs;
 
 /** Commands that only read. */
-export type ReadOnlyCommandName = "approval.delegations" | "approval.get" | "approval.list" | "asset.cost_lines" | "asset.register" | "asset.schedule" | "audit.history" | "audit.list" | "auth.events" | "bank_statement.proposals" | "bank.reconciliation" | "company_logo.get" | "document.get" | "document.list" | "document.messages" | "document.parties" | "document.render" | "document.render_pdf" | "edi_interchange.content" | "edi.explain" | "edi.proposal" | "einvoice.export" | "einvoice.export_pdf" | "einvoice.read" | "entity.get" | "entity.list" | "gl.account_ledger" | "gl.balance_sheet" | "gl.income_statement" | "gl.trial_balance" | "intercompany.balances" | "meta.describe" | "open_item.aging" | "open_item.list" | "outbox.list" | "party.get" | "planning.suggestions" | "print_template.builtin" | "print_template.preview" | "purchase_order.awaiting_credit" | "sales_order.awaiting_credit" | "search.records" | "setup.templates" | "smtp_settings.get" | "sso_identity.list" | "sso_provider.list" | "stock_transfer.in_transit" | "stock.availability" | "stock.on_hand" | "stock.reservations" | "tax.report" | "user.get" | "user.list" | "webhook.deliveries" | "work_center.load";
+export type ReadOnlyCommandName = "approval.delegations" | "approval.get" | "approval.list" | "asset.cost_lines" | "asset.register" | "asset.schedule" | "audit.history" | "audit.list" | "auth.events" | "bank_statement.proposals" | "bank.reconciliation" | "company_logo.get" | "consolidation.report" | "document.get" | "document.list" | "document.messages" | "document.parties" | "document.render" | "document.render_pdf" | "edi_interchange.content" | "edi.explain" | "edi.label" | "edi.pending" | "edi.proposal" | "einvoice.export" | "einvoice.export_pdf" | "einvoice.read" | "entity.get" | "entity.list" | "gl.account_ledger" | "gl.balance_sheet" | "gl.income_statement" | "gl.trial_balance" | "intercompany.balances" | "meta.describe" | "open_item.aging" | "open_item.list" | "outbox.list" | "party.get" | "payment_run.bank_file" | "planning.suggestions" | "print_template.builtin" | "print_template.preview" | "purchase_order.awaiting_credit" | "sales_order.awaiting_credit" | "search.records" | "setup.templates" | "smtp_settings.get" | "sso_identity.list" | "sso_provider.list" | "stock_transfer.in_transit" | "stock.availability" | "stock.on_hand" | "stock.reservations" | "tax.exemptions" | "tax.oss_report" | "tax.report" | "user.get" | "user.list" | "webhook.deliveries" | "work_center.load";

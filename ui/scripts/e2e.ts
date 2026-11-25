@@ -430,10 +430,18 @@ async function documentChecks(): Promise<void> {
   check("a draft can be deleted", (await browser.location()) === "/c/OHIO/d/purchase_order");
   cleanup.pop();
 
+  // A posted invoice made from an order (an invoice without one has nothing it came from).
   const posted = asObject(
-    await session.run("document.list", { doc_type: "vendor_invoice", status: "posted", limit: 1 }),
+    await session.run("document.list", { doc_type: "vendor_invoice", status: "posted", limit: 50 }),
   );
-  const invoice = asArray(posted.items)[0];
+  let invoice: JsonObject | undefined;
+  for (const candidate of asArray(posted.items).map(asObject)) {
+    const got = asObject(await session.run("document.get", { doc_type: "vendor_invoice", id: asString(candidate.id) }));
+    if (asArray(got.links).length > 0) {
+      invoice = candidate;
+      break;
+    }
+  }
   if (invoice) {
     await open(`/c/OHIO/d/vendor_invoice/${asString(asObject(invoice).id)}`);
     const page = await browser.text();
@@ -723,6 +731,242 @@ async function moreChecks(): Promise<void> {
   await browser.key("Escape");
 }
 
+/** The rows of the lines grid as text, by row. */
+async function gridRows(): Promise<string[]> {
+  return JSON.parse(
+    String(
+      await browser.evaluate(
+        `JSON.stringify([...document.querySelectorAll("[data-grid-body] [role=row]")].map((r) => r.textContent ?? ""))`,
+      ),
+    ),
+  ) as string[];
+}
+
+/** Payment runs: proposed, reviewed with holds, approved, posted, and the bank file. */
+async function paymentRunChecks(): Promise<void> {
+  const companyId = asString((await first("company", { code: "OHIO" }))?.id);
+  const vendor = await first("vendor", { code: "V002" });
+  const rent = await first("account", { company_id: companyId, code: "6000" });
+  const bank = await first("account", { company_id: companyId, code: "1000" });
+  if (!vendor || !rent || !bank) throw new Error("the seed data is missing; run `bun run seed` first");
+  const today = new Date().toISOString().slice(0, 10);
+  // An invoice of the run's own, so the run pays only what this test made.
+  const invoice = asObject(
+    await session.run("document.create", {
+      doc_type: "vendor_invoice",
+      company_id: companyId,
+      doc_date: today,
+      memo: `E2E run invoice ${stamp}`,
+      body: {
+        vendor_id: asString(vendor.id),
+        lines: [{ account_id: asString(rent.id), description: "Rent", qty: "1", unit_price: "12.34" }],
+      },
+    }),
+  );
+  const posted = asObject(await session.run("vendor_invoice.post", { id: asString(invoice.id) }));
+  const number = asString(posted.number);
+  const run = asObject(
+    await session.run("document.create", {
+      doc_type: "payment_run",
+      company_id: companyId,
+      doc_date: today,
+      memo: `E2E run ${stamp}`,
+      body: { bank_account_id: asString(bank.id), due_by: "2026-12-31", take_discounts: false, lines: [] },
+    }),
+  );
+  const runId = asString(run.id);
+  cleanup.push(async () => {
+    const doc = asObject(await session.run("document.get", { doc_type: "payment_run", id: runId }));
+    if (doc.status === "draft" || doc.status === "approved")
+      await session.run("payment_run.cancel", { id: runId }).catch(() => null);
+  });
+
+  await open(`/c/OHIO/d/payment_run/${runId}`);
+  await browser.click("Propose");
+  await dialogClick("Propose");
+  await browser.settle();
+  // The open items are named once their labels arrive.
+  let proposed = await gridRows();
+  for (let attempt = 0; attempt < 30 && !proposed.some((row) => row.includes(number)); attempt += 1) {
+    await Bun.sleep(200);
+    proposed = await gridRows();
+  }
+  check(
+    "Propose fills the run with what is due",
+    proposed.some((row) => row.includes(number)),
+    proposed.join(" | ").slice(0, 400),
+  );
+
+  // Review: everything but this test's invoice is held, by its box in the Hold column.
+  const holdCol = await browser.evaluate(
+    `[...document.querySelectorAll("[data-grid-header] [role=columnheader]")].findIndex((h) => h.textContent.trim() === "Hold")`,
+  );
+  await browser.evaluate(
+    `[...document.querySelectorAll("[data-grid-body] [role=row]")].filter((r) => !r.textContent.includes(${JSON.stringify(number)})).forEach((r) => r.querySelector('[data-col="${holdCol}"] [role=checkbox]')?.click())`,
+  );
+  await browser.key("s", CTRL);
+  await browser.settle();
+  const saved = asArray(
+    asObject(asObject(await session.run("document.get", { doc_type: "payment_run", id: runId })).body).lines,
+  ).map(asObject);
+  const ownLine = saved.find((line) => line.hold !== true);
+  check(
+    "a line put on hold in the grid is saved held, and the rest are paid",
+    saved.filter((line) => line.hold !== true).length === 1 && saved.length >= 1,
+    JSON.stringify(saved.map((line) => line.hold)),
+  );
+
+  await browser.click("Approve");
+  await dialogClick("Approve");
+  await browser.settle();
+  check(
+    "an approved run is locked, with Post next",
+    asObject(await session.run("document.get", { doc_type: "payment_run", id: runId })).status === "approved" &&
+      (await headerButtons()).includes("Post"),
+    (await headerButtons()).join(", "),
+  );
+  await browser.click("Post");
+  await dialogClick("Post");
+  await browser.settle();
+  const done = asObject(await session.run("document.get", { doc_type: "payment_run", id: runId }));
+  const paidLine = asArray(asObject(done.body).lines)
+    .map(asObject)
+    .find((line) => line.id === ownLine?.id);
+  check(
+    "posting the run makes the payment of the line not held",
+    done.status === "posted" && typeof paidLine?.payment_id === "string",
+    `${String(done.status)} ${JSON.stringify(paidLine)}`,
+  );
+
+  // The bank file: the format is asked for, and the file downloads or the server says why not.
+  await browser.click("Bank file");
+  const asked = await textOf("[role=dialog]");
+  check("the bank file asks for its format", asked.includes("Format"), asked.slice(0, 300));
+  await dialogClick("Download");
+  await Bun.sleep(500);
+  await browser.settle();
+  const answered = await textOf("[role=dialog]");
+  check(
+    "the bank file is made, or the server says why not",
+    answered.includes("was downloaded") || answered.includes("could not be made"),
+    answered.slice(0, 400),
+  );
+  await dialogClick("Close").catch(() => dialogClick("Cancel"));
+}
+
+/** Sites and the tree of locations; a transfer shipped, received in part and closed short. */
+async function transferChecks(): Promise<void> {
+  const companyId = asString((await first("company", { code: "OHIO" }))?.id);
+  await open("/c/OHIO/e/warehouse?view=tree");
+  const nested = await browser.evaluate(
+    `(() => { const day = [...document.querySelectorAll("nav li")].find((li) => li.firstElementChild?.textContent?.startsWith("DAY · ")); return !!day && day.querySelector("ul")?.textContent?.includes("DAY-A") === true; })()`,
+  );
+  check("warehouses are shown as a tree, a location under the one it is part of", nested === true);
+  const site = await first("site", { company_id: companyId, code: "DAY" });
+  await open(`/c/OHIO/e/site/${asString(site?.id)}`);
+  check(
+    "a site shows the tree of its locations",
+    (await textOf("main")).includes("Warehouses here") && (await textOf("main")).includes("DAY-B"),
+  );
+
+  const main = await first("warehouse", { company_id: companyId, code: "MAIN" });
+  const day = await first("warehouse", { company_id: companyId, code: "DAY" });
+  const transit = await first("warehouse", { company_id: companyId, code: "TRANSIT" });
+  const item = await first("item", { code: "WIDGET" });
+  if (!main || !day || !transit || !item) throw new Error("the seed data is missing; run `bun run seed` first");
+  const transfer = asObject(
+    await session.run("document.create", {
+      doc_type: "stock_transfer",
+      company_id: companyId,
+      doc_date: new Date().toISOString().slice(0, 10),
+      memo: `E2E transfer ${stamp}`,
+      body: {
+        from_warehouse_id: asString(main.id),
+        to_warehouse_id: asString(day.id),
+        transit_warehouse_id: asString(transit.id),
+        lines: [{ item_id: asString(item.id), qty: "2" }],
+      },
+    }),
+  );
+  const transferId = asString(transfer.id);
+  await open(`/c/OHIO/d/stock_transfer/${transferId}`);
+  await browser.click("Post");
+  await dialogClick("Post");
+  await browser.settle();
+  check(
+    "a posted transfer with a transit warehouse is in transit",
+    asObject(await session.run("document.get", { doc_type: "stock_transfer", id: transferId })).status === "in_transit",
+  );
+  await browser.click("Receive");
+  const receiptPath = await browser.location();
+  check(
+    "Receive drafts a receipt of what is on its way, and opens it",
+    /\/d\/stock_transfer_receipt\/[0-9a-f-]{36}$/.test(receiptPath),
+    receiptPath,
+  );
+  const receiptId = receiptPath.split("/").pop() ?? "";
+  // One of the two arrived.
+  await typeInCell("Quantity", 0, "1");
+  await browser.key("s", CTRL);
+  await browser.settle();
+  await browser.click("Post");
+  await dialogClick("Post");
+  await browser.settle();
+  const receipt = asObject(await session.run("document.get", { doc_type: "stock_transfer_receipt", id: receiptId }));
+  check("a receipt of part of a transfer is posted", receipt.status === "posted", String(receipt.status));
+
+  await open(`/c/OHIO/d/stock_transfer/${transferId}`);
+  check("the transfer shows what has arrived", (await cellText("Received", 0)).startsWith("1"));
+  await browser.click("Close short");
+  const preview = await textOf("[role=dialog]");
+  check("closing short asks for the date and shows what it writes off", preview.length > 0, preview.slice(0, 300));
+  await dialogClick("Close short");
+  await browser.settle();
+  const closed = asObject(await session.run("document.get", { doc_type: "stock_transfer", id: transferId }));
+  const written = asObject(asArray(asObject(closed.body).lines)[0]);
+  check(
+    "closing short writes off what never arrived and closes the transfer",
+    closed.status === "closed" && String(written.qty_written_off).startsWith("1"),
+    `${String(closed.status)} ${JSON.stringify(written)}`,
+  );
+}
+
+/** Handing one's approvals to someone else for a while, and ending it. */
+async function delegationChecks(): Promise<void> {
+  const restricted = await signInRestricted(session, RESTRICTED_PERMISSIONS);
+  await open("/c/OHIO/approvals?scope=delegations");
+  check("who may delegate has a Delegations tab", (await textOf("[role=tablist]")).includes("Delegations"));
+  await browser.click("Delegate approvals");
+  await pickInLookup("#delegation-delegate_id", "E2E restricted");
+  const ends = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
+  await browser.evaluate(
+    `(() => { const i = document.querySelector("#delegation-ends_on"); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set; set.call(i, ${JSON.stringify(ends)}); i.dispatchEvent(new Event("input", { bubbles: true })); })()`,
+  );
+  await browser.fill("#delegation-reason", `E2E holiday ${stamp}`);
+  await dialogClick("Delegate approvals");
+  await browser.settle();
+  const listed = await textOf("main");
+  check(
+    "a delegation is listed with whom it is to and until when",
+    listed.includes("E2E restricted") && listed.includes(`E2E holiday ${stamp}`),
+    listed.slice(0, 500),
+  );
+  await browser.evaluate(
+    `[...document.querySelectorAll("tbody tr")].find((r) => r.textContent.includes(${JSON.stringify(`E2E holiday ${stamp}`)}))?.querySelector("button")?.click()`,
+  );
+  await browser.settle();
+  await dialogClick("End");
+  await browser.settle();
+  check("an ended delegation leaves the list", !(await textOf("main")).includes(`E2E holiday ${stamp}`));
+
+  await browser.goto(`${APP}/c/OHIO/approvals#token=${restricted.token}`);
+  check(
+    "who may not delegate has no Delegations tab",
+    !(await textOf("main")).includes("Delegations"),
+    (await textOf("main")).slice(0, 300),
+  );
+}
+
 /** A user whose role withholds fields sees what it may, and changes only what it may. */
 async function accessChecks(): Promise<void> {
   const restricted = await signInRestricted(session, RESTRICTED_PERMISSIONS);
@@ -875,7 +1119,7 @@ async function bankingChecks(): Promise<void> {
   // The number the statement files name the account by; without it the server refuses to import them.
   await session.run("entity.create", {
     entity: "bank_account_number",
-    data: { company_id: companyId, bank_account_id: bankId, iban: "US00EXAMPLE000000001" },
+    data: { company_id: companyId, bank_account_id: bankId, iban: "GB82WEST12345698765432" },
   });
 
   // In the books before the statement: rent paid from the account, and an invoice to pay.
@@ -1738,6 +1982,9 @@ const groups: [string, () => Promise<void>][] = [
   ["printing and mail", mailChecks],
   ["edi", ediChecks],
   ["shell", shellChecks],
+  ["payment runs", paymentRunChecks],
+  ["sites and transfers", transferChecks],
+  ["delegation", delegationChecks],
 ];
 const only = process.argv.slice(2);
 

@@ -28,9 +28,11 @@ import type {
   SearchBoxSlotProps,
   ToolbarSlotProps,
 } from "@erpcraft/grid";
+import { DEFAULT_GRID_LABELS, DEFAULT_LABELS, type GridLabels } from "@erpcraft/grid";
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Columns3, EllipsisVertical, Funnel, X } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
+import { t } from "@/i18n/t";
 import { cn } from "@/lib/utils";
 import { Button } from "./button";
 import { Badge } from "./ui/badge";
@@ -166,7 +168,16 @@ const CELL = cn(
 /** The server's message for a cell it refused (a line's field), or undefined. */
 export type GridProblem<R> = (columnId: string, row: R) => string | undefined;
 
-function makeCell<R>(link?: GridLink<R>, check?: GridCheck<R>, decorate?: GridDecorate<R>, problem?: GridProblem<R>) {
+/** Yes-or-no cells drawn as boxes; a box in an editable cell changes the value. */
+export type GridToggle<R> = (columnId: string, row: R, on: boolean) => void;
+
+function makeCell<R>(
+  link?: GridLink<R>,
+  check?: GridCheck<R>,
+  decorate?: GridDecorate<R>,
+  problem?: GridProblem<R>,
+  toggle?: GridToggle<R>,
+) {
   // biome-ignore lint/correctness/noComponentHookFactories: made once per grid (its slots are memoised), so its identity is stable
   return function Cell({ props, editor, text, column, row, value }: CellSlotProps<R>) {
     if (check && column.id === check.columnId && !editor) {
@@ -177,6 +188,20 @@ function makeCell<R>(link?: GridLink<R>, check?: GridCheck<R>, decorate?: GridDe
             checked={value === true}
             tabIndex={-1}
             onCheckedChange={(on) => check.onToggle(row, on === true)}
+          />
+        </div>
+      );
+    }
+    if (toggle && column.type === "boolean" && !editor) {
+      const editable = (props as Record<string, unknown>)["data-editable"] !== undefined;
+      return (
+        <div {...props} className={cn(CELL, "justify-center")}>
+          <Checkbox
+            aria-label={`${column.header}: ${text}`}
+            checked={value === true}
+            disabled={!editable}
+            tabIndex={-1}
+            onCheckedChange={(on) => toggle(column.id, row, on === true)}
           />
         </div>
       );
@@ -667,6 +692,12 @@ function Empty({ filtered, loading, labels }: EmptySlotProps) {
   );
 }
 
+/** The grid's own words, from this app's translations. */
+export function gridLabels(): GridLabels {
+  const keys = Object.keys({ ...DEFAULT_LABELS, ...DEFAULT_GRID_LABELS }) as (keyof GridLabels)[];
+  return Object.fromEntries(keys.map((key) => [key, t(`grid.${key}`)])) as GridLabels;
+}
+
 /** The shadcn skin of the grid. */
 export function shadcnGridSlots<R>(
   options: {
@@ -675,13 +706,14 @@ export function shadcnGridSlots<R>(
     decorate?: GridDecorate<R>;
     pickers?: GridRowPickers<R>;
     problem?: GridProblem<R>;
+    toggle?: GridToggle<R>;
   } = {},
 ): GridSlots<R> {
   return {
     Part,
     Row,
     HeaderCell,
-    Cell: makeCell(options.link, options.check, options.decorate, options.problem),
+    Cell: makeCell(options.link, options.check, options.decorate, options.problem, options.toggle),
     FooterCell,
     ResizeHandle,
     Editor: makeEditor(options.pickers),

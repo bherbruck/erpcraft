@@ -24,7 +24,7 @@ import { peekLinkLabel, recordLabel, rememberRecord, shortId, useLinkLabelsVersi
 import { enumLabel, findEntity, isCompanyScoped } from "@/lib/meta";
 import type { FieldValues } from "./field-input";
 import { ReferenceLabels, type ReferenceSource, referenceSource } from "./grid-references";
-import { shadcnGridSlots } from "./grid-skin";
+import { gridLabels, shadcnGridSlots } from "./grid-skin";
 import { fitWidths } from "./grid-widths";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
@@ -48,6 +48,8 @@ const isBlank = (value: Json | undefined): boolean => value === undefined || val
 const isZero = (value: Json | undefined): boolean =>
   isBlank(value) || value === 0 || (typeof value === "string" && /^-?0*(\.0*)?$/.test(value));
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** The grid's words, translated once. */
+const GRID_LABELS = gridLabels();
 const ROW_HEIGHT = 36;
 
 function gridType(field: FieldMeta): ColumnType {
@@ -171,11 +173,24 @@ export function LinesGrid({
   // One set of slot components for the grid's life: new ones would remount every cell, editor included.
   const sourcesRef = useRef(sources);
   sourcesRef.current = sources;
+  const onEditRef = useRef<(changes: CellChange<Line>[]) => void>(() => undefined);
   const problemsRef = useRef(problems);
   problemsRef.current = problems;
   const slots = useMemo(
     () =>
       shadcnGridSlots<Line>({
+        // A box changes the line as typing y or n in the cell would.
+        toggle: (columnId, row, on) =>
+          onEditRef.current([
+            {
+              rowId: row.key,
+              rowIndex: latest.current.findIndex((line) => line.key === row.key),
+              row,
+              columnId,
+              oldValue: row.values[columnId] ?? null,
+              newValue: on,
+            },
+          ]),
         problem: (columnId, row) => {
           const index = latest.current.findIndex((line) => line.key === row.key);
           return index >= 0 ? problemsRef.current?.[index + 1]?.fields[columnId] : undefined;
@@ -256,6 +271,9 @@ export function LinesGrid({
           // that is still nothing on every line starts hidden, so the lines fit; Columns shows it.
           hidden: quiet.has(name) ? true : undefined,
         };
+        if (field.type.kind === "bool") {
+          return { ...base, format: (v) => (v === true ? t("value.yes") : v === false ? t("value.no") : "") };
+        }
         if (field.type.kind === "enum") {
           const enumType = field.type;
           return { ...base, options: enumType.values.map((v) => ({ value: v, label: enumLabel(field, v) })) };
@@ -353,6 +371,7 @@ export function LinesGrid({
     const index = first ? next.findIndex((line) => line.key === first.rowId) : -1;
     change(next, first && index >= 0 ? { line: index + 1, field: first.columnId } : undefined);
   };
+  onEditRef.current = onEdit;
 
   const problemList = Object.entries(problems ?? {}).flatMap(([line, problem]) => [
     ...(problem.line ? [`${t("lines.line_n", { line })}: ${problem.line}`] : []),
@@ -373,7 +392,7 @@ export function LinesGrid({
       ) : null}
       {report && report.rejected.length > 0 ? (
         <Alert>
-          <AlertTitle>{t("grid.rejected", { count: report.rejected.length })}</AlertTitle>
+          <AlertTitle>{t("grid.cells_rejected", { count: report.rejected.length })}</AlertTitle>
           <AlertDescription>
             {report.rejected
               .slice(0, 5)
@@ -390,14 +409,20 @@ export function LinesGrid({
           rows={lines}
           rowId={(line) => line.key}
           slots={slots}
+          labels={GRID_LABELS}
           toolbar
-          // The page's section names the lines; the toolbar holds the columns menu and the keys, behind a tip.
+          // The toolbar names the lines, with the keys behind a tip, beside the columns menu.
           toolbarExtra={
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1.5">
+              <h2 className="text-base font-semibold">{collection.label}</h2>
               {editable ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button type="button" aria-label={t("grid.keys_label")} className="text-muted-foreground">
+                    <button
+                      type="button"
+                      aria-label={t("grid.keys_label")}
+                      className="inline-flex size-5 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
+                    >
                       <Info aria-hidden="true" className="size-4" />
                     </button>
                   </TooltipTrigger>

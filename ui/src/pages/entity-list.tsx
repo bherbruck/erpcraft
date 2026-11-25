@@ -8,8 +8,10 @@ import { Button } from "@/components/button";
 import { FieldValue } from "@/components/field-value";
 import { fieldColumn, ListGrid } from "@/components/list-grid";
 import { PageHeader } from "@/components/page";
+import { RecordTree, treeField } from "@/components/record-tree";
 import { SavedViews } from "@/components/saved-views";
 import { SearchBox } from "@/components/search-box";
+import { ToggleGroup } from "@/components/toggle-group";
 import { t } from "@/i18n/t";
 import { useListUrl } from "@/lib/list-url";
 import {
@@ -48,6 +50,9 @@ function EntityList({ entity }: { entity: EntityMeta }) {
   const { code, company } = useCompany();
   const url = useUrlState();
   const q = url.get("q");
+  // A tree (warehouses within warehouses) can be shown as one.
+  const tree = treeField(entity) !== undefined;
+  const asTree = tree && url.get("view") === "tree";
   const { sort, page, size, setQuery } = useListUrl(PAGE_SIZE);
   const scoped = isCompanyScoped(entity);
   const searchable = entity.search.length > 0;
@@ -128,6 +133,18 @@ function EntityList({ entity }: { entity: EntityMeta }) {
     </Button>
   ) : null;
 
+  const viewToggle = tree ? (
+    <ToggleGroup
+      label={t("tree.view")}
+      value={asTree ? "tree" : "list"}
+      options={[
+        { value: "list", label: t("tree.view_list") },
+        { value: "tree", label: t("tree.view_tree") },
+      ]}
+      onChange={(next) => url.set({ view: next === "tree" ? "tree" : null, page: null })}
+    />
+  ) : null;
+
   return (
     <>
       <PageHeader
@@ -140,65 +157,73 @@ function EntityList({ entity }: { entity: EntityMeta }) {
           </>
         }
       />
-      <ListGrid<EntityRecord>
-        key={`${entity.name}|${q}`}
-        id={`entity.${entity.name}`}
-        label={entity.plural}
-        columns={columns}
-        rows={waitingForCompany ? [] : list.data?.items}
-        total={list.data?.total ?? 0}
-        loading={list.loading}
-        error={list.error}
-        onRetry={list.reload}
-        sort={sort}
-        page={page}
-        size={size}
-        onQuery={setQuery}
-        rowHref={(record) => paths.entityRecord(code, entity.name, record.id)}
-        linkColumn={columns[0]?.id ?? "id"}
-        decorate={(columnId, record) => {
-          const field = decimals.get(columnId);
-          return field && columnId in record ? <FieldValue field={field} value={record[columnId]} /> : undefined;
-        }}
-        toolbar={
-          <div className="flex flex-wrap items-center gap-2">
-            {searchable ? (
-              <SearchBox value={q} onChange={onSearch} label={t("list.search", { label: entity.plural })} />
-            ) : null}
-            <div className="ms-auto">
-              <SavedViews tableKey={`entity.${entity.name}`} columns={null} onColumns={() => undefined} />
+      {asTree ? (
+        <div className="space-y-3">
+          <div className="flex justify-end">{viewToggle}</div>
+          <RecordTree meta={meta} entity={entity} empty={t("tree.empty", { label: entity.plural })} />
+        </div>
+      ) : (
+        <ListGrid<EntityRecord>
+          key={`${entity.name}|${q}`}
+          id={`entity.${entity.name}`}
+          label={entity.plural}
+          columns={columns}
+          rows={waitingForCompany ? [] : list.data?.items}
+          total={list.data?.total ?? 0}
+          loading={list.loading}
+          error={list.error}
+          onRetry={list.reload}
+          sort={sort}
+          page={page}
+          size={size}
+          onQuery={setQuery}
+          rowHref={(record) => paths.entityRecord(code, entity.name, record.id)}
+          linkColumn={columns[0]?.id ?? "id"}
+          decorate={(columnId, record) => {
+            const field = decimals.get(columnId);
+            return field && columnId in record ? <FieldValue field={field} value={record[columnId]} /> : undefined;
+          }}
+          toolbar={
+            <div className="flex flex-wrap items-center gap-2">
+              {searchable ? (
+                <SearchBox value={q} onChange={onSearch} label={t("list.search", { label: entity.plural })} />
+              ) : null}
+              <div className="ms-auto flex items-center gap-2">
+                {viewToggle}
+                <SavedViews tableKey={`entity.${entity.name}`} columns={null} onColumns={() => undefined} />
+              </div>
             </div>
-          </div>
-        }
-        empty={
-          waitingForCompany ? (
-            <p>{t("list.needs_company", { label: entity.plural })}</p>
-          ) : q ? (
-            <>
-              <p>{t("list.no_match", { query: q })}</p>
-              <Button variant="outline" size="sm" onClick={() => url.set({ q: null, page: null })}>
-                {t("list.clear_search")}
-              </Button>
-            </>
-          ) : page > 1 ? (
-            <>
-              <p>{t("list.past_end")}</p>
-              <Button variant="outline" size="sm" onClick={() => url.set({ page: null })}>
-                {t("list.first_page")}
-              </Button>
-            </>
-          ) : (
-            <>
-              <p>
-                {scoped && company
-                  ? t("list.empty_in_company", { label: entity.plural, company: company.name })
-                  : t("list.empty", { label: entity.plural })}
-              </p>
-              {newButton}
-            </>
-          )
-        }
-      />
+          }
+          empty={
+            waitingForCompany ? (
+              <p>{t("list.needs_company", { label: entity.plural })}</p>
+            ) : q ? (
+              <>
+                <p>{t("list.no_match", { query: q })}</p>
+                <Button variant="outline" size="sm" onClick={() => url.set({ q: null, page: null })}>
+                  {t("list.clear_search")}
+                </Button>
+              </>
+            ) : page > 1 ? (
+              <>
+                <p>{t("list.past_end")}</p>
+                <Button variant="outline" size="sm" onClick={() => url.set({ page: null })}>
+                  {t("list.first_page")}
+                </Button>
+              </>
+            ) : (
+              <>
+                <p>
+                  {scoped && company
+                    ? t("list.empty_in_company", { label: entity.plural, company: company.name })
+                    : t("list.empty", { label: entity.plural })}
+                </p>
+                {newButton}
+              </>
+            )
+          }
+        />
+      )}
     </>
   );
 }

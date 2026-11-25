@@ -3,7 +3,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import { ApiError, api } from "@/api/client";
-import type { CollectionMeta, DocTypeMeta, DocumentRecord, FieldMeta, Json, JsonObject } from "@/api/types";
+import type {
+  CollectionMeta,
+  CommandMeta,
+  DocTypeMeta,
+  DocumentRecord,
+  FieldMeta,
+  Json,
+  JsonObject,
+} from "@/api/types";
 import { useApp, useCompany } from "@/app/context";
 import { useOfferPageActions } from "@/app/page-actions";
 import { Alert } from "@/components/alert";
@@ -17,6 +25,7 @@ import { plainSource, useDecimalHeader } from "@/components/decimal-value";
 import { SendDialog, SentMessages, usePdfDownload } from "@/components/document-mail";
 import { FieldInput, type FieldValues, initialValues, toEditable } from "@/components/field-input";
 import { FieldValue } from "@/components/field-value";
+import { FileActionDialog, fileActions } from "@/components/file-action";
 import { FormField } from "@/components/form-field";
 import { History } from "@/components/history";
 import { LinesGrid } from "@/components/lines-grid";
@@ -479,6 +488,9 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
   const exportable = useExportable();
   const pdf = usePdfDownload(docType.name, id ?? "");
   const [dialog, setDialog] = useState<"send" | "einvoice" | null>(null);
+  // Files made of the document (a payment run's bank file), offered once it is locked.
+  const files = useMemo(() => fileActions(meta, docType.name), [meta, docType.name]);
+  const [fileAction, setFileAction] = useState<CommandMeta | null>(null);
   // Who the document is with, for the line under its title.
   const party = docType.fields.find(
     (field) => field.type.kind === "link" && ["customer", "vendor"].includes(field.type.entity),
@@ -588,6 +600,14 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
                   {t("document.created_by_short", { name: doc.created_by_name, at: formatTimestamp(doc.created_at) })}
                 </span>
               ) : null}
+              {doc && doc.updated_at !== doc.created_at ? (
+                <span>
+                  {t("document.changed_at", {
+                    label: label("updated_at", t("document.updated")),
+                    at: formatTimestamp(doc.updated_at),
+                  })}
+                </span>
+              ) : null}
             </>
           ) : null
         }
@@ -651,6 +671,14 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
                       {t("einvoice.export")}
                     </DropdownMenuItem>
                   ) : null}
+                  {locked
+                    ? files.map((command) => (
+                        <DropdownMenuItem key={command.name} onSelect={() => setFileAction(command)}>
+                          <FileDown aria-hidden="true" />
+                          {command.label}
+                        </DropdownMenuItem>
+                      ))
+                    : null}
                   {canRun(meta, "document.render_pdf") ? (
                     <DropdownMenuItem disabled={pdf.busy} onSelect={pdf.run}>
                       <FileDown aria-hidden="true" />
@@ -692,6 +720,9 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
             url.set({ tab: "sent" });
           }}
         />
+      ) : null}
+      {doc && fileAction ? (
+        <FileActionDialog command={fileAction} id={doc.id} onClose={() => setFileAction(null)} />
       ) : null}
       {doc && dialog === "einvoice" ? (
         <ExportDialog docType={docType.name} id={doc.id} onClose={() => setDialog(null)} />
@@ -872,25 +903,6 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
               </div>
             )}
           </FormField>
-          {doc ? (
-            <p className="text-sm text-muted-foreground sm:col-span-2 xl:col-span-4">
-              {doc.created_by_name
-                ? t("document.created_by", {
-                    label: label("created_by_name", t("document.created")),
-                    name: doc.created_by_name,
-                    at: formatTimestamp(doc.created_at),
-                  })
-                : t("document.created_at", {
-                    label: label("created_at", t("document.created")),
-                    at: formatTimestamp(doc.created_at),
-                  })}
-              {t("value.separator")}
-              {t("document.changed_at", {
-                label: label("updated_at", t("document.updated")),
-                at: formatTimestamp(doc.updated_at),
-              })}
-            </p>
-          ) : null}
         </div>
 
         {doc && docType.name === BANK_STATEMENT && doc.status === docType.initial_state && !dirty ? (
@@ -900,7 +912,15 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
         {docType.collections
           .filter(() => !(doc && docType.name === BANK_STATEMENT && doc.status === docType.initial_state && !dirty))
           .map((collection) => (
-            <Section key={collection.name} title={collection.label}>
+            <Section
+              key={collection.name}
+              // The grid names its lines in its own toolbar, beside its columns menu.
+              title={
+                ready && !(serverLines(collection) && (form.collections[collection.name] ?? []).length === 0)
+                  ? null
+                  : collection.label
+              }
+            >
               {ready && serverLines(collection) && (form.collections[collection.name] ?? []).length === 0 ? (
                 <p className="rounded-md border bg-card p-4 text-sm text-muted-foreground">
                   {doc ? t("document.no_server_lines") : t("document.server_lines")}

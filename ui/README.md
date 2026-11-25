@@ -99,6 +99,12 @@ How the guidelines are enforced:
 
 In development builds only (`import.meta.env.DEV`), a page opened with `#token=<token>` adopts that token and removes it from the address. `scripts/screenshots.ts` and `scripts/e2e.ts` use this. Production builds ignore the fragment.
 
+- **Payment runs** are documents like any other: a draft names the bank account and the day items are due by; "Propose" (in "⋯") fills its lines with what is due, each line's Hold is a box in the grid that keeps an item on the run unpaid, Approve locks it and Post makes the payments. A command on a record whose answer is a file (`file_name`, `content_type`, `content` in its output schema) is offered in "⋯" once the record is locked, asks for its other inputs, and downloads the file: the run's "Bank file" (SEPA or NACHA).
+- **Sites and locations**: an entity whose records name another of the same entity (a warehouse's "Part of") can be shown as a tree on its list (List / Tree, `?view=tree`), and the page of a record such trees name (a site) shows its tree ("Warehouses here"). Transit warehouses are marked.
+- **Transfers in two steps**: a transfer through a transit warehouse is in transit once posted; Receive drafts a receipt of what is on its way, whose quantities are changed to what arrived before it is posted, and "Close short" writes off what never arrives.
+- **Delegating approvals**: the Approvals inbox has a Delegations tab for those who may delegate (`approval.delegate`): who decides in their place from when to when and why, what was delegated to them, and End (`approval.end_delegation`).
+- **Lookups on lines** name the rows the lines hold by their keys where the command takes them (`by_keys`), so an item past the first page is still named.
+
 ## What does not exist yet
 
 - **Still decided by the UI, because the server does not say:**

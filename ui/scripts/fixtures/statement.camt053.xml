@@ -13,7 +13,7 @@
         <ToDtTm>2026-06-15T23:59:59</ToDtTm>
       </FrToDt>
       <Acct>
-        <Id><IBAN>US00EXAMPLE000000001</IBAN></Id>
+        <Id><IBAN>GB82WEST12345698765432</IBAN></Id>
         <Ccy>USD</Ccy>
       </Acct>
       <Bal>
