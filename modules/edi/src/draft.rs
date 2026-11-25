@@ -51,6 +51,18 @@ pub async fn draft(ctx: &mut Ctx<'_>, request: Request) -> Result<DocumentView> 
         )));
     }
     let order = proposal::order_of(ctx, &row).await?;
+    // Drafts of one partner's order number, one at a time: the second
+    // waits for the first to commit, then its proposal sees it drafted and
+    // asks the duplicate policy. Without this a second draft that read
+    // before the first committed and wrote after it would be numbered the
+    // second of that order, past the policy.
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtext('edi.draft'), hashtext($1::text || ' ' || $2))",
+    )
+    .bind(row.partner_id)
+    .bind(&order.number)
+    .execute(&mut *ctx.conn)
+    .await?;
     let partner = partner::load(&mut *ctx.conn, row.partner_id).await?;
     let proposal = proposal::build(ctx, &row, &partner, order, &request.choices).await?;
 
