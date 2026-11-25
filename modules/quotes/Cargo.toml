@@ -1,0 +1,18 @@
+[package]
+name = "erpcraft-quotes"
+description = "erpcraft quotes: sales quotes priced from the price lists, won into sales orders or lost"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+erpcraft-gl.workspace = true
+erpcraft-kernel.workspace = true
+erpcraft-pricing.workspace = true
+erpcraft-tax.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+uuid.workspace = true

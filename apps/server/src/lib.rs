@@ -42,6 +42,8 @@ pub fn modules(pool: PgPool) -> KernelBuilder {
         .module(erpcraft_payment_runs::PaymentRunsModule)
         .module(erpcraft_collections::CollectionsModule)
         .module(erpcraft_budgets::BudgetsModule)
+        .module(erpcraft_quotes::QuotesModule)
+        .module(erpcraft_recurring::RecurringModule)
         .module(erpcraft_edi::EdiModule)
 }
 

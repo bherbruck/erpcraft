@@ -1,0 +1,15 @@
+[package]
+name = "erpcraft-recurring"
+description = "erpcraft recurring invoices: templates with a schedule, and a run that drafts or posts them"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+erpcraft-kernel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+uuid.workspace = true

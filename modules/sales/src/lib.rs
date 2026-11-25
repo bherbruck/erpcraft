@@ -1060,7 +1060,7 @@ impl DocumentHandler for SalesOrder {
                     FieldMeta::new("unit_price", "Unit price", FieldType::Decimal)
                         .unit_price()
                         .currency_of_document("currency")
-                        .required(),
+                        .help("Left out on an item line: what the price lists propose."),
                 ])
                 .chain(erpcraft_tax::lines::discount_fields())
                 .chain([

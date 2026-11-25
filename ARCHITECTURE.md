@@ -60,6 +60,8 @@ modules/
   payment_runs      vendors paid in a batch; SEPA and NACHA files, remittance advice
   collections       customer statements; dunning levels, runs and letters
   budgets           budgets by account, month and dimension; budget against actual
+  quotes            sales quotes: priced from the lists, issued, won into an order or lost
+  recurring         recurring invoices: templates and a run that drafts or posts them
 apps/
   server            the `erpcraft` binary
 ```
@@ -602,6 +604,48 @@ Limits:
 - Group membership is one group per kind.
 - The order's date, not the delivery date, decides which list is valid.
 - A proposal is worked out again each time a draft is saved, but a price the line already has is kept.
+
+### Sales quotes
+
+The module `quotes` (`modules/quotes`, migration 1) offers a customer prices before it orders.
+
+**The quote** (`sales_quote`, `SQ-`):
+- a customer, a currency and `valid_until`;
+- lines like a sales order's: an item and its warehouse, a charge, or an account, with a quantity, price and discounts.
+
+An item line may leave out its price and is proposed one by the price lists, as an order line is (see [Price lists](#price-lists)). What was proposed is kept, and issuing the quote asks the policy `price.override` for each line whose price differs from it, so a negotiated price is decided on before the customer sees it.
+
+**States:** `draft` → `issued` (locked) → `won` or `lost`.
+- `sales_quote.issue` locks a reviewed draft; it is then printed and sent with `document.send`.
+- `sales_quote.accept` (optionally a `reason` and the order's date) drafts a sales order with the quote's lines, prices and discounts, linked to the quote, and marks it won. The order is an ordinary draft, approved as any other, so `price.override` is asked again then against the price lists. After `valid_until` a quote is refused unless the policy `sales_quote.expired` allows it (facts: `days_expired`, `total`, `currency`; refused by default).
+- `sales_quote.lose` (`reason`, required) marks it lost. The reasons are kept on the quote (`won_reason`, `lost_reason`).
+- A quote won or lost does not change again. Its summary shows `expired` once its date has passed.
+
+### Recurring invoices
+
+The module `recurring` (`modules/recurring`, migration 1) invoices a customer on a schedule: a rental, a subscription, a maintenance contract.
+
+**A template** (`recurring_invoice`, per company) has:
+- a `code`, the customer, its currency and payment terms;
+- the lines (`recurring_invoice_line`): a charge or an account, a description, quantity, price and tax code, as on an invoice without an order;
+- `frequency` (`weekly`, `monthly`, `quarterly`, `yearly`) times `interval` (every 2 months), and `next_date`, the date of the next invoice;
+- `end_date` or `max_count` (whichever comes first ends it), and `count`, how many it has made;
+- `post`: whether an invoice it makes is posted or left as a draft;
+- `active`.
+
+**The run.** `recurring_invoice.run` (`company_id`, `as_of`, by default today) makes, for every active template whose `next_date` is on or before `as_of`, the invoice of each date due up to `as_of`, so a missed run catches up:
+- each invoice is an ordinary sales invoice without an order, dated its date, with the template's lines. Tax codes left out are proposed by the tax rules as for any invoice;
+- each is drafted, and with `post` the policy `recurring_invoice.post` is asked (facts: `total`, `currency`, `customer`, `template`; allowed by default). Allowed, the invoice is posted with `sales_invoice.post` under the rights of whoever runs it; refused, it stays a draft for a person to post;
+- the template's `next_date` moves on by its frequency (a monthly template started on the 31st falls on the last day of shorter months), its `count` goes up, and once it reaches `max_count` or passes `end_date` it is made inactive;
+- each invoice is recorded against its template and date (`recurring_invoice_run`), once only, so a run repeated for the same day makes nothing twice.
+
+The output lists each invoice made and whether it was posted. Nothing runs by itself: a scheduler outside calls the command, as for any other.
+
+Limits:
+- Invoices only, not orders or deliveries.
+- No proration for part periods.
+- Prices change by editing the template.
+- A failed posting fails the whole run, so nothing is left half done.
 
 ### Fixed assets
 
