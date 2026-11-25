@@ -12,6 +12,7 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::trace::TraceLayer;
 
 mod ui;
+pub mod verify;
 
 /// A kernel builder holding every in-tree module, in dependency order.
 /// An installation adds its own modules after these.

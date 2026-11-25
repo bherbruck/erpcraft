@@ -63,8 +63,11 @@ modules/
   quotes            sales quotes: priced from the lists, issued, won into an order or lost
   recurring         recurring invoices: templates and a run that drafts or posts them
 apps/
-  server            the `erpcraft` binary
+  server            the `erpcraft` binary: serve, --migrate-only, --check-migrations, verify, healthcheck
+deploy/             the production compose file, Caddy example, backup, restore and smoke test scripts
 ```
+
+**Migrations go forward only.** Each module numbers its own migrations, and `erpcraft_migration` records which have run. A binary applies what is pending when it starts (or with `--migrate-only`), one migration per transaction, under an advisory lock. It refuses to run against a database that records a migration it does not know: such a database was migrated by a newer binary, and the way back is the backup taken before the upgrade (`erpcraft_db::status`; docs/ops/UPGRADING.md). `erpcraft verify` checks every ledger against the others from the tables, read in one read-only snapshot, after a restore or at any time (`apps/server/src/verify.rs`; docs/ops/backup.md).
 
 Planned: SAML and SCIM inside `erpcraft-auth` (single sign-on with OpenID Connect is built), then tax and localization modules per country, and the admin UI in `ui/`.
 

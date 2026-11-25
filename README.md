@@ -33,6 +33,15 @@ curl -s localhost:8600/api/meta -H "Authorization: Bearer $TOKEN"
 - `audit.history` gives the history of one record; `GET /api/meta` includes what the caller is allowed to do.
 - `POST /mcp` is the MCP endpoint, with the same bearer token.
 
+## Running it in production
+
+A Docker image with the UI built in, a compose file with PostgreSQL, HTTPS through Caddy, backups, restores, a check that the books agree, and upgrades:
+
+- [docs/ops/self-hosting.md](docs/ops/self-hosting.md): the image, settings, starting it, TLS by reverse proxy, the smoke test.
+- [docs/ops/backup.md](docs/ops/backup.md): `deploy/backup.sh` with retention, `deploy/restore.sh`, and `erpcraft verify`.
+- [docs/ops/UPGRADING.md](docs/ops/UPGRADING.md): `--check-migrations`, `--migrate-only`, and why a downgrade is refused.
+- [CHANGELOG.md](CHANGELOG.md): what changed, by area.
+
 ## Admin UI
 
 The UI in `ui/` builds to static files, and the server serves them from the directory named by `ERPCRAFT_UI_DIR`. There is no separate UI server.

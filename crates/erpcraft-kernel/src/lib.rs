@@ -88,6 +88,13 @@ impl Kernel {
         applied
     }
 
+    /// Where the database stands against this binary's migrations, changing
+    /// nothing: what is pending, and what the database has that the binary
+    /// does not know (a downgrade, which [`Kernel::migrate`] refuses).
+    pub async fn migration_status(&self) -> Result<erpcraft_db::Status> {
+        erpcraft_db::status(&self.pool, self.registry.migration_sets()).await
+    }
+
     pub(crate) fn tables(&self) -> &schema::TableCache {
         &self.tables
     }

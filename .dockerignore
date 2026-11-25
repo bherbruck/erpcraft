@@ -1,0 +1,17 @@
+# Only what the image is built from.
+**/target
+**/node_modules
+ui/dist
+ui/e2e-failures
+ui/docs
+ui-astryx
+packages/grid/e2e
+packages/grid/demo
+site
+docs
+tools
+deploy
+backups
+.env
+.git
+*.dump

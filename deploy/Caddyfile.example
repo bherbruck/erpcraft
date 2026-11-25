@@ -1,0 +1,21 @@
+# Caddy in front of erpcraft: HTTPS with a certificate from Let's Encrypt,
+# renewed by Caddy itself. Install Caddy on the host, point the name's DNS
+# at the host, open ports 80 and 443, then:
+#
+#   sudo cp deploy/Caddyfile.example /etc/caddy/Caddyfile   # with your name
+#   sudo systemctl reload caddy
+erp.example.com {
+	encode zstd gzip
+	# Uploads (a logo, a bank statement, an EDI file) are small; the server
+	# refuses large requests itself.
+	request_body {
+		max_size 16MB
+	}
+	reverse_proxy 127.0.0.1:8600
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}

@@ -1,6 +1,6 @@
 //! Postgres pool and module-scoped migrations.
 
-use erpcraft_core::Result;
+use erpcraft_core::{Error, Result};
 use sqlx::Connection;
 use sqlx::postgres::PgPoolOptions;
 
@@ -48,7 +48,112 @@ pub async fn migrate(pool: &PgPool, sets: &[MigrationSet]) -> Result<usize> {
     result
 }
 
+/// A migration as the database records it, or as the binary knows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recorded {
+    pub module: String,
+    pub version: i32,
+    pub name: String,
+}
+
+/// Where the database stands against the binary's migrations.
+#[derive(Debug, Clone, Default)]
+pub struct Status {
+    /// Known to the binary and not applied yet: applied by the next start
+    /// (or `--migrate-only`).
+    pub pending: Vec<Recorded>,
+    /// Applied to the database and not known to the binary: the database
+    /// was migrated by a newer binary (or one with other modules). Running
+    /// against it is refused.
+    pub unknown: Vec<Recorded>,
+    /// Applied and known.
+    pub applied: usize,
+}
+
+impl Status {
+    pub fn is_current(&self) -> bool {
+        self.pending.is_empty() && self.unknown.is_empty()
+    }
+}
+
+/// Compare the migrations the database records with `sets`, changing
+/// nothing. A database never migrated has every migration pending.
+pub async fn status(pool: &PgPool, sets: &[MigrationSet]) -> Result<Status> {
+    let mut conn = pool.acquire().await?;
+    status_on(&mut conn, sets).await
+}
+
+async fn status_on(conn: &mut PgConnection, sets: &[MigrationSet]) -> Result<Status> {
+    let exists: bool = sqlx::query_scalar("SELECT to_regclass('erpcraft_migration') IS NOT NULL")
+        .fetch_one(&mut *conn)
+        .await?;
+    let recorded: Vec<(String, i32, String)> = if exists {
+        sqlx::query_as(
+            "SELECT module, version, name FROM erpcraft_migration ORDER BY module, version",
+        )
+        .fetch_all(&mut *conn)
+        .await?
+    } else {
+        vec![]
+    };
+    let known = |module: &str, version: i32| {
+        sets.iter()
+            .any(|s| s.module == module && s.migrations.iter().any(|m| m.version == version))
+    };
+    let mut status = Status::default();
+    for (module, version, name) in &recorded {
+        if known(module, *version) {
+            status.applied += 1;
+        } else {
+            status.unknown.push(Recorded {
+                module: module.clone(),
+                version: *version,
+                name: name.clone(),
+            });
+        }
+    }
+    for set in sets {
+        let mut migrations = set.migrations.clone();
+        migrations.sort_by_key(|m| m.version);
+        for m in migrations {
+            if !recorded
+                .iter()
+                .any(|(module, version, _)| *module == set.module && *version == m.version)
+            {
+                status.pending.push(Recorded {
+                    module: set.module.clone(),
+                    version: m.version,
+                    name: m.name.to_owned(),
+                });
+            }
+        }
+    }
+    Ok(status)
+}
+
+/// The refusal for a database that has migrations this binary does not know.
+pub fn downgrade_error(unknown: &[Recorded]) -> Error {
+    let listed: Vec<String> = unknown
+        .iter()
+        .take(10)
+        .map(|r| format!("{} {} ({})", r.module, r.version, r.name))
+        .collect();
+    Error::state(format!(
+        "the database has {} migration(s) this binary does not know: {}{}. It was migrated by a \
+         newer erpcraft (or one with other modules); run that version, or restore a backup \
+         taken before the upgrade. Running an older binary against it is refused.",
+        unknown.len(),
+        listed.join(", "),
+        if unknown.len() > 10 { ", ..." } else { "" }
+    ))
+}
+
 async fn run(conn: &mut PgConnection, sets: &[MigrationSet]) -> Result<usize> {
+    // Never apply anything to a database a newer binary has migrated.
+    let status = status_on(conn, sets).await?;
+    if !status.unknown.is_empty() {
+        return Err(downgrade_error(&status.unknown));
+    }
     sqlx::raw_sql(
         "CREATE TABLE IF NOT EXISTS erpcraft_migration (
             module text NOT NULL,

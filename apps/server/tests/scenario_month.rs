@@ -1292,6 +1292,21 @@ async fn a_month_in_the_life_of_ohio_widgets() {
             doc["doc_type"]
         );
     }
+    // What an operator runs after restoring a backup agrees with all of the
+    // above: every ledger against every other.
+    let verified = erpcraft_server::verify::verify(&t.pool, None)
+        .await
+        .unwrap();
+    assert!(verified.ok, "{}", verified.text());
+    assert!(
+        verified.companies.iter().any(|c| c
+            .checks
+            .iter()
+            .any(|k| k.name == "tax" && k.expected.is_some_and(|e| !e.is_zero()))),
+        "the month recorded tax: {}",
+        verified.text()
+    );
+
     // For a demo: keep the month's database (scripts/scenario-month.sh names it).
     if std::env::var("SCENARIO_KEEP_DB").is_ok_and(|v| v == "1") {
         let name = t
