@@ -86,6 +86,11 @@ ALTER TABLE edi_location_xref ADD COLUMN company_id uuid REFERENCES company (id)
 UPDATE edi_item_xref x SET company_id = p.company_id FROM edi_partner p WHERE p.id = x.partner_id;
 UPDATE edi_uom_xref x SET company_id = p.company_id FROM edi_partner p WHERE p.id = x.partner_id;
 UPDATE edi_location_xref x SET company_id = p.company_id FROM edi_partner p WHERE p.id = x.partner_id;
+-- The old unique indexes don't know the company: drop them before a
+-- partner-less reference is copied per company, or the copy collides with
+-- the row it was copied from.
+DROP INDEX edi_item_xref_value;
+DROP INDEX edi_uom_xref_code;
 -- A reference for every partner was for the companies that had partners.
 INSERT INTO edi_item_xref (id, company_id, partner_id, item_id, kind, value, partner_uom,
                            units_per, created_at)
@@ -103,10 +108,8 @@ ALTER TABLE edi_item_xref ALTER COLUMN company_id SET NOT NULL;
 ALTER TABLE edi_uom_xref ALTER COLUMN company_id SET NOT NULL;
 ALTER TABLE edi_location_xref ALTER COLUMN company_id SET NOT NULL;
 
-DROP INDEX edi_item_xref_value;
 CREATE UNIQUE INDEX edi_item_xref_value ON edi_item_xref (company_id, partner_id, kind, value)
     NULLS NOT DISTINCT;
-DROP INDEX edi_uom_xref_code;
 CREATE UNIQUE INDEX edi_uom_xref_code ON edi_uom_xref (company_id, partner_id, partner_uom)
     NULLS NOT DISTINCT;
 
