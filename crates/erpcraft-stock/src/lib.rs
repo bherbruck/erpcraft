@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+pub mod counts;
 mod locations;
 pub mod lots;
 
@@ -100,6 +101,11 @@ impl Module for StockModule {
                 name: "lots",
                 sql: include_str!("../migrations/0010_lots.sql"),
             },
+            Migration {
+                version: 11,
+                name: "counts",
+                sql: include_str!("../migrations/0011_counts.sql"),
+            },
         ]
     }
 
@@ -140,6 +146,7 @@ impl Module for StockModule {
             // The ledger checks the allowing rule itself.
             .not_approvable(),
             lots::policy(),
+            counts::policy(),
         ]
     }
 
@@ -205,6 +212,36 @@ impl Module for StockModule {
                 .order_by(&["code"])
                 .search(&["code"])
                 .display(&["code"])
+                .company_field("company_id"),
+            EntityMeta::new("item_abc", "ABC class")
+                .field(company())
+                .field(
+                    FieldMeta::new("item_id", "Item", FieldType::link("item"))
+                        .required()
+                        .immutable(),
+                )
+                .field(
+                    FieldMeta::new("class", "Class", FieldType::options(&["A", "B", "C"]))
+                        .required()
+                        .help("Set by stock.abc_classify; may be changed by hand."),
+                )
+                .field(
+                    FieldMeta::new(
+                        "basis",
+                        "Ranked by",
+                        FieldType::options(&["value", "movement"]),
+                    )
+                    .required(),
+                )
+                .field(FieldMeta::new("amount", "Amount", FieldType::Decimal).money())
+                .field(
+                    FieldMeta::new("cumulative_share", "Running share", FieldType::Decimal)
+                        .rate(6)
+                        .readonly()
+                        .help("Of the total, up to and with this item, as a fraction of 1."),
+                )
+                .field(FieldMeta::new("computed_at", "Classed", FieldType::Timestamp).readonly())
+                .order_by(&["class", "item_id"])
                 .company_field("company_id"),
             EntityMeta::new("site", "Site")
                 .field(company())
@@ -316,6 +353,7 @@ impl Module for StockModule {
             command(lots::Lots),
             command(lots::Proposal),
             command(lots::Trace),
+            command(counts::Classify),
         ]
     }
 }
@@ -784,6 +822,10 @@ pub async fn post(
     .bind(posting.id)
     .fetch_one(&mut *ctx.conn)
     .await?;
+
+    // Goods being counted move only where the company's policy allows it.
+    let pairs: Vec<(Uuid, Uuid)> = lines.iter().map(|l| (l.item_id, l.warehouse_id)).collect();
+    counts::ask(ctx, posting.company_id, &pairs, context).await?;
 
     // Each lot going out, as the company's policy sees it.
     for line in lines.iter().filter(|l| l.qty.is_sign_negative()) {

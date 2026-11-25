@@ -24,6 +24,7 @@ use uuid::Uuid;
 const STOCK_ADJUSTMENT: &str = "stock_adjustment";
 const STOCK_TRANSFER: &str = "stock_transfer";
 
+mod count;
 mod transit;
 
 pub use transit::{InTransit, in_transit};
@@ -66,7 +67,16 @@ impl Module for InventoryModule {
                 name: "close_short",
                 sql: include_str!("../migrations/0005_close_short.sql"),
             },
+            Migration {
+                version: 6,
+                name: "count",
+                sql: include_str!("../migrations/0006_count.sql"),
+            },
         ]
+    }
+
+    fn entities(&self) -> Vec<erpcraft_kernel::EntityMeta> {
+        vec![count::cycle_rule_entity()]
     }
 
     fn doc_types(&self) -> Vec<Arc<dyn DocumentHandler>> {
@@ -74,11 +84,16 @@ impl Module for InventoryModule {
             Arc::new(StockAdjustment),
             Arc::new(StockTransfer),
             Arc::new(transit::TransferReceipt),
+            Arc::new(count::StockCount),
         ]
     }
 
     fn policies(&self) -> Vec<erpcraft_kernel::PolicyPoint> {
-        vec![transit::between_sites(), transit::close_short_point()]
+        vec![
+            transit::between_sites(),
+            transit::close_short_point(),
+            count::tolerance_point(),
+        ]
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
@@ -100,6 +115,11 @@ impl Module for InventoryModule {
             command(transit::PostReceipt),
             command(transit::ReverseReceipt),
             command(transit::InTransitReport),
+            command(count::Start),
+            command(count::Review),
+            command(count::Post),
+            command(count::Cancel),
+            command(count::Propose),
         ]
     }
 }
