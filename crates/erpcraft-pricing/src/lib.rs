@@ -38,11 +38,18 @@ impl Module for PricingModule {
     }
 
     fn migrations(&self) -> Vec<Migration> {
-        vec![Migration {
-            version: 1,
-            name: "pricing",
-            sql: include_str!("../migrations/0001_pricing.sql"),
-        }]
+        vec![
+            Migration {
+                version: 1,
+                name: "pricing",
+                sql: include_str!("../migrations/0001_pricing.sql"),
+            },
+            Migration {
+                version: 2,
+                name: "line_company",
+                sql: include_str!("../migrations/0002_line_company.sql"),
+            },
+        ]
     }
 
     fn entities(&self) -> Vec<EntityMeta> {
@@ -163,8 +170,14 @@ impl Module for PricingModule {
                         .help("Off the price, this list's or one found elsewhere."),
                 )
                 .field(created())
+                .field(
+                    FieldMeta::new("company_id", "Company", FieldType::link("company"))
+                        .immutable()
+                        .help("The list's company; filled in from the list."),
+                )
                 .order_by(&["price_list_id", "min_qty"])
-                .child_of("price_list", "price_list_id"),
+                .child_of("price_list", "price_list_id")
+                .company_field("company_id"),
         ]
     }
 
@@ -189,6 +202,10 @@ impl Module for PricingModule {
             .as_percent()
             .number("discount", "The line's discount percent, 0 for none")
             .number("list_discount", "The discount percent proposed, 0 for none")
+            .number(
+                "discount_amount",
+                "The amount taken off the line, 0 for none",
+            )
             .text("source", "list, or last_paid for the last price paid")
             .refusal("the price differs from the price list"),
         ]
@@ -250,11 +267,11 @@ impl Proposal {
     /// price per stock unit times the factor, rounded to the six places of
     /// a unit price.
     pub fn per(mut self, factor: Decimal) -> Self {
-        if factor != Decimal::ONE {
-            self.unit_price = self
-                .unit_price
-                .map(|p| (p * factor).round_dp(6).normalize());
-        }
+        // The last price paid is per stock unit exactly (10 for a box of 3
+        // is 3.333...), so that a box comes back at 10, not 9.999999.
+        self.unit_price = self
+            .unit_price
+            .map(|p| (p * factor).round_dp(6).normalize());
         self
     }
 }
@@ -327,7 +344,7 @@ async fn last_paid(
     q: &Query,
 ) -> Result<Option<(Decimal, Option<Decimal>)>> {
     Ok(sqlx::query_as(
-        "SELECT round(l.unit_price / ol.factor, 6), l.discount_percent
+        "SELECT l.unit_price / ol.factor, l.discount_percent
          FROM vendor_invoice_line l
          JOIN vendor_invoice v ON v.document_id = l.document_id
          JOIN document d ON d.id = v.document_id
@@ -398,6 +415,9 @@ pub struct LinePrice {
     pub item_code: String,
     pub unit_price: Decimal,
     pub discount_percent: Option<Decimal>,
+    /// Off the whole line, after the percent.
+    pub discount_amount: Option<Decimal>,
+    pub qty: Decimal,
 }
 
 /// Ask the policy [`OVERRIDE`] about each line whose price or discount is
@@ -420,18 +440,26 @@ pub async fn check(
         let discount = line.discount_percent.unwrap_or_default();
         let list_discount = list_discount.unwrap_or_default();
         let list_price = list_price.unwrap_or(line.unit_price);
-        if list_price == line.unit_price && list_discount == discount {
+        let amount_off = line.discount_amount.unwrap_or_default();
+        if list_price == line.unit_price && list_discount == discount && amount_off.is_zero() {
             continue;
         }
+        // Per unit, after both discounts: an amount off the line counts as
+        // a share of each unit.
+        let per_unit_off = if line.qty.is_zero() {
+            Decimal::ZERO
+        } else {
+            amount_off / line.qty
+        };
         let net = |price: Decimal, discount: Decimal| {
             price * (Decimal::ONE_HUNDRED - discount) / Decimal::ONE_HUNDRED
         };
         let list_net = net(list_price, list_discount);
+        let line_net = net(line.unit_price, discount) - per_unit_off;
         let change = if list_net.is_zero() {
             Decimal::ZERO
         } else {
-            ((net(line.unit_price, discount) - list_net) / list_net * Decimal::ONE_HUNDRED)
-                .round_dp(4)
+            ((line_net - list_net) / list_net * Decimal::ONE_HUNDRED).round_dp(4)
         };
         ctx.decide(
             OVERRIDE,
@@ -444,6 +472,7 @@ pub async fn check(
                 "change_percent": change.normalize().to_string(),
                 "discount": discount.normalize().to_string(),
                 "list_discount": list_discount.normalize().to_string(),
+                "discount_amount": amount_off.normalize().to_string(),
                 "source": source,
             }),
         )

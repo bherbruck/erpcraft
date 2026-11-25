@@ -49,6 +49,10 @@ pub struct Proposal<'a> {
     pub charge_id: Option<Uuid>,
     /// Where the goods go on a sale; where the company is on a purchase.
     pub place: Option<&'a Place>,
+    /// What the document comes to, net: the sale that crosses a distance
+    /// selling threshold is itself taxed at destination (Article 59c). 0
+    /// where it does not matter.
+    pub net: Decimal,
 }
 
 /// The tax code an invoice line starts with when it names none.
@@ -287,6 +291,14 @@ async fn place_code(
             }
         }
         Side::Purchase { vendor_at, .. } => {
+            // Areas are shared: only the taxes this company accounts for
+            // (has accounts for) are proposed on its purchases, so another
+            // company's rate table does not reach it.
+            let accounted: Vec<Uuid> =
+                sqlx::query_scalar("SELECT tax_code_id FROM tax_settings WHERE company_id = $1")
+                    .bind(p.company_id)
+                    .fetch_all(&mut *conn)
+                    .await?;
             for part in &parts {
                 let charges = match (&part.country_code, vendor_at) {
                     (None, _) | (_, None) => true,
@@ -296,10 +308,13 @@ async fn place_code(
                                 || same_region(part.region.as_deref(), vendor_region.as_deref()))
                     }
                 };
-                if charges {
-                    kept.push(part.id);
-                } else if let Some(instead) = part.self_assessed_code_id {
-                    kept.push(instead);
+                let instead = if charges {
+                    Some(part.id)
+                } else {
+                    part.self_assessed_code_id
+                };
+                if let Some(code) = instead.filter(|c| accounted.contains(c)) {
+                    kept.push(code);
                 }
             }
         }
@@ -339,12 +354,12 @@ async fn beyond_threshold(
         return Ok(true);
     };
     let year = p.date.year();
-    let most: Decimal = distance_sales(conn, p.company_id, &oss.country_code, year - 1, year)
-        .await?
-        .into_values()
-        .max()
-        .unwrap_or_default();
-    Ok(most > threshold)
+    let sales = distance_sales(conn, p.company_id, &oss.country_code, year - 1, year).await?;
+    let before = sales.get(&(year - 1)).copied().unwrap_or_default();
+    // This sale counts in its own year: the one that crosses the threshold
+    // is already taxed at destination.
+    let this_year = sales.get(&year).copied().unwrap_or_default() + p.net;
+    Ok(before > threshold || this_year > threshold)
 }
 
 /// The bases of sales to consumers in other member states of `home`'s

@@ -762,6 +762,8 @@ async fn price_lines(
             item_code: code,
             unit_price: line.unit_price,
             discount_percent: line.discount_percent,
+            discount_amount: line.discount_amount,
+            qty: line.qty,
         });
     }
     Ok(out)
@@ -2586,6 +2588,7 @@ impl DocumentHandler for VendorInvoice {
                         item_id: ordered_line.and_then(|l| l.item_id),
                         charge_id: line.charge_id.or(ordered_line.and_then(|l| l.charge_id)),
                         place: place.as_ref(),
+                        net: Decimal::ZERO,
                     },
                 )
                 .await?;
@@ -3350,6 +3353,17 @@ impl Command for PostInvoice {
             erpcraft_gl::post(ctx, &posting, &gl).await?;
         }
         erpcraft_stock::adjust(&mut *ctx.conn, &posting, &adjustments).await?;
+        // The parties as the invoice shows them, kept from now on, before
+        // the tax that reads them is recorded.
+        let billing: Option<Uuid> = sqlx::query_scalar(
+            "SELECT billing_address_id FROM vendor_invoice WHERE document_id = $1",
+        )
+        .bind(doc.id)
+        .fetch_one(&mut *ctx.conn)
+        .await?;
+        let vendor = invoice_vendor(&mut *ctx.conn, doc.id).await?;
+        erpcraft_party::snapshot_purchase(&mut *ctx.conn, doc.id, doc.company_id, vendor, billing)
+            .await?;
         erpcraft_tax::record(&mut *ctx.conn, &posting, &taxes).await?;
         // What is now owed, as one open item for a payment to settle.
         // No approved order stands behind a direct invoice: the company's
@@ -3406,16 +3420,6 @@ impl Command for PostInvoice {
         if let Some(order) = &mut order {
             settle_order(ctx, order, &order_lines, false).await?;
         }
-        // The parties as the invoice shows them, kept from now on.
-        let billing: Option<Uuid> = sqlx::query_scalar(
-            "SELECT billing_address_id FROM vendor_invoice WHERE document_id = $1",
-        )
-        .bind(doc.id)
-        .fetch_one(&mut *ctx.conn)
-        .await?;
-        let vendor = invoice_vendor(&mut *ctx.conn, doc.id).await?;
-        erpcraft_party::snapshot_purchase(&mut *ctx.conn, doc.id, doc.company_id, vendor, billing)
-            .await?;
         document::transition(ctx, &mut doc, "posted").await?;
         document::view(ctx, doc).await
     }

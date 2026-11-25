@@ -112,7 +112,13 @@ async fn the_books_are_verified_and_a_disagreement_is_named() {
     let so = run(&t, "sales_order.approve", json!({ "id": id(&so) })).await;
     let delivery = run(&t, "sales_order.deliver", json!({ "id": id(&so) })).await;
     run(&t, "sales_delivery.post", json!({ "id": id(&delivery) })).await;
-    let invoice = run(&t, "sales_order.invoice", json!({ "id": id(&so) })).await;
+    // Dated with the payment below: an item is not settled before it.
+    let invoice = run(
+        &t,
+        "sales_order.invoice",
+        json!({ "id": id(&so), "doc_date": "2026-03-02" }),
+    )
+    .await;
     let invoice = run(&t, "sales_invoice.post", json!({ "id": id(&invoice) })).await;
     let item_id = invoice["postings"][0]["entries"]["open_items"][0]["id"].clone();
     let payment = draft(

@@ -1205,6 +1205,7 @@ async fn write_letter(
                 item_id: None,
                 charge_id: None,
                 place: place.as_ref(),
+                net: Decimal::ZERO,
             },
         )
         .await?;

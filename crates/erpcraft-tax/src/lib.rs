@@ -109,6 +109,11 @@ impl Module for TaxModule {
                 name: "destination",
                 sql: include_str!("../migrations/0012_destination.sql"),
             },
+            Migration {
+                version: 13,
+                name: "exemption_lock",
+                sql: include_str!("../migrations/0013_exemption_lock.sql"),
+            },
         ]
     }
 

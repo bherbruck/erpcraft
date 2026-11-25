@@ -34,11 +34,18 @@ impl Module for RecurringModule {
     }
 
     fn migrations(&self) -> Vec<Migration> {
-        vec![Migration {
-            version: 1,
-            name: "recurring",
-            sql: include_str!("../migrations/0001_recurring.sql"),
-        }]
+        vec![
+            Migration {
+                version: 1,
+                name: "recurring",
+                sql: include_str!("../migrations/0001_recurring.sql"),
+            },
+            Migration {
+                version: 2,
+                name: "line_company",
+                sql: include_str!("../migrations/0002_line_company.sql"),
+            },
+        ]
     }
 
     fn entities(&self) -> Vec<EntityMeta> {
@@ -144,8 +151,14 @@ impl Module for RecurringModule {
                         .help("Empty: what the tax rules propose."),
                 )
                 .field(created())
+                .field(
+                    FieldMeta::new("company_id", "Company", FieldType::link("company"))
+                        .immutable()
+                        .help("The template's company; filled in from it."),
+                )
                 .order_by(&["recurring_invoice_id", "line_no"])
-                .child_of("recurring_invoice", "recurring_invoice_id"),
+                .child_of("recurring_invoice", "recurring_invoice_id")
+                .company_field("company_id"),
         ]
     }
 

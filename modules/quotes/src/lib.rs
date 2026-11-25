@@ -486,6 +486,8 @@ impl Command for Issue {
                 item_code: code,
                 unit_price: line.unit_price,
                 discount_percent: line.discount_percent,
+                discount_amount: line.discount_amount,
+                qty: line.qty,
             });
         }
         erpcraft_pricing::check(

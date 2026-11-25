@@ -974,6 +974,8 @@ async fn price_lines(
             item_code: code,
             unit_price: line.unit_price,
             discount_percent: line.discount_percent,
+            discount_amount: line.discount_amount,
+            qty: line.qty,
         });
     }
     Ok(out)
@@ -2433,6 +2435,24 @@ impl DocumentHandler for SalesInvoice {
                 .unwrap_or_default(),
                 None => (None, None),
             };
+        // The goods went where the order's latest delivery took them, when
+        // it named its own address.
+        let delivered_to: Option<Uuid> = match body.sales_order_id {
+            Some(order_id) => {
+                sqlx::query_scalar(
+                    "SELECT d.shipping_address_id FROM sales_delivery d
+                 JOIN document doc ON doc.id = d.document_id
+                 WHERE d.sales_order_id = $1 AND doc.status = 'posted'
+                   AND d.shipping_address_id IS NOT NULL
+                 ORDER BY doc.doc_date DESC, doc.number DESC LIMIT 1",
+                )
+                .bind(order_id)
+                .fetch_optional(&mut *ctx.conn)
+                .await?
+            }
+            None => None,
+        };
+        let order_shipping = delivered_to.or(order_shipping);
         let place = erpcraft_party::ship_to(
             &mut *ctx.conn,
             "customer",
@@ -2462,6 +2482,23 @@ impl DocumentHandler for SalesInvoice {
             }
             line.discount_percent = line.discount_percent.filter(|p| !p.is_zero());
             line.discount_amount = line.discount_amount.filter(|a| !a.is_zero());
+        }
+        // What the invoice comes to, net: the sale that crosses a distance
+        // selling threshold is itself taxed at destination.
+        let net: Decimal = body
+            .lines
+            .iter()
+            .filter_map(|l| {
+                erpcraft_tax::line_net(
+                    l.qty,
+                    l.unit_price,
+                    l.discount_percent,
+                    l.discount_amount,
+                    decimals,
+                )
+            })
+            .sum();
+        for line in &mut body.lines {
             // No code given: what the tax rules propose for the party, the
             // item or the charge.
             if line.tax_code_id.is_none() {
@@ -2478,6 +2515,7 @@ impl DocumentHandler for SalesInvoice {
                         item_id: ordered_line.and_then(|l| l.item_id),
                         charge_id: line.charge_id.or(ordered_line.and_then(|l| l.charge_id)),
                         place: place.as_ref(),
+                        net,
                     },
                 )
                 .await?;
@@ -2509,9 +2547,9 @@ impl DocumentHandler for SalesInvoice {
                 billing_address_id = COALESCE($4, (SELECT o.billing_address_id
                                                    FROM sales_order o
                                                    WHERE o.document_id = i.sales_order_id)),
-                shipping_address_id = COALESCE($5, (SELECT o.shipping_address_id
-                                                    FROM sales_order o
-                                                    WHERE o.document_id = i.sales_order_id))
+                shipping_address_id = COALESCE($5, $6, (SELECT o.shipping_address_id
+                                                        FROM sales_order o
+                                                        WHERE o.document_id = i.sales_order_id))
              WHERE i.document_id = $1",
         )
         .bind(doc.id)
@@ -2519,6 +2557,7 @@ impl DocumentHandler for SalesInvoice {
         .bind(body.payment_terms_id)
         .bind(body.billing_address_id)
         .bind(body.shipping_address_id)
+        .bind(delivered_to)
         .execute(&mut *ctx.conn)
         .await?;
         let ids: Vec<Uuid> = body.lines.iter().filter_map(|l| l.order_line_id).collect();

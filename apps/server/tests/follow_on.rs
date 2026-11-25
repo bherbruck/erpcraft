@@ -246,7 +246,8 @@ async fn an_order_drafts_what_follows_from_it() {
             "company_id": w.company,
             "open_item_ids": [item["id"]],
             "bank_account_id": w.cash,
-            "doc_date": "2026-04-01",
+            // On the invoice's date: an item is not settled before it.
+            "doc_date": item["doc_date"],
         }),
     )
     .await;

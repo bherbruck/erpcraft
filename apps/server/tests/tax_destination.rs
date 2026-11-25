@@ -597,8 +597,12 @@ async fn eu_distance_sales_are_taxed_at_destination_past_the_threshold() {
     // Below the threshold: German VAT.
     let sale = de.sell(&t, &paris, "2026-02-10", "6000.00").await;
     assert_eq!(sale["body"]["lines"][0]["tax_code_id"], de19, "{sale}");
-    let sale = de.sell(&t, &vienna, "2026-03-10", "5000.00").await;
+    let sale = de.sell(&t, &vienna, "2026-03-10", "3000.00").await;
     assert_eq!(sale["body"]["lines"][0]["tax_code_id"], de19, "{sale}");
+    // The sale that takes the year past 10,000 is already taxed where the
+    // buyer is (Article 59c).
+    let sale = de.sell(&t, &vienna, "2026-03-20", "2000.00").await;
+    assert!(close(line_tax(&sale), 400.0), "{sale}");
     // Past it: the buyer's country's VAT, for consumers only.
     let april = de.sell(&t, &paris, "2026-04-10", "1000.00").await;
     assert_eq!(april["body"]["lines"][0]["tax_code_id"], fr20, "{april}");
@@ -624,7 +628,8 @@ async fn eu_distance_sales_are_taxed_at_destination_past_the_threshold() {
         json!({ "company_id": de.company, "year": 2026, "quarter": 1 }),
     )
     .await;
-    assert_eq!(q1["rows"], json!([]), "{q1}");
+    assert_eq!(q1["rows"].as_array().unwrap().len(), 1, "{q1}");
+    assert!(close(dec(&q1["total_vat"]), 400.0), "{q1}");
     let q2 = run(
         &t,
         "tax.oss_report",
@@ -681,7 +686,10 @@ async fn eu_distance_sales_are_taxed_at_destination_past_the_threshold() {
         .map(|r| dec(&r["collected"]))
         .sum();
     assert!(
-        close(abroad, dec(&q2["total_vat"]) + dec(&q3["total_vat"])),
+        close(
+            abroad,
+            dec(&q1["total_vat"]) + dec(&q2["total_vat"]) + dec(&q3["total_vat"])
+        ),
         "{report}"
     );
     t.stop().await;

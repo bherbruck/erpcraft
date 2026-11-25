@@ -232,15 +232,36 @@ impl DocumentHandler for SalesCredit {
             )
             .with_field("fx_rate"));
         }
-        // What the tax rules propose for a line that names no code.
+        // What the tax rules propose for a line that names no code, as for
+        // an invoice: by the customer, the charge and where the customer is.
+        let place =
+            erpcraft_party::ship_to(&mut *ctx.conn, "customer", body.customer_id, None, None)
+                .await?
+                .map(|a| erpcraft_tax::Place {
+                    country_code: a.country_code,
+                    region: a.region,
+                    postcode: a.postcode,
+                    city: a.city,
+                });
+        let consumer =
+            !erpcraft_party::has_tax_id(&mut *ctx.conn, "customer", body.customer_id, "eu_vat")
+                .await?;
         for line in &mut body.lines {
             if line.tax_code_id.is_none() {
-                line.tax_code_id = erpcraft_tax::proposed_code(
+                line.tax_code_id = erpcraft_tax::propose(
                     &mut *ctx.conn,
-                    doc.company_id,
-                    ("customer", body.customer_id),
-                    None,
-                    line.charge_id,
+                    &erpcraft_tax::Proposal {
+                        company_id: doc.company_id,
+                        date: doc.doc_date,
+                        side: erpcraft_tax::Side::Sale {
+                            customer_id: body.customer_id,
+                            consumer,
+                        },
+                        item_id: None,
+                        charge_id: line.charge_id,
+                        place: place.as_ref(),
+                        net: Decimal::ZERO,
+                    },
                 )
                 .await?;
             }

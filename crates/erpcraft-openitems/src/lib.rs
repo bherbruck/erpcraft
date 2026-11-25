@@ -101,6 +101,11 @@ impl Module for OpenItemsModule {
                 name: "rate_precision",
                 sql: include_str!("../migrations/0010_rate_precision.sql"),
             },
+            Migration {
+                version: 11,
+                name: "settle_after_item",
+                sql: include_str!("../migrations/0011_settle_after_item.sql"),
+            },
         ]
     }
 

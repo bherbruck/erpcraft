@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use erpcraft_kernel::{
     Command, CommandSpec, Ctx, Decimal, DynCommand, EntityMeta, Error, FieldMeta, FieldType,
     JsonSchema, Ledger, Migration, Module, PgConnection, Posting, Result, async_trait, command,
@@ -1163,7 +1163,15 @@ impl Command for SplitPeriod {
         let mut periods = vec![];
         for (from, to) in months {
             let id = new_id();
-            let month = from.format("%Y-%m").to_string();
+            // A whole month is YYYY-MM; part of one (a year that starts or
+            // ends mid-month) is named by its days, so two years sharing
+            // a calendar month do not name two periods the same.
+            let whole = from.day() == 1 && to.succ_opt().is_none_or(|d| d.day() == 1);
+            let month = if whole {
+                from.format("%Y-%m").to_string()
+            } else {
+                format!("{} to {}", from.format("%Y-%m-%d"), to.format("%Y-%m-%d"))
+            };
             sqlx::query(
                 "INSERT INTO fiscal_period (id, company_id, name, start_date, end_date) VALUES ($1, $2, $3, $4, $5)",
             )

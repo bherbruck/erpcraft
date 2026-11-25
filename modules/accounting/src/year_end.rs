@@ -81,15 +81,44 @@ async fn lock_period(
 }
 
 /// The first period of the year a close covers: the one the body names,
-/// else the closing period itself. It is one of the company's and starts
-/// no later than the closing period.
+/// else the earliest period that starts after the last close in effect
+/// and within a year of the closing period's end, so that a close naming
+/// only December of a year kept month by month closes the whole year. It
+/// is one of the company's and starts no later than the closing period.
 async fn first_period(
     conn: &mut PgConnection,
     doc: &Document,
     body: &Body,
     last: &Period,
 ) -> Result<Period> {
-    let Some(first) = body.first_period_id.filter(|id| *id != last.id) else {
+    let named = match body.first_period_id {
+        Some(id) => Some(id),
+        None => {
+            let year_start = last
+                .end_date
+                .succ_opt()
+                .and_then(|d| d.checked_sub_months(chrono::Months::new(12)))
+                .unwrap_or(last.start_date);
+            sqlx::query_scalar(
+                "SELECT f.id FROM fiscal_period f
+                 WHERE f.company_id = $1 AND f.start_date >= $2 AND f.start_date <= $3
+                   AND f.start_date > COALESCE((
+                       SELECT max(l.end_date) FROM year_end_closing c
+                       JOIN document d ON d.id = c.document_id
+                       JOIN fiscal_period l ON l.id = c.fiscal_period_id
+                       WHERE d.company_id = $1 AND c.reversal_posting_id IS NULL
+                         AND c.document_id <> $4 AND l.end_date < $3), '-infinity'::date)
+                 ORDER BY f.start_date LIMIT 1",
+            )
+            .bind(doc.company_id)
+            .bind(year_start)
+            .bind(last.start_date)
+            .bind(doc.id)
+            .fetch_optional(&mut *conn)
+            .await?
+        }
+    };
+    let Some(first) = named.filter(|id| *id != last.id) else {
         return Ok(Period {
             id: last.id,
             name: last.name.clone(),
@@ -238,7 +267,7 @@ impl DocumentHandler for YearEndClose {
         let body: Body = erpcraft_kernel::input::parse(body.clone(), "year-end close body")?;
         let period = lock_period(&mut *ctx.conn, doc, body.fiscal_period_id, false).await?;
         check(&mut *ctx.conn, doc, &body, &period).await?;
-        first_period(&mut *ctx.conn, doc, &body, &period).await?;
+        let first = first_period(&mut *ctx.conn, doc, &body, &period).await?;
         sqlx::query(
             "INSERT INTO year_end_close (document_id, fiscal_period_id, retained_earnings_account_id,
                  first_period_id)
@@ -251,7 +280,7 @@ impl DocumentHandler for YearEndClose {
         .bind(doc.id)
         .bind(body.fiscal_period_id)
         .bind(body.retained_earnings_account_id)
-        .bind(body.first_period_id.filter(|id| *id != body.fiscal_period_id))
+        .bind(first.id)
         .execute(&mut *ctx.conn)
         .await?;
         Ok(())
@@ -335,7 +364,9 @@ impl Command for PostYearEndClose {
              reversed, or has nothing to close. Posting a close that is already posted returns it \
              unchanged. With first_period_id the year is every period from that one to the \
              fiscal period: their income and expenses are closed together, and all of them are \
-             closed.",
+             closed. Without it, the year starts at the earliest period after the last close in \
+             effect within a year of the period's end, so naming December closes a year kept \
+             month by month whole.",
         )
         .from_states(&["draft"])
         .permission("year_end_close:post")

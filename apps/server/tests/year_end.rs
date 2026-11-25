@@ -831,7 +831,22 @@ async fn a_year_of_monthly_periods_is_closed_in_one_step() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(at_now(&t, &c, &retained).await, 0.0);
     journal(&t, &c, "2025-06-05", &cash, &company.revenue, "1000.00").await;
-    let june = close(&t, &c, "2025-06-30", &months[5], &retained).await;
+    // June alone: a close that names no first period covers the year up
+    // to it, so June names itself as its first.
+    let (status, draft) = t
+        .post(
+            &t.admin,
+            "/api/documents/year_end_close",
+            json!({ "company_id": c, "doc_date": "2025-06-30", "body": {
+                "fiscal_period_id": months[5], "first_period_id": months[5],
+                "retained_earnings_account_id": retained } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{draft}");
+    let (status, june) = t
+        .command(&t.admin, "year_end_close.post", json!({ "id": id(&draft) }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{june}");
     assert_eq!(dec(&june["summary"]["result"]), 1000.0, "{june}");
     assert_eq!(at_now(&t, &c, &retained).await, -1000.0);
     t.stop().await;

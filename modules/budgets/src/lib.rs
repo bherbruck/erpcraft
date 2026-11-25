@@ -31,11 +31,18 @@ impl Module for BudgetsModule {
     }
 
     fn migrations(&self) -> Vec<Migration> {
-        vec![Migration {
-            version: 1,
-            name: "budgets",
-            sql: include_str!("../migrations/0001_budgets.sql"),
-        }]
+        vec![
+            Migration {
+                version: 1,
+                name: "budgets",
+                sql: include_str!("../migrations/0001_budgets.sql"),
+            },
+            Migration {
+                version: 2,
+                name: "line_company",
+                sql: include_str!("../migrations/0002_line_company.sql"),
+            },
+        ]
     }
 
     fn entities(&self) -> Vec<EntityMeta> {
@@ -104,8 +111,14 @@ impl Module for BudgetsModule {
                         ),
                 )
                 .field(created())
+                .field(
+                    FieldMeta::new("company_id", "Company", FieldType::link("company"))
+                        .immutable()
+                        .help("The budget's company; filled in from the budget."),
+                )
                 .order_by(&["month", "account_id"])
-                .child_of("budget", "budget_id"),
+                .child_of("budget", "budget_id")
+                .company_field("company_id"),
         ]
     }
 

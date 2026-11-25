@@ -231,15 +231,37 @@ impl DocumentHandler for VendorCredit {
             )
             .with_field("fx_rate"));
         }
-        // What the tax rules propose for a line that names no code.
+        // What the tax rules propose for a line that names no code, as for
+        // a vendor invoice: by the vendor, the charge and where the company
+        // and the vendor are.
+        let place = erpcraft_party::ship_to(&mut *ctx.conn, "company", doc.company_id, None, None)
+            .await?
+            .map(|a| erpcraft_tax::Place {
+                country_code: a.country_code,
+                region: a.region,
+                postcode: a.postcode,
+                city: a.city,
+            });
+        let vendor_at = erpcraft_party::load(&mut *ctx.conn, "vendor", body.vendor_id)
+            .await?
+            .address
+            .map(|a| (a.country_code, a.region));
         for line in &mut body.lines {
             if line.tax_code_id.is_none() {
-                line.tax_code_id = erpcraft_tax::proposed_code(
+                line.tax_code_id = erpcraft_tax::propose(
                     &mut *ctx.conn,
-                    doc.company_id,
-                    ("vendor", body.vendor_id),
-                    None,
-                    line.charge_id,
+                    &erpcraft_tax::Proposal {
+                        company_id: doc.company_id,
+                        date: doc.doc_date,
+                        side: erpcraft_tax::Side::Purchase {
+                            vendor_id: body.vendor_id,
+                            vendor_at: vendor_at.clone(),
+                        },
+                        item_id: None,
+                        charge_id: line.charge_id,
+                        place: place.as_ref(),
+                        net: Decimal::ZERO,
+                    },
                 )
                 .await?;
             }
@@ -529,6 +551,9 @@ impl Command for PostCredit {
             erpcraft_gl::add_scopes(&mut gl, &scopes, &[("vendor", vendor)]);
             erpcraft_gl::post(ctx, &posting, &gl).await?;
         }
+        // The parties first: the tax recorded reads where the goods went.
+        erpcraft_party::snapshot_purchase(&mut *ctx.conn, doc.id, doc.company_id, vendor, None)
+            .await?;
         erpcraft_tax::record(&mut *ctx.conn, &posting, &taxes).await?;
         if !owed_back.is_zero() {
             erpcraft_openitems::open(
@@ -557,8 +582,6 @@ impl Command for PostCredit {
                 .execute(&mut *ctx.conn)
                 .await?;
         }
-        erpcraft_party::snapshot_purchase(&mut *ctx.conn, doc.id, doc.company_id, vendor, None)
-            .await?;
         document::transition(ctx, &mut doc, "posted").await?;
         document::view(ctx, doc).await
     }

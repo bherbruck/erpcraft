@@ -729,12 +729,34 @@ pub async fn create(ctx: &mut Ctx<'_>, entity: &str, data: Value) -> Result<Valu
         // Shared records, and companies themselves, need a grant for all companies.
         None | Some("id") => Target::Global,
         Some(field) => {
-            let company = data
+            let mut company = data
                 .get(field)
                 .and_then(Value::as_str)
-                .and_then(|s| Uuid::parse_str(s).ok())
-                .ok_or_else(|| Error::field(field, "is required"))?;
-            Target::Company(company)
+                .and_then(|s| Uuid::parse_str(s).ok());
+            // A child of a record of a company, such as a line of a price
+            // list, is of its parent's company when it does not say.
+            if company.is_none()
+                && let Some(parent) = &meta.parent
+                && let Some(parent_id) = data
+                    .get(&parent.field)
+                    .and_then(Value::as_str)
+                    .and_then(|s| Uuid::parse_str(s).ok())
+            {
+                let parent_meta = kernel.registry().entity(&parent.entity)?;
+                if let Some(column) = parent_meta.company_field.as_deref() {
+                    company = sqlx::query_scalar(&format!(
+                        "SELECT {column} FROM {} WHERE id = $1",
+                        parent_meta.table
+                    ))
+                    .bind(parent_id)
+                    .fetch_optional(&mut *ctx.conn)
+                    .await?;
+                    if let Some(company) = company {
+                        data.insert(field.to_owned(), json!(company));
+                    }
+                }
+            }
+            Target::Company(company.ok_or_else(|| Error::field(field, "is required"))?)
         }
     };
     let record = rule_record(meta, &Value::Object(data.clone()));
