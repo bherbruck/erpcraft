@@ -433,3 +433,40 @@ async fn a_sepa_run_writes_pain_001() {
     }
     t.stop().await;
 }
+
+#[tokio::test]
+async fn a_legacy_iban_does_not_stop_the_rest_of_its_row_changing() {
+    let t = TestApp::start().await;
+    let us = company(&t, "us_small_business", "OHIO").await;
+    let number = t
+        .create(
+            "bank_account_number",
+            json!({ "company_id": us.id, "bank_account_id": us.bank,
+                    "iban": "DE89370400440532013000" }),
+        )
+        .await;
+    // Saved before IBANs were checked: wrong check digits.
+    sqlx::query("ALTER TABLE bank_account_number DISABLE TRIGGER bank_account_number_iban_check")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE bank_account_number SET iban = 'DE00370400440532013000'")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE bank_account_number ENABLE TRIGGER bank_account_number_iban_check")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    // The routing number can still be added; a new wrong IBAN cannot.
+    let path = format!("/api/entities/bank_account_number/{number}");
+    let (status, body) = t
+        .patch(&t.admin, &path, json!({ "routing_number": "021000021" }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = t
+        .patch(&t.admin, &path, json!({ "iban": "DE01370400440532013000" }))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    t.stop().await;
+}

@@ -78,6 +78,11 @@ impl Module for BankingModule {
                 name: "party_bank_account",
                 sql: include_str!("../migrations/0005_party_bank_account.sql"),
             },
+            Migration {
+                version: 6,
+                name: "iban_on_change",
+                sql: include_str!("../migrations/0006_iban_on_change.sql"),
+            },
         ]
     }
 
@@ -310,6 +315,7 @@ fn party_account_entity() -> EntityMeta {
 /// A vendor's or customer's bank account, as a bank file writes it.
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct PartyAccount {
+    pub id: Uuid,
     pub iban: Option<String>,
     pub bic: Option<String>,
     pub routing_number: Option<String>,
@@ -327,7 +333,7 @@ pub async fn party_account(
     party_id: Uuid,
 ) -> Result<Option<PartyAccount>> {
     let found: Vec<PartyAccount> = sqlx::query_as(
-        "SELECT iban, bic, routing_number, account_number, account_type, account_name, currency
+        "SELECT id, iban, bic, routing_number, account_number, account_type, account_name, currency
          FROM party_bank_account
          WHERE party_type = $1 AND party_id = $2 AND active
          ORDER BY is_default DESC, created_at",

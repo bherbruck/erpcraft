@@ -800,12 +800,14 @@ impl Command for Post {
     }
 }
 
-/// The payments a posted run made, in order.
+/// The payments a posted run made that still stand, in order: one
+/// reversed since paid nothing.
 pub(crate) async fn payments_of(conn: &mut PgConnection, run: Uuid) -> Result<Vec<Uuid>> {
     Ok(sqlx::query_scalar(
         "SELECT p.payment_id FROM payment_run_payment p
          JOIN payment_run_line l ON l.document_id = p.document_id AND l.vendor_id = p.vendor_id
-         WHERE p.document_id = $1
+         JOIN document d ON d.id = p.payment_id
+         WHERE p.document_id = $1 AND d.status = 'posted'
          GROUP BY p.payment_id ORDER BY min(l.line_no)",
     )
     .bind(run)
@@ -841,7 +843,8 @@ impl Command for SendRemittances {
             "payment_run.send_remittances",
             "Send the remittance advice of a posted payment run: each payment by email to its \
              vendor with document.send (the payment's PDF lists the invoices it pays), to the \
-             contact email the vendor has on record. A vendor without one is listed as skipped. \
+             contact email the vendor has on record. A vendor without one is listed as skipped; \
+             a payment reversed since is not sent. \
              Takes the right to send documents.",
         )
         .permission("payment_run:read")
@@ -849,7 +852,8 @@ impl Command for SendRemittances {
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: IdInput) -> Result<SentOutput> {
-        let doc = document::lock(ctx, PAYMENT_RUN, input.id, "read").await?;
+        // Read, not locked: sending changes nothing on the run.
+        let doc = document::get(ctx, PAYMENT_RUN, input.id).await?.header;
         if doc.status != "posted" {
             return Err(Error::state(
                 "remittance advice is sent for a posted payment run",

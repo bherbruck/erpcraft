@@ -4,8 +4,7 @@
 use chrono::{NaiveDate, Utc};
 use erpcraft_kernel::document;
 use erpcraft_kernel::{
-    Command, CommandSpec, Ctx, Decimal, Error, JsonSchema, PgConnection, Result, async_trait,
-    schemars,
+    Command, CommandSpec, Ctx, Decimal, Error, JsonSchema, Result, async_trait, schemars,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -42,6 +41,12 @@ pub(crate) struct BankFileInput {
     /// For NACHA: the standard entry class, `CCD` (the default) or `PPD`.
     #[serde(default)]
     sec_code: Sec,
+    /// Write the file without the run's payments that were reversed since
+    /// it was posted. Without it, a run with a reversed payment has no
+    /// file: a file written before may have reached the bank, and the
+    /// items those payments were for may be paid again by another run.
+    #[serde(default)]
+    without_reversed: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -73,7 +78,13 @@ fn cut(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
 }
 
+/// Text as XML character data. Control characters, which XML 1.0 does not
+/// allow, become spaces.
 fn xml(text: &str) -> String {
+    let text: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -81,14 +92,35 @@ fn xml(text: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-async fn credits(conn: &mut PgConnection, run: Uuid, lines: &[crate::Line]) -> Result<Vec<Credit>> {
+/// The credits of a posted run: one per payment that stands. A payment
+/// reversed since is left out; `reversed` lists them.
+async fn credits(
+    ctx: &mut Ctx<'_>,
+    run: Uuid,
+    lines: &[crate::Line],
+    reversed: &mut Vec<String>,
+) -> Result<Vec<Credit>> {
     let mut out = vec![];
     for (vendor, lines) in by_vendor(lines) {
+        let conn = &mut *ctx.conn;
         let (code, name): (String, String) =
             sqlx::query_as("SELECT code, name FROM vendor WHERE id = $1")
                 .bind(vendor)
                 .fetch_one(&mut *conn)
                 .await?;
+        let payment = lines
+            .first()
+            .and_then(|l| l.payment_id)
+            .ok_or_else(|| Error::internal("a posted run's line without its payment"))?;
+        let (number, status): (Option<String>, String) =
+            sqlx::query_as("SELECT number, status FROM document WHERE id = $1")
+                .bind(payment)
+                .fetch_one(&mut *conn)
+                .await?;
+        if status != "posted" {
+            reversed.push(number.unwrap_or_else(|| payment.to_string()));
+            continue;
+        }
         let account = erpcraft_banking::party_account(conn, "vendor", vendor)
             .await?
             .ok_or_else(|| {
@@ -96,6 +128,25 @@ async fn credits(conn: &mut PgConnection, run: Uuid, lines: &[crate::Line]) -> R
                     "vendor {code} has no bank account on record: add a party_bank_account"
                 ))
             })?;
+        // Read as the caller may read it: by the rules' conditions, and
+        // with no number the caller's rules withhold.
+        let readable =
+            erpcraft_kernel::entity::readable_ids(ctx, "party_bank_account", &[account.id]).await?;
+        let withheld = [
+            "iban",
+            "bic",
+            "routing_number",
+            "account_number",
+            "account_name",
+        ]
+        .iter()
+        .any(|f| ctx.actor.may_withhold("party_bank_account:read", f));
+        if !readable.contains(&account.id) || withheld {
+            return Err(Error::forbidden(format!(
+                "the bank file shows vendor {code}'s bank account, which you may not read"
+            )));
+        }
+        let conn = &mut *ctx.conn;
         let items: Vec<Uuid> = lines.iter().map(|l| l.open_item_id).collect();
         let refs: Vec<String> = sqlx::query_scalar(
             "SELECT COALESCE(NULLIF(vi.vendor_reference, ''), d.number, '')
@@ -107,15 +158,6 @@ async fn credits(conn: &mut PgConnection, run: Uuid, lines: &[crate::Line]) -> R
         .bind(&items)
         .fetch_all(&mut *conn)
         .await?;
-        let payment = lines
-            .first()
-            .and_then(|l| l.payment_id)
-            .ok_or_else(|| Error::internal("a posted run's line without its payment"))?;
-        let number: Option<String> =
-            sqlx::query_scalar("SELECT number FROM document WHERE id = $1")
-                .bind(payment)
-                .fetch_one(&mut *conn)
-                .await?;
         out.push(Credit {
             end_to_end: number.unwrap_or_else(|| run.simple().to_string()),
             vendor_code: code,
@@ -145,8 +187,9 @@ impl Command for BankFile {
              from the bank account's IBAN and BIC to each vendor's default bank account; \
              `nacha`, a NACHA ACH file of CCD (or PPD) credits in USD from the bank account's \
              routing number and ACH company ID to each vendor's routing and account number. The \
-             invoices' references go with each credit. Takes the right to read the run and \
-             vendors' bank accounts.",
+             invoices' references go with each credit. A run with a payment reversed since it \
+             was posted is refused unless without_reversed. Takes the right to read the run and \
+             each vendor's bank account, by the caller's own rules.",
         )
         .permission("payment_run:read")
     }
@@ -168,7 +211,22 @@ impl Command for BankFile {
             .await?
             .ok_or_else(|| Error::internal("a payment run without its header"))?;
         let lines = load_lines(&mut *ctx.conn, doc.id).await?;
-        let credits = credits(&mut *ctx.conn, doc.id, &lines).await?;
+        let mut reversed = vec![];
+        let credits = credits(ctx, doc.id, &lines, &mut reversed).await?;
+        if !reversed.is_empty() && !input.without_reversed {
+            return Err(Error::state(format!(
+                "payment(s) {} of this run were reversed after it was posted: a bank file \
+                 written before must not be sent, and the items may be paid again by another \
+                 run. Write the file again without them (without_reversed) only once you know \
+                 what reached the bank.",
+                reversed.join(", ")
+            )));
+        }
+        if credits.is_empty() {
+            return Err(Error::state(
+                "every payment of this run was reversed: there is nothing to pay",
+            ));
+        }
         let own = erpcraft_banking::account_number(&mut *ctx.conn, header.bank_account_id)
             .await?
             .ok_or_else(|| {
@@ -332,10 +390,41 @@ fn alpha(text: &str, width: usize) -> String {
     format!("{text:<width$}")
 }
 
+/// An amount in a NACHA field of `width` digits; refused when it has more,
+/// never cut.
+fn amount(value: u64, width: usize, what: &str) -> Result<String> {
+    let text = value.to_string();
+    if text.len() > width {
+        return Err(Error::validation(format!(
+            "{what} of {}.{:02} does not fit the {width} digits of a NACHA file",
+            value / 100,
+            value % 100
+        )));
+    }
+    Ok(format!("{text:0>width$}"))
+}
+
+/// A number in a NACHA field, its rightmost `width` digits: for the entry
+/// hash, which the format defines that way, and counts.
 fn numeric(value: u64, width: usize) -> String {
     let text = value.to_string();
     let text = &text[text.len().saturating_sub(width)..];
     format!("{text:0>width$}")
+}
+
+/// The receiving account number, left-justified as it is: not upper-cased
+/// like the names, since the bank matches it as given.
+fn account_field(account: &str) -> Result<String> {
+    if account.chars().count() > 17
+        || !account
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err(Error::validation(format!(
+            "account number {account} does not fit a NACHA entry (17 letters and digits)"
+        )));
+    }
+    Ok(format!("{account:<17}"))
 }
 
 fn cents(amount: Decimal) -> Result<u64> {
@@ -415,8 +504,12 @@ fn nacha(
         let seq = n as u64 + 1;
         records.push(format!(
             "6{code}{to}{}{}{}{}  {}{odfi}{}",
-            alpha(account, 17),
-            numeric(amount, 10),
+            account_field(account)?,
+            self::amount(
+                amount,
+                10,
+                &format!("the payment to vendor {}", credit.vendor_code)
+            )?,
             alpha(&credit.vendor_code, 15),
             alpha(
                 credit
@@ -446,7 +539,7 @@ fn nacha(
         numeric(entries, 6),
         numeric(hash, 10),
         numeric(0, 12),
-        numeric(total, 12),
+        amount(total, 12, "the batch's total")?,
         alpha(company_id, 10),
         alpha("", 19),
         alpha("", 6),
@@ -461,7 +554,7 @@ fn nacha(
         numeric(entries, 8),
         numeric(hash, 10),
         numeric(0, 12),
-        numeric(total, 12),
+        amount(total, 12, "the file's total")?,
         alpha("", 39),
     ));
     while !records.len().is_multiple_of(10) {

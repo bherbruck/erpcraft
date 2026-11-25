@@ -686,13 +686,17 @@ async fn what_an_invoice_needs_is_named_with_where_to_set_it() {
     assert_eq!(status, StatusCode::CREATED, "{draft}");
     let (status, _) = export(&t, "sales_invoice", &draft, "ubl").await;
     assert_eq!(status, StatusCode::CONFLICT);
-    // An IBAN saved before banking checked them (its constraint is NOT
-    // VALID, so such rows stay): the e-invoice still refuses it.
-    sqlx::query("ALTER TABLE bank_account_number DROP CONSTRAINT bank_account_number_iban_valid")
+    // An IBAN saved before banking checked them (such rows stay as they
+    // are): the e-invoice still refuses it.
+    sqlx::query("ALTER TABLE bank_account_number DISABLE TRIGGER bank_account_number_iban_check")
         .execute(&t.pool)
         .await
         .unwrap();
     sqlx::query("UPDATE bank_account_number SET iban = 'DE89370400440532013001'")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE bank_account_number ENABLE TRIGGER bank_account_number_iban_check")
         .execute(&t.pool)
         .await
         .unwrap();
