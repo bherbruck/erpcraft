@@ -2,7 +2,7 @@
 //! Ohio and a warehouse in Germany, driven through March 2026 the way it
 //! would run, and then every ledger reconciled against every other.
 //!
-//! The company is set up from the US template. It buys steel at home and
+//! The company is set up from the US manufacturer template. It buys steel at home and
 //! bolts in the EU (reverse charge), pays freight that lands on the goods,
 //! lets planning draft its purchase and production orders, makes widgets on
 //! a routed line with recorded time, takes an order by EDI, sells in USD and
@@ -10,8 +10,8 @@
 //! emails PDFs, is paid with a discount and a write-off, credits a
 //! customer, revalues its euros, depreciates a machine, and checks its books.
 //!
-//! What cannot be done without a workaround is not worked around: each such
-//! gap is a test of its own, `#[ignore]`d, with the finding in its comment.
+//! What could not be done without a workaround was not worked around: each
+//! such gap became a test of its own, and each is now closed.
 
 mod common;
 
@@ -98,14 +98,6 @@ async fn account(t: &TestApp, c: &str, code: &str, name: &str, kind: &str) -> St
     .await
 }
 
-async fn rule(t: &TestApp, c: &str, purpose: &str, account: &str) {
-    t.create(
-        "account_rule",
-        json!({ "company_id": c, "purpose": purpose, "account_id": account }),
-    )
-    .await;
-}
-
 /// Record a party's address, tax id and email, as party.set takes them.
 async fn party(
     t: &TestApp,
@@ -127,14 +119,14 @@ async fn party(
     run(t, "party.set", input).await;
 }
 
-/// The company as March 2026 begins: set up from the US template, with two
-/// sites and a SITE dimension, warehouses, items, a bill with a routing,
-/// reorder rules, taxes and the accounts the template leaves out.
+/// The company as March 2026 begins: set up from the US manufacturer
+/// template, with two sites and a SITE dimension, warehouses, items, a bill
+/// with a routing, reorder rules, and taxes, EU VAT on accounts of its own.
 async fn set_up(t: &TestApp) -> Owi {
     let created = run(
         t,
         "company.setup",
-        json!({ "template": "us_small_business", "code": COMPANY, "name": "Ohio Widgets Inc",
+        json!({ "template": "us_manufacturer", "code": COMPANY, "name": "Ohio Widgets Inc",
                 "first_year": 2026, "years": 1 }),
     )
     .await;
@@ -150,31 +142,14 @@ async fn set_up(t: &TestApp) -> Owi {
         );
     }
 
-    // What the template has no role for: goods in transit, finished goods,
-    // making, writing off, unrealized exchange differences, EU VAT.
+    // The template has every account making needs; EU VAT is the company's
+    // own business.
     let mut account_ids = HashMap::new();
     for (code, name, kind) in [
-        ("1310", "Finished goods", "asset"),
-        ("1350", "Goods in transit", "asset"),
         ("1410", "EU VAT reclaimable", "asset"),
         ("2310", "EU VAT owed", "liability"),
-        ("5900", "Absorbed production cost", "expense"),
-        ("5950", "Production variance", "expense"),
-        ("6900", "Payment differences", "expense"),
-        ("7300", "Unrealized exchange gain", "income"),
-        ("7400", "Unrealized exchange loss", "expense"),
     ] {
         account_ids.insert(code, account(t, &c, code, name, kind).await);
-    }
-    for (purpose, code) in [
-        ("inventory_in_transit", "1350"),
-        ("absorbed_cost", "5900"),
-        ("production_variance", "5950"),
-        ("write_off", "6900"),
-        ("fx_unrealized_gain", "7300"),
-        ("fx_unrealized_loss", "7400"),
-    ] {
-        rule(t, &c, purpose, &account_ids[code]).await;
     }
 
     // Two sites, each with its value of the SITE dimension.
@@ -242,7 +217,7 @@ async fn set_up(t: &TestApp) -> Owi {
     t.create(
         "account_rule",
         json!({ "company_id": c, "purpose": "inventory", "scope_type": "item", "scope_id": widget,
-                "account_id": account_ids["1310"] }),
+                "account_id": role["finished_goods"].0 }),
     )
     .await;
 
@@ -1056,23 +1031,22 @@ async fn a_month_in_the_life_of_ohio_widgets() {
     );
     let figures: Vec<(&str, f64)> = [
         ("inventory", o.code("inventory")),
-        ("finished", "1310"),
-        ("in transit", "1350"),
+        ("finished", o.code("finished_goods")),
+        ("in transit", o.code("inventory_in_transit")),
         ("receivable", o.code("receivable")),
         ("payable", o.code("payable")),
         ("grni", o.code("grni")),
         ("revenue", o.code("revenue")),
         ("cogs", o.code("cogs")),
         ("price variance", o.code("price_variance")),
-        ("absorbed", "5900"),
-        ("production variance", "5950"),
-        ("write-off", "6900"),
-        // Roles company.setup does not return; their codes in the US template.
-        ("discount given", "4030"),
-        ("fx gain", "4910"),
-        ("fx loss", "6140"),
-        ("unrealized gain", "7300"),
-        ("unrealized loss", "7400"),
+        ("absorbed", o.code("absorbed_cost")),
+        ("production variance", o.code("production_variance")),
+        ("write-off", o.code("write_off")),
+        ("discount given", o.code("discount_given")),
+        ("fx gain", o.code("fx_gain")),
+        ("fx loss", o.code("fx_loss")),
+        ("unrealized gain", o.code("fx_unrealized_gain")),
+        ("unrealized loss", o.code("fx_unrealized_loss")),
         ("EU VAT reclaim", "1410"),
         ("EU VAT owed", "2310"),
         ("bank", o.code("bank")),
@@ -1109,15 +1083,15 @@ async fn a_month_in_the_life_of_ohio_widgets() {
     );
     // Boltwerk's 100.00 EUR, booked at 1.08, is 110.00 at 1.10: 2.00 lost.
     assert!(
-        close(balance(&month_end, "7400"), 2.0),
+        close(balance(&month_end, o.code("fx_unrealized_loss")), 2.0),
         "unrealized loss {}",
-        balance(&month_end, "7400")
+        balance(&month_end, o.code("fx_unrealized_loss"))
     );
     // Müller's open half, 220.00 EUR booked at 1.09, is 242.00 at 1.10: 2.20 gained.
     assert!(
-        close(balance(&month_end, "7300"), -2.2),
+        close(balance(&month_end, o.code("fx_unrealized_gain")), -2.2),
         "unrealized gain {}",
-        balance(&month_end, "7300")
+        balance(&month_end, o.code("fx_unrealized_gain"))
     );
     assert!(figure("discount given") > 0.0, "Acme took a discount");
     assert!(
@@ -1138,15 +1112,18 @@ async fn a_month_in_the_life_of_ohio_widgets() {
         json!({ "company_id": c, "transit": true }),
     )
     .await;
-    let inventory = balance(&tb, o.code("inventory")) + balance(&tb, "1310");
+    let inventory = balance(&tb, o.code("inventory")) + balance(&tb, o.code("finished_goods"));
     assert!(
         close(inventory, dec(&stock["total_value"])),
         "inventory {inventory} vs stock {stock}"
     );
     assert!(
-        close(balance(&tb, "1350"), dec(&in_transit_stock["total_value"])),
+        close(
+            balance(&tb, o.code("inventory_in_transit")),
+            dec(&in_transit_stock["total_value"])
+        ),
         "in transit {} vs {in_transit_stock}",
-        balance(&tb, "1350")
+        balance(&tb, o.code("inventory_in_transit"))
     );
     assert!(
         dec(&in_transit_stock["total_value"]) > 0.0,
@@ -1161,8 +1138,9 @@ async fn a_month_in_the_life_of_ohio_widgets() {
             json!({ "company_id": c, "dimension_value_ids": [value] }),
         )
         .await;
-        let at_site =
-            balance(&gl, o.code("inventory")) + balance(&gl, "1310") + balance(&gl, "1350");
+        let at_site = balance(&gl, o.code("inventory"))
+            + balance(&gl, o.code("finished_goods"))
+            + balance(&gl, o.code("inventory_in_transit"));
         let mut stock_at_site = 0.0;
         for transit in [false, true] {
             let s = run(
@@ -1185,8 +1163,8 @@ async fn a_month_in_the_life_of_ohio_widgets() {
     );
 
     // Receivables and payables are what is open, at the rates booked; at the
-    // month's end the ledger also holds the revaluation (open items have no
-    // view as of a past day, so the revaluation is the bridge).
+    // month's end, what the open items were carried at that day, with the
+    // month-end revaluation (which April 1 reverses).
     for (kind, control, sign, revalued) in [
         ("receivable", "receivable", 1.0, 2.2),
         ("payable", "payable", -1.0, 2.0),
@@ -1203,12 +1181,55 @@ async fn a_month_in_the_life_of_ohio_widgets() {
             close(open, ledger),
             "{kind}: open {open} vs ledger {ledger}"
         );
+        let march = run(
+            &t,
+            "open_item.list",
+            json!({ "company_id": c, "kind": kind, "as_of": "2026-03-31" }),
+        )
+        .await;
+        let carried = dec(&march["total_carried"]);
         let at_month_end = sign * balance(&month_end, o.code(control));
         assert!(
-            close(at_month_end, open + revalued),
-            "{kind} at March 31: {at_month_end} vs open {open} + {revalued}"
+            close(at_month_end, carried),
+            "{kind} at March 31: ledger {at_month_end} vs open items carried at {carried}"
+        );
+        assert!(
+            close(carried, dec(&march["total_open"]) + revalued),
+            "{kind}: {march}"
         );
     }
+
+    // March is closed: nothing more is posted into it, April goes on.
+    let periods = run(
+        &t,
+        "entity.list",
+        json!({ "entity": "fiscal_period", "filters": { "company_id": c, "name": "2026-03" } }),
+    )
+    .await;
+    run(
+        &t,
+        "fiscal_period.close",
+        json!({ "id": periods["items"][0]["id"] }),
+    )
+    .await;
+    let (status, late) = t
+        .post(
+            &t.admin,
+            "/api/documents/journal_entry",
+            json!({ "company_id": c, "doc_date": "2026-03-31", "body": { "lines": [
+                { "account_id": o.role("bank"), "debit": "1.00" },
+                { "account_id": o.role("revenue"), "credit": "1.00" } ] } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{late}");
+    let (status, refused) = t
+        .command(&t.admin, "journal_entry.post", json!({ "id": late["id"] }))
+        .await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "posted into a closed March: {refused}"
+    );
 
     // The tax accounts are the tax report.
     let tax = run(
@@ -1287,47 +1308,219 @@ async fn a_month_in_the_life_of_ohio_widgets() {
 
 // ------------------------------------------------------------------ gaps
 //
-// What the month needed and could not do without a workaround. Each test
-// is what should work; it is ignored until it does.
+// What the month needed and, when it was first run, could not do without a
+// workaround. Each finding is now closed; the tests keep it closed.
 
-/// FINDING (month-end close): a company set up from a template cannot close
-/// a month. `company.setup` makes one fiscal period per year (FY2026), and
-/// fiscal periods may not overlap (`fiscal_period_no_overlap`), so there is
-/// no March period to close, and nothing else locks posting up to a date.
-/// A company that closes monthly has to build its periods by hand instead
-/// of from the template.
+/// Period id by name.
+async fn period(t: &TestApp, c: &str, name: &str) -> Value {
+    let periods = run(
+        t,
+        "entity.list",
+        json!({ "entity": "fiscal_period", "filters": { "company_id": c, "name": name } }),
+    )
+    .await;
+    periods["items"][0]["id"].clone()
+}
+
+/// A journal entry of `amount` from `credit` to `debit`, posted or refused.
+async fn journal(
+    t: &TestApp,
+    c: &str,
+    date: &str,
+    debit: &str,
+    credit: &str,
+    amount: &str,
+) -> (StatusCode, Value) {
+    let draft = draft(
+        t,
+        c,
+        "journal_entry",
+        date,
+        json!({ "lines": [
+            { "account_id": debit, "debit": amount },
+            { "account_id": credit, "credit": amount } ] }),
+    )
+    .await;
+    t.command(&t.admin, "journal_entry.post", json!({ "id": draft["id"] }))
+        .await
+}
+
+/// Closed finding (month-end close): `company.setup` made one fiscal period
+/// a year, so a company set up from a template could not close a month. It
+/// now makes one a month (`"periods": "yearly"` for one a year), and returns
+/// each year's first and last period for its year-end close.
 #[tokio::test]
-#[ignore = "finding: no month-end close for a company set up from a template"]
 async fn gap_a_month_can_be_closed() {
     let t = TestApp::start().await;
     let created = run(
         &t,
         "company.setup",
-        json!({ "template": "us_small_business", "code": COMPANY, "name": "Ohio Widgets Inc",
+        json!({ "template": "us_manufacturer", "code": COMPANY, "name": "Ohio Widgets Inc",
                 "first_year": 2026, "years": 1 }),
     )
     .await;
     let c = created["company"]["id"].as_str().unwrap().to_owned();
-    let (status, march) = t
+    let (bank, revenue) = (
+        created["roles"]["bank"]["id"].as_str().unwrap(),
+        created["roles"]["revenue"]["id"].as_str().unwrap(),
+    );
+    let march = period(&t, &c, "2026-03").await;
+    assert!(march.is_string(), "{created}");
+    run(&t, "fiscal_period.close", json!({ "id": march })).await;
+    let (status, body) = journal(&t, &c, "2026-03-31", bank, revenue, "1.00").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (status, body) = journal(&t, &c, "2026-04-01", bank, revenue, "1.00").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The year still closes in one step, across its twelve months.
+    let year = &created["fiscal_years"][0];
+    let (status, draft) = t
         .post(
             &t.admin,
-            "/api/entities/fiscal_period",
-            json!({ "company_id": c, "name": "2026-03", "start_date": "2026-03-01", "end_date": "2026-03-31" }),
+            "/api/documents/year_end_close",
+            json!({ "company_id": c, "doc_date": "2026-12-31", "body": {
+                "fiscal_period_id": year["last_period_id"],
+                "first_period_id": year["first_period_id"],
+                "retained_earnings_account_id": created["roles"]["retained_earnings"]["id"] } }),
         )
         .await;
-    assert_eq!(status, StatusCode::CREATED, "a March period: {march}");
-    run(&t, "fiscal_period.close", json!({ "id": march["id"] })).await;
+    assert_eq!(status, StatusCode::CREATED, "{draft}");
+    let posted = run(&t, "year_end_close.post", json!({ "id": draft["id"] })).await;
+    assert_eq!(dec(&posted["summary"]["result"]), 1.0, "{posted}");
     t.stop().await;
 }
 
-/// FINDING (subledger as of a date): open items have no view of a past day.
-/// `open_item.list`'s `as_of` only moves the aging; what is open is what is
-/// open now, at the rates booked. So once April's payments are in, nobody
-/// can show what was owed on March 31, and the March 31 receivables and
-/// payables in the ledger (which hold the month-end revaluation) cannot be
-/// tied to their open items except through the revaluation document.
+/// A company whose years are one period each divides a year into months,
+/// as long as the year is open and no year-end close refers to it. What is
+/// posted stays where it was: postings are dated, not filed by period.
 #[tokio::test]
-#[ignore = "finding: open items cannot be listed as they were on a past day"]
+async fn an_existing_year_is_divided_into_months() {
+    let t = TestApp::start().await;
+    let created = run(
+        &t,
+        "company.setup",
+        json!({ "template": "us_small_business", "code": COMPANY, "name": "Ohio Widgets Inc",
+                "first_year": 2026, "years": 2, "periods": "yearly" }),
+    )
+    .await;
+    let c = created["company"]["id"].as_str().unwrap().to_owned();
+    let (bank, revenue) = (
+        created["roles"]["bank"]["id"].as_str().unwrap(),
+        created["roles"]["revenue"]["id"].as_str().unwrap(),
+    );
+    let (fy2026, fy2027) = (
+        period(&t, &c, "FY2026").await,
+        period(&t, &c, "FY2027").await,
+    );
+    let (status, body) = journal(&t, &c, "2026-03-15", bank, revenue, "70.00").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let split = run(&t, "fiscal_period.split_months", json!({ "id": fy2026 })).await;
+    let months = split["periods"].as_array().unwrap();
+    assert_eq!(months.len(), 12, "{split}");
+    assert_eq!(months[0]["name"], "2026-01");
+    assert_eq!(months[1]["end_date"], "2026-02-28");
+    assert_eq!(months[11]["end_date"], "2026-12-31");
+    assert!(period(&t, &c, "FY2026").await.is_null());
+    let march = run(
+        &t,
+        "gl.trial_balance",
+        json!({ "company_id": c, "as_of": "2026-03-31" }),
+    )
+    .await;
+    assert!(
+        close(
+            balance(&march, created["roles"]["bank"]["code"].as_str().unwrap()),
+            70.0
+        ),
+        "{march}"
+    );
+
+    // The guard's setting alone does not let a period go: at commit, its
+    // dates must be covered by open periods within them, all of them.
+    let fy2027_id = uuid::Uuid::parse_str(fy2027.as_str().unwrap()).unwrap();
+    for months in [0, 1] {
+        let mut tx = t.pool.begin().await.unwrap();
+        sqlx::query("SELECT set_config('erpcraft.period_split', $1, true)")
+            .bind(fy2027_id.to_string())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM fiscal_period WHERE id = $1")
+            .bind(fy2027_id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        if months == 1 {
+            // Only January: the rest of the year would be in no period.
+            sqlx::query(
+                "INSERT INTO fiscal_period (id, company_id, name, start_date, end_date, status)
+                 VALUES ($1, $2::text::uuid, '2027-01', '2027-01-01', '2027-01-31', 'open')",
+            )
+            .bind(uuid::Uuid::new_v4())
+            .bind(&c)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
+        let error = tx.commit().await.unwrap_err().to_string();
+        assert!(error.contains("do not cover"), "{error}");
+    }
+    assert_eq!(period(&t, &c, "FY2027").await, fy2027);
+
+    // A month cannot be divided further.
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "fiscal_period.split_months",
+            json!({ "id": months[2]["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    // A closed year is not divided.
+    run(&t, "fiscal_period.close", json!({ "id": fy2027 })).await;
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "fiscal_period.split_months",
+            json!({ "id": fy2027 }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    run(&t, "fiscal_period.reopen", json!({ "id": fy2027 })).await;
+    // Nor one a year-end close refers to.
+    t.post(
+        &t.admin,
+        "/api/documents/year_end_close",
+        json!({ "company_id": c, "doc_date": "2027-12-31", "body": {
+            "fiscal_period_id": fy2027,
+            "retained_earnings_account_id": created["roles"]["retained_earnings"]["id"] } }),
+    )
+    .await;
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "fiscal_period.split_months",
+            json!({ "id": fy2027 }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert!(body.to_string().contains("year-end close"), "{body}");
+
+    // March of the divided year closes; the rest of it goes on.
+    run(&t, "fiscal_period.close", json!({ "id": months[2]["id"] })).await;
+    let (status, _) = journal(&t, &c, "2026-03-20", bank, revenue, "1.00").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, body) = journal(&t, &c, "2026-04-20", bank, revenue, "1.00").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    t.stop().await;
+}
+
+/// Closed finding (subledger as of a date): `open_item.list`'s `as_of` only
+/// moved the aging. It now lists the items as they were that day: an item
+/// paid in part in March and the rest in April shows its March balance, and
+/// what the items were carried at ties to the ledger on that day.
+#[tokio::test]
 async fn gap_open_items_as_they_were_at_the_months_end() {
     let t = TestApp::start().await;
     let o = set_up(&t).await;
@@ -1353,23 +1546,52 @@ async fn gap_open_items_as_they_were_at_the_months_end() {
     )
     .await;
     let item = open["items"][0].clone();
-    done(
-        &t,
-        &c,
-        "payment",
-        "payment.post",
-        "2026-04-05",
-        json!({
-        "direction": "incoming", "bank_account_id": o.role("bank"), "allocations": [
-            { "open_item_id": item["id"], "amount": item["open"] } ] }),
-    )
-    .await;
-    let march = run(
+    let pay = |date: &'static str, amount: &'static str| {
+        let (t, c, item, bank) = (&t, c.clone(), item["id"].clone(), o.role("bank").to_owned());
+        async move {
+            done(
+                t,
+                &c,
+                "payment",
+                "payment.post",
+                date,
+                json!({
+                "direction": "incoming", "bank_account_id": bank, "allocations": [
+                    { "open_item_id": item, "amount": amount } ] }),
+            )
+            .await
+        }
+    };
+    pay("2026-03-25", "40.00").await;
+    pay("2026-04-05", "60.00").await;
+
+    let as_of = |day: &'static str| {
+        let (t, c) = (&t, c.clone());
+        async move {
+            run(
+                t,
+                "open_item.list",
+                json!({ "company_id": c, "kind": "receivable", "as_of": day }),
+            )
+            .await
+        }
+    };
+    let now = run(
         &t,
         "open_item.list",
-        json!({ "company_id": c, "kind": "receivable", "as_of": "2026-03-31" }),
+        json!({ "company_id": c, "kind": "receivable" }),
     )
     .await;
+    assert_eq!(now["total"], 0, "all paid by now: {now}");
+    // Before the invoice there was nothing.
+    assert_eq!(as_of("2026-03-19").await["total"], 0);
+    // Before the first payment, all of it.
+    assert!(close(dec(&as_of("2026-03-24").await["total_open"]), 100.0));
+    let march = as_of("2026-03-31").await;
+    assert_eq!(march["total"], 1, "{march}");
+    assert!(close(dec(&march["items"][0]["open"]), 60.0), "{march}");
+    assert!(close(dec(&march["items"][0]["settled"]), 40.0), "{march}");
+    assert!(close(dec(&march["items"][0]["carried"]), 60.0), "{march}");
     let ledger = run(
         &t,
         "gl.trial_balance",
@@ -1378,22 +1600,28 @@ async fn gap_open_items_as_they_were_at_the_months_end() {
     .await;
     assert!(
         close(
-            dec(&march["total_open"]),
+            dec(&march["total_carried"]),
             balance(&ledger, o.code("receivable"))
         ),
         "on March 31, {} was owed (the ledger), the open items say {}: {invoice}",
         balance(&ledger, o.code("receivable")),
-        dec(&march["total_open"])
+        dec(&march["total_carried"])
     );
+    // Asking for what is settled as well lists the item on any day after it.
+    let all = run(
+        &t,
+        "open_item.list",
+        json!({ "company_id": c, "kind": "receivable", "as_of": "2026-04-30", "include_settled": true }),
+    )
+    .await;
+    assert_eq!(all["total"], 1, "{all}");
+    assert!(close(dec(&all["items"][0]["open"]), 0.0), "{all}");
     t.stop().await;
 }
 
-/// FINDING (setup output): `company.setup` returns ten of the US template's
-/// sixteen roles. The accounts for exchange gains and losses, discounts
-/// given and received, and gains and losses on disposals are set up but not
-/// returned, so a caller (an agent, a UI) must know the template's codes.
+/// Closed finding (setup output): `company.setup` returned ten of the US
+/// template's sixteen roles. It now returns every role it sets up.
 #[tokio::test]
-#[ignore = "finding: company.setup does not return every role it sets up"]
 async fn gap_setup_returns_every_role() {
     let t = TestApp::start().await;
     let created = run(
@@ -1412,7 +1640,7 @@ async fn gap_setup_returns_every_role() {
         "asset_disposal_loss",
     ] {
         assert!(
-            created["roles"].get(role).is_some(),
+            created["roles"][role]["id"].is_string(),
             "{role} is not in {}",
             created["roles"]
         );

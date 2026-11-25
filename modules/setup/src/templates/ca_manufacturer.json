@@ -1,0 +1,564 @@
+{
+  "code": "ca_manufacturer",
+  "name": "Canadian manufacturer",
+  "description": "The Canadian small business chart for a company that makes what it sells, in CAD: raw materials and purchased goods (1300, the default inventory account) kept apart from finished goods (1310, to be set on the items or warehouse that hold them), goods in transit between sites (1320), the labor and overhead a production order absorbs at standard (5050, a credit against cost) and its variance against actual (5060), payment differences written off (6160), and unrealized exchange gains and losses from revaluing open items (4930, 6170) kept apart from the realized ones. Work in progress has no account: a production order takes its materials and books what it makes when it is completed. The rest is as in the Canadian small business template: A chart of accounts for a small business in Canada that buys and sells goods and is registered for the GST/HST, in Canadian dollars, with a calendar fiscal year. Tax codes: GST 5 %, HST for Ontario (13 %), New Brunswick, Newfoundland and Labrador and Prince Edward Island (15 %) and Nova Scotia (14 %), and zero-rated and exempt supplies at 0 %. GST/HST charged is owed on 2100, and GST/HST paid on purchases is claimed back as input tax credits on 1350. Where the provincial sales tax is not harmonized, a line carries a group of two codes, GST plus the provincial tax, each owed to its own authority: CA-GST-PST-BC (GST 5 % and British Columbia PST 7 %), CA-GST-PST-SK (GST and Saskatchewan PST 6 %), CA-GST-RST-MB (GST and Manitoba RST 7 %) and CA-GST-QST (GST and Quebec QST 9.975 %, worked out on the price without the GST). Each provincial tax collected is owed on its own account (2110 to 2140). PST and RST charged by vendors cannot be claimed back and are expensed on 6130; a registered business claims QST back as input tax refunds on 1360. Goods bought for resale are normally bought free of PST under the business's own registration; the codes apply to what the business pays PST on.",
+  "country": "CA",
+  "currency": "CAD",
+  "start_month": 1,
+  "sources": [
+    "Rates: Canada Revenue Agency, 'GST/HST calculator (and rates)', https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate/calculator.html (date modified 2025-04-01, read on 2026-11-17): GST 5 %; HST on or after April 1, 2025: New Brunswick 15 %, Newfoundland and Labrador 15 %, Nova Scotia 14 % (15 % from October 1, 2016 to March 31, 2025), Ontario 13 %, Prince Edward Island 15 %.",
+    "British Columbia PST 7 %: Government of British Columbia, 'Provincial sales tax (PST)', https://www2.gov.bc.ca/gov/content/taxes/sales-taxes/pst (read on 2026-11-17): 'Generally, the rate of PST is 7% on the purchase or lease price of goods and services, with some exceptions.'",
+    "Saskatchewan PST 6 %: Government of Saskatchewan, 'Provincial Sales Tax', https://www.saskatchewan.ca/business/taxes-licensing-and-reporting/provincial-taxes-policies-and-bulletins/provincial-sales-tax (read on 2026-11-17): a six per cent sales tax.",
+    "Manitoba RST 7 %: Manitoba Finance, 'Retail Sales Tax', https://www.gov.mb.ca/finance/taxation/taxes/retail.html (read on 2026-11-17): 'The general sales tax rate is 7%.'",
+    "Quebec QST 9.975 % on the selling price excluding the GST: Revenu Québec, 'Basic Rules for Applying the GST/HST and QST', https://www.revenuquebec.ca/en/businesses/consumption-taxes/gsthst-and-qst/basic-rules-for-applying-the-gsthst-and-qst/ (read on 2026-11-17). The same four provincial rates are listed by the Canada Revenue Agency's GST/HST calculator cited above. A QST registrant claims input tax refunds for the QST it pays; the British Columbia, Saskatchewan and Manitoba taxes have no such credit for a business's own purchases.",
+    "Zero-rated and exempt supplies carry no GST/HST; only zero-rated supplies give a right to input tax credits, which at 0 % changes nothing in the books.",
+    "Manufacturing accounts 1310, 1320, 4930, 5050, 5060, 6160 and 6170 are numbered by this template within the small-business chart's ranges; they follow no published standard. Rename or renumber them to your own chart."
+  ],
+  "roles": {
+    "bank": "1020",
+    "inventory": "1300",
+    "stock_variance": "5030",
+    "grni": "2050",
+    "payable": "2010",
+    "receivable": "1200",
+    "revenue": "4010",
+    "cogs": "5010",
+    "price_variance": "5020",
+    "retained_earnings": "3100",
+    "fx_gain": "4910",
+    "fx_loss": "6140",
+    "discount_received": "5040",
+    "discount_given": "4030",
+    "inventory_in_transit": "1320",
+    "absorbed_cost": "5050",
+    "production_variance": "5060",
+    "write_off": "6160",
+    "fx_unrealized_gain": "4930",
+    "fx_unrealized_loss": "6170",
+    "finished_goods": "1310"
+  },
+  "accounts": [
+    {
+      "code": "1000",
+      "name": "Assets",
+      "type": "asset",
+      "group": true
+    },
+    {
+      "code": "1010",
+      "name": "Cash on hand",
+      "type": "asset",
+      "parent": "1000",
+      "bank": true
+    },
+    {
+      "code": "1020",
+      "name": "Chequing account",
+      "type": "asset",
+      "parent": "1000",
+      "bank": true
+    },
+    {
+      "code": "1030",
+      "name": "Savings account",
+      "type": "asset",
+      "parent": "1000",
+      "bank": true
+    },
+    {
+      "code": "1200",
+      "name": "Accounts receivable",
+      "type": "asset",
+      "parent": "1000"
+    },
+    {
+      "code": "1300",
+      "name": "Raw materials and purchased goods",
+      "type": "asset",
+      "parent": "1000"
+    },
+    {
+      "code": "1310",
+      "name": "Finished goods",
+      "type": "asset",
+      "parent": "1000"
+    },
+    {
+      "code": "1320",
+      "name": "Goods in transit",
+      "type": "asset",
+      "parent": "1000"
+    },
+    {
+      "code": "1350",
+      "name": "GST/HST input tax credits receivable",
+      "type": "asset",
+      "parent": "1000"
+    },
+    {
+      "code": "1360",
+      "name": "QST input tax refunds receivable",
+      "type": "asset",
+      "parent": "1000"
+    },
+    {
+      "code": "1400",
+      "name": "Prepaid expenses",
+      "type": "asset",
+      "parent": "1000"
+    },
+    {
+      "code": "1500",
+      "name": "Furniture and equipment",
+      "type": "asset",
+      "parent": "1000"
+    },
+    {
+      "code": "1510",
+      "name": "Accumulated amortization",
+      "type": "asset",
+      "parent": "1000"
+    },
+    {
+      "code": "2000",
+      "name": "Liabilities",
+      "type": "liability",
+      "group": true
+    },
+    {
+      "code": "2010",
+      "name": "Accounts payable",
+      "type": "liability",
+      "parent": "2000"
+    },
+    {
+      "code": "2050",
+      "name": "Goods received not invoiced",
+      "type": "liability",
+      "parent": "2000"
+    },
+    {
+      "code": "2100",
+      "name": "GST/HST payable",
+      "type": "liability",
+      "parent": "2000"
+    },
+    {
+      "code": "2110",
+      "name": "PST payable (British Columbia)",
+      "type": "liability",
+      "parent": "2000"
+    },
+    {
+      "code": "2120",
+      "name": "PST payable (Saskatchewan)",
+      "type": "liability",
+      "parent": "2000"
+    },
+    {
+      "code": "2130",
+      "name": "RST payable (Manitoba)",
+      "type": "liability",
+      "parent": "2000"
+    },
+    {
+      "code": "2140",
+      "name": "QST payable (Quebec)",
+      "type": "liability",
+      "parent": "2000"
+    },
+    {
+      "code": "2200",
+      "name": "Accrued liabilities",
+      "type": "liability",
+      "parent": "2000"
+    },
+    {
+      "code": "2300",
+      "name": "Payroll deductions payable (CPP, EI, income tax)",
+      "type": "liability",
+      "parent": "2000"
+    },
+    {
+      "code": "2400",
+      "name": "Corporate income tax payable",
+      "type": "liability",
+      "parent": "2000"
+    },
+    {
+      "code": "2500",
+      "name": "Loans payable",
+      "type": "liability",
+      "parent": "2000"
+    },
+    {
+      "code": "2600",
+      "name": "Due to shareholder",
+      "type": "liability",
+      "parent": "2000"
+    },
+    {
+      "code": "3000",
+      "name": "Equity",
+      "type": "equity",
+      "group": true
+    },
+    {
+      "code": "3010",
+      "name": "Share capital",
+      "type": "equity",
+      "parent": "3000"
+    },
+    {
+      "code": "3100",
+      "name": "Retained earnings",
+      "type": "equity",
+      "parent": "3000"
+    },
+    {
+      "code": "3200",
+      "name": "Dividends",
+      "type": "equity",
+      "parent": "3000"
+    },
+    {
+      "code": "4000",
+      "name": "Revenue",
+      "type": "income",
+      "group": true
+    },
+    {
+      "code": "4010",
+      "name": "Sales of goods",
+      "type": "income",
+      "parent": "4000"
+    },
+    {
+      "code": "4020",
+      "name": "Service revenue",
+      "type": "income",
+      "parent": "4000"
+    },
+    {
+      "code": "4030",
+      "name": "Sales discounts",
+      "type": "income",
+      "parent": "4000"
+    },
+    {
+      "code": "4900",
+      "name": "Other income",
+      "type": "income",
+      "parent": "4000"
+    },
+    {
+      "code": "4910",
+      "name": "Foreign exchange gains",
+      "type": "income",
+      "parent": "4000"
+    },
+    {
+      "code": "4930",
+      "name": "Unrealized exchange gains",
+      "type": "income",
+      "parent": "4000"
+    },
+    {
+      "code": "5000",
+      "name": "Cost of goods sold",
+      "type": "expense",
+      "group": true
+    },
+    {
+      "code": "5010",
+      "name": "Cost of goods sold",
+      "type": "expense",
+      "parent": "5000"
+    },
+    {
+      "code": "5020",
+      "name": "Purchase price variance",
+      "type": "expense",
+      "parent": "5000"
+    },
+    {
+      "code": "5030",
+      "name": "Inventory adjustments",
+      "type": "expense",
+      "parent": "5000"
+    },
+    {
+      "code": "5040",
+      "name": "Purchase discounts",
+      "type": "expense",
+      "parent": "5000"
+    },
+    {
+      "code": "5050",
+      "name": "Production cost absorbed",
+      "type": "expense",
+      "parent": "5000"
+    },
+    {
+      "code": "5060",
+      "name": "Production variance",
+      "type": "expense",
+      "parent": "5000"
+    },
+    {
+      "code": "6000",
+      "name": "Operating expenses",
+      "type": "expense",
+      "group": true
+    },
+    {
+      "code": "6010",
+      "name": "Advertising and promotion",
+      "type": "expense",
+      "parent": "6000"
+    },
+    {
+      "code": "6020",
+      "name": "Bank charges",
+      "type": "expense",
+      "parent": "6000"
+    },
+    {
+      "code": "6030",
+      "name": "Amortization",
+      "type": "expense",
+      "parent": "6000"
+    },
+    {
+      "code": "6040",
+      "name": "Insurance",
+      "type": "expense",
+      "parent": "6000"
+    },
+    {
+      "code": "6050",
+      "name": "Office expenses",
+      "type": "expense",
+      "parent": "6000"
+    },
+    {
+      "code": "6060",
+      "name": "Professional fees",
+      "type": "expense",
+      "parent": "6000"
+    },
+    {
+      "code": "6070",
+      "name": "Rent",
+      "type": "expense",
+      "parent": "6000"
+    },
+    {
+      "code": "6080",
+      "name": "Utilities",
+      "type": "expense",
+      "parent": "6000"
+    },
+    {
+      "code": "6090",
+      "name": "Salaries and wages",
+      "type": "expense",
+      "parent": "6000"
+    },
+    {
+      "code": "6100",
+      "name": "Employer CPP and EI",
+      "type": "expense",
+      "parent": "6000"
+    },
+    {
+      "code": "6110",
+      "name": "Telephone and internet",
+      "type": "expense",
+      "parent": "6000"
+    },
+    {
+      "code": "6120",
+      "name": "Travel",
+      "type": "expense",
+      "parent": "6000"
+    },
+    {
+      "code": "6130",
+      "name": "Provincial sales tax paid (not recoverable)",
+      "type": "expense",
+      "parent": "6000"
+    },
+    {
+      "code": "6140",
+      "name": "Foreign exchange losses",
+      "type": "expense",
+      "parent": "6000"
+    },
+    {
+      "code": "6160",
+      "name": "Payment differences written off",
+      "type": "expense",
+      "parent": "6000"
+    },
+    {
+      "code": "6170",
+      "name": "Unrealized exchange losses",
+      "type": "expense",
+      "parent": "6000"
+    }
+  ],
+  "tax_codes": [
+    {
+      "code": "CA-GST",
+      "name": "GST 5 %",
+      "rate": "5",
+      "collected": "2100",
+      "paid": "1350",
+      "authority": "Canada Revenue Agency"
+    },
+    {
+      "code": "CA-HST-ON",
+      "name": "HST Ontario 13 %",
+      "rate": "13",
+      "collected": "2100",
+      "paid": "1350"
+    },
+    {
+      "code": "CA-HST-NB",
+      "name": "HST New Brunswick 15 %",
+      "rate": "15",
+      "collected": "2100",
+      "paid": "1350"
+    },
+    {
+      "code": "CA-HST-NL",
+      "name": "HST Newfoundland and Labrador 15 %",
+      "rate": "15",
+      "collected": "2100",
+      "paid": "1350"
+    },
+    {
+      "code": "CA-HST-NS",
+      "name": "HST Nova Scotia 14 %",
+      "rate": "14",
+      "collected": "2100",
+      "paid": "1350"
+    },
+    {
+      "code": "CA-HST-PE",
+      "name": "HST Prince Edward Island 15 %",
+      "rate": "15",
+      "collected": "2100",
+      "paid": "1350"
+    },
+    {
+      "code": "CA-ZERO",
+      "name": "Zero-rated supply (0 %)",
+      "rate": "0",
+      "collected": "2100",
+      "paid": "1350",
+      "vat_category": "Z"
+    },
+    {
+      "code": "CA-EXEMPT",
+      "name": "Exempt supply (no GST/HST)",
+      "rate": "0",
+      "collected": "2100",
+      "paid": "1350",
+      "vat_category": "E",
+      "exemption_reason": "Exempt supply (no GST/HST)"
+    },
+    {
+      "code": "CA-PST-BC",
+      "name": "PST British Columbia 7 %",
+      "rate": "7",
+      "collected": "2110",
+      "paid": "6130",
+      "authority": "British Columbia Ministry of Finance"
+    },
+    {
+      "code": "CA-PST-SK",
+      "name": "PST Saskatchewan 6 %",
+      "rate": "6",
+      "collected": "2120",
+      "paid": "6130",
+      "authority": "Saskatchewan Ministry of Finance"
+    },
+    {
+      "code": "CA-RST-MB",
+      "name": "RST Manitoba 7 %",
+      "rate": "7",
+      "collected": "2130",
+      "paid": "6130",
+      "authority": "Manitoba Finance"
+    },
+    {
+      "code": "CA-QST",
+      "name": "QST Quebec 9.975 %",
+      "rate": "9.975",
+      "collected": "2140",
+      "paid": "1360",
+      "authority": "Revenu Québec"
+    },
+    {
+      "code": "CA-GST-PST-BC",
+      "name": "GST 5 % + PST British Columbia 7 %",
+      "rate": "12",
+      "components": [
+        "CA-GST",
+        "CA-PST-BC"
+      ]
+    },
+    {
+      "code": "CA-GST-PST-SK",
+      "name": "GST 5 % + PST Saskatchewan 6 %",
+      "rate": "11",
+      "components": [
+        "CA-GST",
+        "CA-PST-SK"
+      ]
+    },
+    {
+      "code": "CA-GST-RST-MB",
+      "name": "GST 5 % + RST Manitoba 7 %",
+      "rate": "12",
+      "components": [
+        "CA-GST",
+        "CA-RST-MB"
+      ]
+    },
+    {
+      "code": "CA-GST-QST",
+      "name": "GST 5 % + QST Quebec 9.975 %",
+      "rate": "14.975",
+      "components": [
+        "CA-GST",
+        "CA-QST"
+      ]
+    }
+  ],
+  "payment_terms": [
+    {
+      "code": "DUE",
+      "name": "Due on receipt",
+      "net_days": 0
+    },
+    {
+      "code": "NET30",
+      "name": "Net 30 days",
+      "net_days": 30
+    },
+    {
+      "code": "2-10-NET30",
+      "name": "2 % 10 days, net 30",
+      "net_days": 30,
+      "discount_percent": "2",
+      "discount_days": 10
+    }
+  ],
+  "warehouse": {
+    "code": "MAIN",
+    "name": "Main warehouse"
+  }
+}

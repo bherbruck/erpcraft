@@ -866,8 +866,12 @@ struct ListInput {
     /// Only items at most this many days past due as of `as_of`. 0 keeps
     /// only what is not yet past due (the aging's `current`).
     overdue_max: Option<i32>,
-    /// The day `overdue_min` and `overdue_max` count from. Today when
-    /// omitted. What is open is still what is open now.
+    /// The items as they were at the end of this day: those posted by then,
+    /// with what was open of each then (settlements and parts as postings
+    /// dated on or before it left them, so an item paid later is listed as
+    /// open), and what it was carried at with the revaluations standing that
+    /// day. `overdue_min` and `overdue_max` count from it too. Omitted: what
+    /// is open now, overdue counted from today.
     as_of: Option<NaiveDate>,
     /// At most 500; 50 when omitted.
     limit: Option<i64>,
@@ -885,6 +889,10 @@ struct ListedItem {
     document_id: Option<Uuid>,
     doc_type: Option<String>,
     number: Option<String>,
+    /// What the item is carried at in the accounting currency: what is open
+    /// of it at the rates booked, plus the revaluations standing (on
+    /// `as_of`, when given). What the ledger holds for it.
+    carried: Decimal,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -892,8 +900,11 @@ struct ListOutput {
     items: Vec<ListedItem>,
     /// How many items match.
     total: i64,
-    /// What all matching items still owe, together.
+    /// What all matching items still owe, together, at the rates booked.
     total_open: Decimal,
+    /// What they are carried at with revaluations standing: the balance of
+    /// their accounts in the ledger (on `as_of`, when given).
+    total_carried: Decimal,
 }
 
 struct List;
@@ -917,14 +928,33 @@ impl Command for List {
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: ListInput) -> Result<ListOutput> {
         ctx.require("open_item:read", input.company_id)?;
+        // `{PIT}` is the parameter that says whether the list is as of a
+        // day: then what was settled and revalued counts only from postings
+        // dated on or before it ($9), and items posted after it are left out.
+        const FROM: &str = "FROM open_item i
+            JOIN posting ip ON ip.id = i.posting_id
+            CROSS JOIN LATERAL (SELECT
+                CASE WHEN {PIT} THEN COALESCE((
+                    SELECT sum(s.amount) FROM settlement s JOIN posting sp ON sp.id = s.posting_id
+                    WHERE s.open_item_id = i.id AND sp.posting_date <= $9), 0)
+                ELSE i.settled END AS settled,
+                CASE WHEN {PIT} THEN COALESCE((
+                    SELECT sum(s.txn_amount) FROM settlement s JOIN posting sp ON sp.id = s.posting_id
+                    WHERE s.open_item_id = i.id AND sp.posting_date <= $9), 0)
+                ELSE i.txn_settled END AS txn_settled,
+                COALESCE((
+                    SELECT sum(v.amount) FROM open_item_revaluation v JOIN posting vp ON vp.id = v.posting_id
+                    WHERE v.open_item_id = i.id AND (NOT {PIT} OR vp.posting_date <= $9)), 0) AS revalued
+            ) pit";
         const WHERE: &str = "i.company_id = $1
             AND ($2::text IS NULL OR i.kind = $2)
             AND ($3::text IS NULL OR i.party_type = $3)
             AND ($4::uuid IS NULL OR i.party_id = $4)
-            AND ($5 OR i.settled <> i.amount)
+            AND ($5 OR pit.settled <> i.amount)
             AND ($6::uuid[] IS NULL OR i.id = ANY($6))
             AND ($7::int IS NULL OR $9::date - COALESCE(i.due_date, i.doc_date) >= $7)
-            AND ($8::int IS NULL OR $9::date - COALESCE(i.due_date, i.doc_date) <= $8)";
+            AND ($8::int IS NULL OR $9::date - COALESCE(i.due_date, i.doc_date) <= $8)
+            AND (NOT {PIT} OR ip.posting_date <= $9)";
         let kind = input.kind.map(Kind::as_str);
         if input.ids.as_ref().is_some_and(|ids| ids.len() > 500) {
             return Err(Error::field("ids", "can name at most 500 items"));
@@ -934,14 +964,18 @@ impl Command for List {
         {
             return Err(Error::field("overdue_max", "must not be below overdue_min"));
         }
+        let point_in_time = input.as_of.is_some();
         let as_of = input
             .as_of
             .unwrap_or_else(|| erpcraft_kernel::Utc::now().date_naive());
         // Asked for by id, an item is listed whatever it still owes.
         let include_settled = input.include_settled || input.ids.is_some();
 
-        let (total, total_open): (i64, Decimal) = sqlx::query_as(&format!(
-            "SELECT count(*), COALESCE(sum(i.amount - i.settled), 0) FROM open_item i WHERE {WHERE}"
+        let (from, filter) = (FROM.replace("{PIT}", "$10"), WHERE.replace("{PIT}", "$10"));
+        let (total, total_open, total_carried): (i64, Decimal, Decimal) = sqlx::query_as(&format!(
+            "SELECT count(*), COALESCE(sum(i.amount - pit.settled), 0),
+                    COALESCE(sum(i.amount - pit.settled + pit.revalued), 0)
+             {from} WHERE {filter}"
         ))
         .bind(input.company_id)
         .bind(kind)
@@ -952,14 +986,32 @@ impl Command for List {
         .bind(input.overdue_min)
         .bind(input.overdue_max)
         .bind(as_of)
+        .bind(point_in_time)
         .fetch_one(&mut *ctx.conn)
         .await?;
+        // The item's columns as of the day: what was settled then.
+        let columns = ITEM_COLUMNS
+            .replace(
+                "i.amount - i.settled AS open",
+                "i.amount - pit.settled AS open",
+            )
+            .replace("i.settled,", "pit.settled AS settled,")
+            .replace(
+                "i.txn_amount - i.txn_settled AS txn_open",
+                "i.txn_amount - pit.txn_settled AS txn_open",
+            )
+            .replace("i.txn_settled,", "pit.txn_settled AS txn_settled,")
+            .replace(
+                "open_item_instalments(i.id, NULL)",
+                "open_item_instalments(i.id, CASE WHEN $12 THEN $9::date END)",
+            );
+        let (from, filter) = (FROM.replace("{PIT}", "$12"), WHERE.replace("{PIT}", "$12"));
         let mut items: Vec<ListedItem> = sqlx::query_as(&format!(
-            "SELECT {ITEM_COLUMNS}, d.id AS document_id, d.doc_type, d.number
-             FROM open_item i
-             JOIN posting p ON p.id = i.posting_id
-             JOIN document d ON d.id = p.document_id
-             WHERE {WHERE}
+            "SELECT {columns}, d.id AS document_id, d.doc_type, d.number,
+                    i.amount - pit.settled + pit.revalued AS carried
+             {from}
+             JOIN document d ON d.id = ip.document_id
+             WHERE {filter}
              ORDER BY i.doc_date, i.id LIMIT $10 OFFSET $11"
         ))
         .bind(input.company_id)
@@ -973,6 +1025,7 @@ impl Command for List {
         .bind(as_of)
         .bind(input.limit.unwrap_or(50).clamp(1, 500))
         .bind(input.offset.unwrap_or(0).max(0))
+        .bind(point_in_time)
         .fetch_all(&mut *ctx.conn)
         .await?;
         // The right to see what is owed is not the right to read the
@@ -990,6 +1043,7 @@ impl Command for List {
             items,
             total,
             total_open,
+            total_carried,
         })
     }
 }

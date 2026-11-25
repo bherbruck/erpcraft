@@ -90,7 +90,15 @@ async fn a_year_in(template: &str, purchase_tax: &str, sales_tax: &str, expected
     let c = created["company"]["id"].as_str().unwrap().to_owned();
     let role = |name: &str| created["roles"][name]["id"].clone();
     let code = |name: &str| created["roles"][name]["code"].as_str().unwrap().to_owned();
-    assert_eq!(created["fiscal_periods"], json!(["FY2026", "FY2027"]));
+    // A period a month, twelve to a fiscal year.
+    let months: Vec<String> = (2026..=2027)
+        .flat_map(|y| (1..=12).map(move |m| format!("{y}-{m:02}")))
+        .collect();
+    assert_eq!(created["fiscal_periods"], json!(months));
+    let years = created["fiscal_years"].as_array().unwrap().clone();
+    assert_eq!(years.len(), 2, "{created}");
+    assert_eq!(years[0]["name"], "FY2026");
+    assert_eq!(years[1]["name"], "FY2027");
     let warehouse = created["warehouse_id"].clone();
     assert!(warehouse.is_string(), "{created}");
     assert_eq!(created["notes"], json!([]));
@@ -179,26 +187,16 @@ async fn a_year_in(template: &str, purchase_tax: &str, sales_tax: &str, expected
     // The customer pays all but 10.00, so that something stays owed.
     pay(&t, &c, &role("bank"), &invoice, "receivable", 10.0).await;
 
-    // Close 2026: the result goes to retained earnings.
-    let periods = run(
-        &t,
-        "entity.list",
-        json!({ "entity": "fiscal_period", "filters": { "company_id": c } }),
-    )
-    .await;
-    let fy2026 = periods["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|p| p["name"] == "FY2026")
-        .unwrap()["id"]
-        .clone();
+    // Close 2026, its twelve months at once: the result goes to retained
+    // earnings.
     let (status, close) = t
         .post(
             &t.admin,
             "/api/documents/year_end_close",
             json!({ "company_id": c, "doc_date": "2026-12-31", "body": {
-                "fiscal_period_id": fy2026, "retained_earnings_account_id": role("retained_earnings"),
+                "fiscal_period_id": years[0]["last_period_id"],
+                "first_period_id": years[0]["first_period_id"],
+                "retained_earnings_account_id": role("retained_earnings"),
             } }),
         )
         .await;
@@ -327,6 +325,119 @@ async fn a_canadian_company_runs_a_year() {
 }
 
 #[tokio::test]
+async fn a_us_manufacturer_runs_a_year() {
+    a_year_in(
+        "us_manufacturer",
+        "US-SALES-TAX",
+        "US-SALES-TAX",
+        Expected {
+            tax_paid: 0.0,
+            tax_collected: 0.0,
+            paid_account: "6130",
+            collected_account: "2100",
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_german_manufacturer_on_skr03_runs_a_year() {
+    a_year_in(
+        "de_skr03_manufacturer",
+        "DE-USt19",
+        "DE-USt7",
+        Expected {
+            tax_paid: 7.6,
+            tax_collected: 2.52,
+            paid_account: "1576",
+            collected_account: "1771",
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_canadian_manufacturer_runs_a_year() {
+    a_year_in(
+        "ca_manufacturer",
+        "CA-HST-ON",
+        "CA-HST-ON",
+        Expected {
+            tax_paid: 5.2,
+            tax_collected: 4.68,
+            paid_account: "1350",
+            collected_account: "2100",
+        },
+    )
+    .await;
+}
+
+/// A manufacturer's template sets up every account a manufacturer posts
+/// to, and the setup returns each role.
+#[tokio::test]
+async fn a_manufacturer_template_has_the_roles_making_needs() {
+    let t = TestApp::start().await;
+    for (template, code) in [
+        ("us_manufacturer", "M1"),
+        ("ca_manufacturer", "M2"),
+        ("de_skr03_manufacturer", "M3"),
+    ] {
+        let (status, body) = setup(
+            &t,
+            json!({ "template": template, "code": code, "name": code, "first_year": 2026 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let company = body["company"]["id"].clone();
+        for role in [
+            "inventory",
+            "finished_goods",
+            "inventory_in_transit",
+            "absorbed_cost",
+            "production_variance",
+            "write_off",
+            "fx_unrealized_gain",
+            "fx_unrealized_loss",
+            "fx_gain",
+            "fx_loss",
+        ] {
+            assert!(
+                body["roles"][role]["id"].is_string(),
+                "{template} {role}: {body}"
+            );
+        }
+        assert_ne!(
+            body["roles"]["inventory"]["id"],
+            body["roles"]["finished_goods"]["id"]
+        );
+        // Each role but finished goods is the company's rule for its purpose.
+        for purpose in [
+            "inventory_in_transit",
+            "absorbed_cost",
+            "production_variance",
+            "write_off",
+            "fx_unrealized_gain",
+            "fx_unrealized_loss",
+        ] {
+            let account: Option<uuid::Uuid> = sqlx::query_scalar(
+                "SELECT account_id FROM account_rule WHERE company_id = $1::text::uuid AND purpose = $2 AND scope_type IS NULL",
+            )
+            .bind(company.as_str().unwrap())
+            .bind(purpose)
+            .fetch_optional(&t.pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                account.map(|a| a.to_string()),
+                body["roles"][purpose]["id"].as_str().map(str::to_owned),
+                "{template} {purpose}"
+            );
+        }
+    }
+    t.stop().await;
+}
+
+#[tokio::test]
 async fn templates_are_listed_and_the_skr03_chart_is_as_datev_numbers_it() {
     let t = TestApp::start().await;
     let list = run(&t, "setup.templates", json!({})).await;
@@ -336,7 +447,14 @@ async fn templates_are_listed_and_the_skr03_chart_is_as_datev_numbers_it() {
         .iter()
         .map(|i| i["code"].as_str().unwrap())
         .collect();
-    for code in ["us_small_business", "ca_small_business", "de_skr03"] {
+    for code in [
+        "us_small_business",
+        "ca_small_business",
+        "de_skr03",
+        "us_manufacturer",
+        "ca_manufacturer",
+        "de_skr03_manufacturer",
+    ] {
         assert!(codes.contains(&code), "{code}");
     }
     // Every Canadian GST/HST code, at the rate the CRA publishes.
@@ -455,7 +573,23 @@ async fn templates_are_listed_and_the_skr03_chart_is_as_datev_numbers_it() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["roles"]["bank"]["code"], "1025");
-    assert_eq!(body["fiscal_periods"], json!(["FY2026/27"]));
+    assert_eq!(body["fiscal_periods"][0], "2026-07");
+    assert_eq!(body["fiscal_periods"][11], "2027-06");
+    assert_eq!(body["fiscal_years"][0]["name"], "FY2026/27");
+
+    // Or one period a year, for a company that closes only the year.
+    let (status, body) = setup(
+        &t,
+        json!({ "template": "us_small_business", "code": "US3", "name": "US Three",
+                "first_year": 2026, "years": 2, "periods": "yearly" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["fiscal_periods"], json!(["FY2026", "FY2027"]));
+    assert_eq!(
+        body["fiscal_years"][0]["first_period_id"],
+        body["fiscal_years"][0]["last_period_id"]
+    );
     t.stop().await;
 }
 

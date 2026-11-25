@@ -102,12 +102,40 @@ pub struct Roles {
     /// loses: the default `asset_disposal_loss` account rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset_disposal_loss: Option<String>,
+    /// Goods on their way between sites: the default `inventory_in_transit`
+    /// account rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory_in_transit: Option<String>,
+    /// Labor, machine time and overhead taken into what is made, at
+    /// standard: the default `absorbed_cost` account rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absorbed_cost: Option<String>,
+    /// The difference between actual and standard time on a production
+    /// order: the default `production_variance` account rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub production_variance: Option<String>,
+    /// Small differences a payment leaves, written off: the default
+    /// `write_off` account rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_off: Option<String>,
+    /// Exchange gains on open items revalued at a period's end: the default
+    /// `fx_unrealized_gain` account rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fx_unrealized_gain: Option<String>,
+    /// Exchange losses on open items revalued at a period's end: the
+    /// default `fx_unrealized_loss` account rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fx_unrealized_loss: Option<String>,
+    /// Goods the company makes. No rule is made for it: the company points
+    /// the items it makes here with an `inventory` rule scoped to the item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_goods: Option<String>,
 }
 
 impl Roles {
     /// The roles a template may leave out, each the default account rule
     /// for the purpose of its name.
-    fn rules(&self) -> [(&'static str, &Option<String>); 6] {
+    fn rules(&self) -> [(&'static str, &Option<String>); 12] {
         [
             ("fx_gain", &self.fx_gain),
             ("fx_loss", &self.fx_loss),
@@ -115,7 +143,28 @@ impl Roles {
             ("discount_given", &self.discount_given),
             ("asset_disposal_gain", &self.asset_disposal_gain),
             ("asset_disposal_loss", &self.asset_disposal_loss),
+            ("inventory_in_transit", &self.inventory_in_transit),
+            ("absorbed_cost", &self.absorbed_cost),
+            ("production_variance", &self.production_variance),
+            ("write_off", &self.write_off),
+            ("fx_unrealized_gain", &self.fx_unrealized_gain),
+            ("fx_unrealized_loss", &self.fx_unrealized_loss),
         ]
+    }
+
+    /// Every role the template fills: the ones every template has, the
+    /// rules it gives, and accounts with a job but no rule.
+    fn every(&self) -> Vec<(&'static str, &str)> {
+        let mut out: Vec<(&'static str, &str)> = self.all().to_vec();
+        out.extend(
+            self.rules()
+                .into_iter()
+                .filter_map(|(role, code)| code.as_deref().map(|c| (role, c))),
+        );
+        if let Some(code) = &self.finished_goods {
+            out.push(("finished_goods", code));
+        }
+        out
     }
 }
 
@@ -325,13 +374,8 @@ impl SetupTemplate {
             Some(_) => Err(at(format!("{role} is {code}, a group account"))),
             None => Err(at(format!("{role} is {code}, which is not in the chart"))),
         };
-        for (role, code) in self.roles.all() {
+        for (role, code) in self.roles.every() {
             postable(role, code)?;
-        }
-        for (role, code) in self.roles.rules() {
-            if let Some(code) = code {
-                postable(role, code)?;
-            }
         }
         let mut classes = HashSet::new();
         for class in &self.asset_classes {
@@ -491,6 +535,9 @@ fn builtin() -> Vec<SetupTemplate> {
         include_str!("templates/us_small_business.json"),
         include_str!("templates/ca_small_business.json"),
         include_str!("templates/de_skr03.json"),
+        include_str!("templates/us_manufacturer.json"),
+        include_str!("templates/ca_manufacturer.json"),
+        include_str!("templates/de_skr03_manufacturer.json"),
     ]
     .into_iter()
     .map(|text| SetupTemplate::from_json(text).expect("a built-in setup template is broken"))
@@ -648,12 +695,38 @@ struct SetupInput {
     start_month: Option<u32>,
     /// How many fiscal years to open, 1 to 5. 1 when omitted.
     years: Option<u32>,
+    /// `monthly` (the default): each fiscal year is opened as twelve
+    /// periods, named YYYY-MM, so that a month can be closed on its own;
+    /// `yearly`: one period per fiscal year.
+    #[serde(default)]
+    periods: Periods,
     /// The number of the bank account to create, in place of the
     /// template's.
     bank_account_code: Option<String>,
     /// The name of the bank account, in place of the template's, such as
     /// the bank's name.
     bank_account_name: Option<String>,
+}
+
+/// How the fiscal years are divided into periods.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum Periods {
+    #[default]
+    Monthly,
+    Yearly,
+}
+
+/// A fiscal year opened: what a year-end close of it names.
+#[derive(Serialize, JsonSchema)]
+struct FiscalYear {
+    /// FY2026, or FY2026/27 for a year that does not start in January.
+    name: String,
+    /// Its first period: the close's `first_period_id` (the same as the
+    /// last for a yearly period).
+    first_period_id: Uuid,
+    /// Its last period: the close's `fiscal_period_id`.
+    last_period_id: Uuid,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -666,8 +739,10 @@ struct SetupOutput {
     accounts: usize,
     /// Which account does which job: role, then the account's code and id.
     roles: BTreeMap<String, RoleAccount>,
-    /// The fiscal periods opened, by name.
+    /// The fiscal periods opened, by name: 2026-01 … 2026-12, or FY2026.
     fiscal_periods: Vec<String>,
+    /// The fiscal years, each with its first and last period.
+    fiscal_years: Vec<FiscalYear>,
     /// The tax codes set up for the company, created or found.
     tax_codes: Vec<String>,
     /// The asset classes created, by code.
@@ -694,6 +769,26 @@ fn id_of(record: &Value) -> Result<Uuid> {
         .and_then(Value::as_str)
         .and_then(|id| Uuid::parse_str(id).ok())
         .ok_or_else(|| Error::internal("a created record has no id"))
+}
+
+/// The months from `start` to `end`: the first and last day of each.
+fn months_of(start: NaiveDate, end: NaiveDate) -> Vec<(NaiveDate, NaiveDate)> {
+    let mut months = Vec::new();
+    let mut from = start;
+    while from <= end {
+        let last = from
+            .with_day(1)
+            .and_then(|first| first.checked_add_months(Months::new(1)))
+            .and_then(|next| next.pred_opt())
+            .unwrap_or(end)
+            .min(end);
+        months.push((from, last));
+        match last.succ_opt() {
+            Some(next) => from = next,
+            None => break,
+        }
+    }
+    months
 }
 
 /// The fiscal years to open: name, first and last day.
@@ -829,14 +924,31 @@ impl Command for Setup {
         let roles = &template.roles;
 
         let mut fiscal_periods = Vec::new();
-        for (name, start, end) in &periods {
-            entity::create(
-                ctx,
-                "fiscal_period",
-                json!({ "company_id": company_id, "name": name, "start_date": start, "end_date": end }),
-            )
-            .await?;
-            fiscal_periods.push(name.clone());
+        let mut fiscal_year_list = Vec::new();
+        for (year, start, end) in &periods {
+            let parts = match input.periods {
+                Periods::Yearly => vec![(year.clone(), *start, *end)],
+                Periods::Monthly => months_of(*start, *end)
+                    .into_iter()
+                    .map(|(from, to)| (from.format("%Y-%m").to_string(), from, to))
+                    .collect(),
+            };
+            let mut ids = Vec::new();
+            for (name, from, to) in parts {
+                let created = entity::create(
+                    ctx,
+                    "fiscal_period",
+                    json!({ "company_id": company_id, "name": name, "start_date": from, "end_date": to }),
+                )
+                .await?;
+                ids.push(id_of(&created)?);
+                fiscal_periods.push(name);
+            }
+            fiscal_year_list.push(FiscalYear {
+                name: year.clone(),
+                first_period_id: ids[0],
+                last_period_id: ids[ids.len() - 1],
+            });
         }
 
         let mut warehouse_id = None;
@@ -1127,7 +1239,7 @@ impl Command for Setup {
         }
 
         let roles = roles
-            .all()
+            .every()
             .iter()
             .map(|(role, code)| {
                 let created_code = if *code == bank_role {
@@ -1153,6 +1265,7 @@ impl Command for Setup {
             accounts: accounts.len(),
             roles,
             fiscal_periods,
+            fiscal_years: fiscal_year_list,
             tax_codes,
             asset_classes,
             warehouse_id,
@@ -1168,7 +1281,7 @@ mod tests {
     #[test]
     fn the_built_in_templates_hold_together() {
         let all = builtin();
-        assert_eq!(all.len(), 3);
+        assert_eq!(all.len(), 6);
         for template in &all {
             template.check().unwrap();
         }

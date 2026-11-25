@@ -1,0 +1,436 @@
+{
+  "code": "de_skr03_manufacturer",
+  "name": "SKR 03 Fertigung",
+  "description": "Kontenrahmen SKR 03 für einen Fertigungsbetrieb: wie die Handelsvorlage, dazu Roh-, Hilfs- und Betriebsstoffe 3970 als Standard-Bestandskonto, fertige Erzeugnisse 7110 (an den Artikeln oder dem Lager einzustellen), Waren unterwegs 3985, die bei Fertigstellung aktivierten Fertigungskosten auf 8980, Fertigungsabweichungen 8985, Zahlungsdifferenzen auf 2400 und nicht realisierte Kursgewinne und -verluste aus der Bewertung offener Posten auf 2666 und 2166. A German manufacturer on SKR 03: the trading template plus raw materials (3970, the default stock account) apart from finished goods (7110), goods in transit, production cost absorbed and its variance, write-offs and unrealized exchange differences. Work in progress has no account: a production order books what it makes when it is completed.",
+  "country": "DE",
+  "currency": "EUR",
+  "start_month": 1,
+  "sources": [
+    "Early-payment discounts: 3730 Erhaltene Skonti (S/AV) and 8730 Gewährte Skonti (S/AM) as named in the 2023 edition cited below (checked on 2026-11-17; the same edition lists 2150 Aufwendungen aus der Währungsumrechnung and 2660 Erträge aus der Währungsumrechnung). The chart also has discount accounts per tax rate (3731 and 3736 for 7 % and 19 % Vorsteuer, 8731 and 8736 for 7 % and 19 % USt); the template uses the general 3730 and 8730 because this ERP posts one net discount per payment line, whatever rates the invoice carried, and takes the tax on the discount back to the tax accounts itself. A company that exports to DATEV with automatic tax accounts should map them accordingly.",
+    "Account numbers and names: DATEV-Kontenrahmen nach dem Bilanzrichtlinie-Umsetzungsgesetz, Standardkontenrahmen - Prozessgliederungsprinzip (SKR 03), Gültig für 2023, as published at https://intex-publishing.de/pdf/Kontenrahmen%20DATEV%20SKR%2003.pdf (read on 2026-11-17); the 2020 edition at https://www.dornbach.de/de/assets/upload/downloads/finanzbuchhaltung/2020/datev-kontenrahmen-skr03-fuer-2020.pdf agrees for every number used here.",
+    "Every account below is in that chart under the same number, except 1700, which is the chart's Sonstige Verbindlichkeiten and is used here for goods received not invoiced: SKR 03 has no account of its own for that, so a company that uses 1700 otherwise should give it a sub-account.",
+    "Fixed assets: the asset, depreciation and disposal accounts (0027, 0065, 0210, 0320, 0350, 0420, 2320, 2720, 4822, 4830, 4832) are named as in the 2023 edition; the 2020 edition has the same numbers and calls 4832 Abschreibungen auf Kfz. SKR 03 writes depreciation off the asset account directly, so each class's accumulated depreciation is its cost account. Gains and losses on disposal are netted on 2720 and 2320; a company that books proceeds and residual book value separately (8800 ff., 2310, 2315) changes the rules. The useful lives follow the AfA-Tabelle für die allgemein verwendbaren Anlagegüter (Büromöbel 13, Pkw 6, Lkw 9 Jahre; EDV-Hardware and -Software 3 Jahre, which the BMF letter of 2021 allows to be shortened to 1); Maschinen at 10 years is a placeholder, as their AfA-Tabelle depends on the trade: set it for yours.",
+    "Tax-free sales: 8120 Steuerfreie Umsätze nach § 4 Nr. 1a UStG (exports, Ausfuhrlieferungen under § 6 UStG) and 8125 Steuerfreie innergemeinschaftliche Lieferungen nach § 4 Nr. 1b UStG, as numbered and named in the 2023 edition cited above (checked on 2026-11-18). The codes DE-IGL and DE-AUSFUHR are at 0 % and carry their EN 16931 VAT category, K (VATEX-EU-IC) and G (VATEX-EU-G), which an e-invoice writes. A tax code does not choose the revenue account: post these sales to 8125 and 8120 the way revenue accounts are chosen (an account rule or the line's account). Their tax accounts are 1776 and 1576 only because the system needs accounts for every code; nothing is posted to them at 0 %. An intra-Community supply must also be reported in the Zusammenfassende Meldung, which this template does not build.",
+    "Manufacturing accounts: 3970 Bestand Roh-, Hilfs- und Betriebsstoffe, 7110 Fertige Erzeugnisse, 8980 Bestandsveränderungen fertige Erzeugnisse and 2400 Forderungsverluste are SKR 03 numbers as commonly published; they were not checked against the edition cited above when this template was written, so check them before relying on them. 3985 (goods in transit), 8985 (production variance), 2166 and 2666 (unrealized exchange differences, apart from the realized 2150 and 2660) are numbers this template chose inside free ranges of the chart; SKR 03 gives them no such meaning. 8980 is credited with the labor and overhead a completed production order absorbs (Gesamtkostenverfahren); 2400 also takes payment differences in the company's favour, which a company may prefer on a revenue account of its own."
+  ],
+  "roles": {
+    "bank": "1200",
+    "inventory": "3970",
+    "stock_variance": "3950",
+    "grni": "1700",
+    "payable": "1600",
+    "receivable": "1400",
+    "revenue": "8400",
+    "cogs": "3200",
+    "price_variance": "3200",
+    "retained_earnings": "0860",
+    "fx_gain": "2660",
+    "fx_loss": "2150",
+    "discount_received": "3730",
+    "discount_given": "8730",
+    "asset_disposal_gain": "2720",
+    "asset_disposal_loss": "2320",
+    "inventory_in_transit": "3985",
+    "absorbed_cost": "8980",
+    "production_variance": "8985",
+    "write_off": "2400",
+    "fx_unrealized_gain": "2666",
+    "fx_unrealized_loss": "2166",
+    "finished_goods": "7110"
+  },
+  "accounts": [
+    {
+      "code": "0027",
+      "name": "EDV-Software",
+      "type": "asset"
+    },
+    {
+      "code": "0065",
+      "name": "Unbebaute Grundstücke",
+      "type": "asset"
+    },
+    {
+      "code": "0210",
+      "name": "Maschinen",
+      "type": "asset"
+    },
+    {
+      "code": "0320",
+      "name": "Pkw",
+      "type": "asset"
+    },
+    {
+      "code": "0350",
+      "name": "Lkw",
+      "type": "asset"
+    },
+    {
+      "code": "0420",
+      "name": "Büroeinrichtung",
+      "type": "asset"
+    },
+    {
+      "code": "0800",
+      "name": "Gezeichnetes Kapital",
+      "type": "equity"
+    },
+    {
+      "code": "0860",
+      "name": "Gewinnvortrag vor Verwendung",
+      "type": "equity"
+    },
+    {
+      "code": "0868",
+      "name": "Verlustvortrag vor Verwendung",
+      "type": "equity"
+    },
+    {
+      "code": "1000",
+      "name": "Kasse",
+      "type": "asset",
+      "bank": true
+    },
+    {
+      "code": "1200",
+      "name": "Bank",
+      "type": "asset",
+      "bank": true
+    },
+    {
+      "code": "1360",
+      "name": "Geldtransit",
+      "type": "asset"
+    },
+    {
+      "code": "1400",
+      "name": "Forderungen aus Lieferungen und Leistungen",
+      "type": "asset"
+    },
+    {
+      "code": "1571",
+      "name": "Abziehbare Vorsteuer 7 %",
+      "type": "asset"
+    },
+    {
+      "code": "1576",
+      "name": "Abziehbare Vorsteuer 19 %",
+      "type": "asset"
+    },
+    {
+      "code": "1600",
+      "name": "Verbindlichkeiten aus Lieferungen und Leistungen",
+      "type": "liability"
+    },
+    {
+      "code": "1700",
+      "name": "Sonstige Verbindlichkeiten (Wareneingang ohne Rechnung)",
+      "type": "liability"
+    },
+    {
+      "code": "1771",
+      "name": "Umsatzsteuer 7 %",
+      "type": "liability"
+    },
+    {
+      "code": "1776",
+      "name": "Umsatzsteuer 19 %",
+      "type": "liability"
+    },
+    {
+      "code": "1800",
+      "name": "Privatentnahmen allgemein",
+      "type": "equity"
+    },
+    {
+      "code": "1890",
+      "name": "Privateinlagen",
+      "type": "equity"
+    },
+    {
+      "code": "2150",
+      "name": "Aufwendungen aus der Währungsumrechnung",
+      "type": "expense"
+    },
+    {
+      "code": "2166",
+      "name": "Aufwendungen aus der Bewertung von Fremdwährungsposten (nicht realisiert)",
+      "type": "expense"
+    },
+    {
+      "code": "2320",
+      "name": "Verluste aus dem Abgang von Gegenständen des Anlagevermögens",
+      "type": "expense"
+    },
+    {
+      "code": "2400",
+      "name": "Forderungsverluste (übliche Höhe)",
+      "type": "expense"
+    },
+    {
+      "code": "2660",
+      "name": "Erträge aus der Währungsumrechnung",
+      "type": "income"
+    },
+    {
+      "code": "2666",
+      "name": "Erträge aus der Bewertung von Fremdwährungsposten (nicht realisiert)",
+      "type": "income"
+    },
+    {
+      "code": "2720",
+      "name": "Erträge aus dem Abgang von Gegenständen des Anlagevermögens",
+      "type": "income"
+    },
+    {
+      "code": "3200",
+      "name": "Wareneingang",
+      "type": "expense"
+    },
+    {
+      "code": "3730",
+      "name": "Erhaltene Skonti",
+      "type": "expense"
+    },
+    {
+      "code": "3950",
+      "name": "Bestandsveränderungen Waren",
+      "type": "expense"
+    },
+    {
+      "code": "3970",
+      "name": "Bestand Roh-, Hilfs- und Betriebsstoffe",
+      "type": "asset"
+    },
+    {
+      "code": "3980",
+      "name": "Waren (Bestand)",
+      "type": "asset"
+    },
+    {
+      "code": "3985",
+      "name": "Waren unterwegs (Transit zwischen Standorten)",
+      "type": "asset"
+    },
+    {
+      "code": "4120",
+      "name": "Gehälter",
+      "type": "expense"
+    },
+    {
+      "code": "4210",
+      "name": "Miete (unbewegliche Wirtschaftsgüter)",
+      "type": "expense"
+    },
+    {
+      "code": "4600",
+      "name": "Werbekosten",
+      "type": "expense"
+    },
+    {
+      "code": "4822",
+      "name": "Abschreibungen auf immaterielle Vermögensgegenstände",
+      "type": "expense"
+    },
+    {
+      "code": "4830",
+      "name": "Abschreibungen auf Sachanlagen",
+      "type": "expense"
+    },
+    {
+      "code": "4832",
+      "name": "Abschreibungen auf Fahrzeuge",
+      "type": "expense"
+    },
+    {
+      "code": "4910",
+      "name": "Porto",
+      "type": "expense"
+    },
+    {
+      "code": "4920",
+      "name": "Telefon",
+      "type": "expense"
+    },
+    {
+      "code": "4930",
+      "name": "Bürobedarf",
+      "type": "expense"
+    },
+    {
+      "code": "4950",
+      "name": "Rechts- und Beratungskosten",
+      "type": "expense"
+    },
+    {
+      "code": "4970",
+      "name": "Nebenkosten des Geldverkehrs",
+      "type": "expense"
+    },
+    {
+      "code": "7110",
+      "name": "Fertige Erzeugnisse",
+      "type": "asset"
+    },
+    {
+      "code": "8120",
+      "name": "Steuerfreie Umsätze nach § 4 Nr. 1a UStG (Ausfuhr)",
+      "type": "income"
+    },
+    {
+      "code": "8125",
+      "name": "Steuerfreie innergemeinschaftliche Lieferungen nach § 4 Nr. 1b UStG",
+      "type": "income"
+    },
+    {
+      "code": "8300",
+      "name": "Erlöse 7 % USt",
+      "type": "income"
+    },
+    {
+      "code": "8400",
+      "name": "Erlöse 19 % USt",
+      "type": "income"
+    },
+    {
+      "code": "8730",
+      "name": "Gewährte Skonti",
+      "type": "income"
+    },
+    {
+      "code": "8980",
+      "name": "Bestandsveränderungen fertige Erzeugnisse",
+      "type": "income"
+    },
+    {
+      "code": "8985",
+      "name": "Fertigungsabweichungen",
+      "type": "expense"
+    }
+  ],
+  "tax_codes": [
+    {
+      "code": "DE-USt19",
+      "name": "Umsatzsteuer / Vorsteuer 19 %",
+      "rate": "19",
+      "collected": "1776",
+      "paid": "1576",
+      "vat_category": "S"
+    },
+    {
+      "code": "DE-USt7",
+      "name": "Umsatzsteuer / Vorsteuer 7 %",
+      "rate": "7",
+      "collected": "1771",
+      "paid": "1571",
+      "vat_category": "S"
+    },
+    {
+      "code": "DE-IGL",
+      "name": "Steuerfreie innergemeinschaftliche Lieferung (§ 4 Nr. 1b, § 6a UStG)",
+      "rate": "0",
+      "collected": "1776",
+      "paid": "1576",
+      "vat_category": "K",
+      "exemption_reason_code": "VATEX-EU-IC",
+      "exemption_reason": "Steuerfreie innergemeinschaftliche Lieferung"
+    },
+    {
+      "code": "DE-AUSFUHR",
+      "name": "Steuerfreie Ausfuhrlieferung (§ 4 Nr. 1a, § 6 UStG)",
+      "rate": "0",
+      "collected": "1776",
+      "paid": "1576",
+      "vat_category": "G",
+      "exemption_reason_code": "VATEX-EU-G",
+      "exemption_reason": "Steuerfreie Ausfuhrlieferung"
+    }
+  ],
+  "payment_terms": [
+    {
+      "code": "NET30",
+      "name": "30 Tage netto",
+      "net_days": 30
+    },
+    {
+      "code": "2-14-NET30",
+      "name": "2 % Skonto bei Zahlung in 14 Tagen, 30 Tage netto",
+      "net_days": 30,
+      "discount_percent": "2",
+      "discount_days": 14
+    },
+    {
+      "code": "EOM-NET30",
+      "name": "30 Tage nach Monatsende netto",
+      "net_days": 30,
+      "end_of_month": true
+    }
+  ],
+  "warehouse": {
+    "code": "LAGER",
+    "name": "Hauptlager"
+  },
+  "asset_classes": [
+    {
+      "code": "BUERO",
+      "name": "Büroeinrichtung",
+      "method": "straight_line",
+      "useful_life_months": 156,
+      "cost": "0420",
+      "accumulated": "0420",
+      "expense": "4830"
+    },
+    {
+      "code": "EDV",
+      "name": "EDV-Hardware",
+      "method": "straight_line",
+      "useful_life_months": 36,
+      "cost": "0420",
+      "accumulated": "0420",
+      "expense": "4830"
+    },
+    {
+      "code": "SOFTWARE",
+      "name": "EDV-Software",
+      "method": "straight_line",
+      "useful_life_months": 36,
+      "cost": "0027",
+      "accumulated": "0027",
+      "expense": "4822"
+    },
+    {
+      "code": "PKW",
+      "name": "Pkw",
+      "method": "straight_line",
+      "useful_life_months": 72,
+      "cost": "0320",
+      "accumulated": "0320",
+      "expense": "4832"
+    },
+    {
+      "code": "LKW",
+      "name": "Lkw",
+      "method": "straight_line",
+      "useful_life_months": 108,
+      "cost": "0350",
+      "accumulated": "0350",
+      "expense": "4832"
+    },
+    {
+      "code": "MASCHINEN",
+      "name": "Maschinen",
+      "method": "straight_line",
+      "useful_life_months": 120,
+      "cost": "0210",
+      "accumulated": "0210",
+      "expense": "4830"
+    },
+    {
+      "code": "GRUND",
+      "name": "Unbebaute Grundstücke",
+      "method": "none",
+      "cost": "0065",
+      "accumulated": "0065",
+      "expense": "4830"
+    }
+  ]
+}

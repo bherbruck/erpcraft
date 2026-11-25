@@ -90,6 +90,11 @@ impl Module for GlModule {
                 name: "dimensions",
                 sql: include_str!("../migrations/0010_dimensions.sql"),
             },
+            Migration {
+                version: 11,
+                name: "period_split",
+                sql: include_str!("../migrations/0011_period_split.sql"),
+            },
         ]
     }
 
@@ -302,6 +307,7 @@ impl Module for GlModule {
                 status: "closed",
                 from: &["open"],
             }),
+            command(SplitPeriod),
             command(SetPeriodStatus {
                 name: "fiscal_period.reopen",
                 description: "Reopen a closed fiscal period for posting.",
@@ -1033,6 +1039,122 @@ impl Command for TrialBalance {
 struct PeriodInput {
     /// Fiscal period id.
     id: Uuid,
+}
+
+/// The months a period covers: the first and last day of each, the first
+/// and last cut to the period's own days.
+pub fn months_of(start: NaiveDate, end: NaiveDate) -> Vec<(NaiveDate, NaiveDate)> {
+    use chrono::{Datelike, Months};
+    let mut months = vec![];
+    let mut from = start;
+    while from <= end {
+        let first_of_month = from.with_day(1).unwrap_or(from);
+        let last_of_month = first_of_month
+            .checked_add_months(Months::new(1))
+            .and_then(|next| next.pred_opt())
+            .unwrap_or(end);
+        let to = last_of_month.min(end);
+        months.push((from, to));
+        match to.succ_opt() {
+            Some(next) => from = next,
+            None => break,
+        }
+    }
+    months
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SplitInput {
+    /// The fiscal period to divide: a fiscal year, usually.
+    id: Uuid,
+}
+
+/// Divide an open fiscal period into one period per month, so that a
+/// company can close month by month. What is already posted stays where it
+/// is: entries belong to the period whose dates contain them. A period that
+/// something refers to (a year-end close) is not divided.
+struct SplitPeriod;
+
+#[async_trait]
+impl Command for SplitPeriod {
+    type Input = SplitInput;
+    type Output = Value;
+
+    fn spec(&self) -> CommandSpec {
+        CommandSpec::action(
+            "fiscal_period.split_months",
+            "Divide an open fiscal period, such as a fiscal year, into one period per month \
+             (named YYYY-MM), so that each month can be closed on its own. Entries already \
+             posted stay in the months whose dates contain them. Refused for a closed period, \
+             one of a single month, and one a year-end close refers to. A year-end close of \
+             the divided year names its first month as `first_period_id`.",
+        )
+        .permission("fiscal_period:split")
+    }
+
+    async fn run(&self, ctx: &mut Ctx<'_>, input: SplitInput) -> Result<Value> {
+        // The row lock waits for postings into the period that are still in
+        // flight (gl_entry_check takes it FOR SHARE), and holds new ones
+        // until the months exist.
+        let row: Option<(Uuid, String, NaiveDate, NaiveDate, String)> = sqlx::query_as(
+            "SELECT company_id, name, start_date, end_date, status FROM fiscal_period WHERE id = $1 FOR UPDATE",
+        )
+        .bind(input.id)
+        .fetch_optional(&mut *ctx.conn)
+        .await?;
+        let (company, name, start, end, status) =
+            row.ok_or_else(|| Error::not_found("fiscal_period"))?;
+        ctx.require("fiscal_period:split", company)?;
+        if status != "open" {
+            return Err(Error::state(format!(
+                "fiscal period {name} is {status}; only an open period is divided"
+            )));
+        }
+        let months = months_of(start, end);
+        if months.len() < 2 {
+            return Err(Error::validation(format!(
+                "fiscal period {name} is one month or less; there is nothing to divide"
+            )));
+        }
+        // The period guard lets this one period go although it has
+        // postings: its months take its dates in this transaction.
+        sqlx::query("SELECT set_config('erpcraft.period_split', $1, true)")
+            .bind(input.id.to_string())
+            .execute(&mut *ctx.conn)
+            .await?;
+        match sqlx::query("DELETE FROM fiscal_period WHERE id = $1")
+            .bind(input.id)
+            .execute(&mut *ctx.conn)
+            .await
+        {
+            Ok(_) => {}
+            Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("23503") => {
+                return Err(Error::state(format!(
+                    "fiscal period {name} is referred to (by a year-end close), so it is not divided"
+                )));
+            }
+            Err(error) => return Err(error.into()),
+        }
+        let mut periods = vec![];
+        for (from, to) in months {
+            let id = new_id();
+            let month = from.format("%Y-%m").to_string();
+            sqlx::query(
+                "INSERT INTO fiscal_period (id, company_id, name, start_date, end_date) VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(id)
+            .bind(company)
+            .bind(&month)
+            .bind(from)
+            .bind(to)
+            .execute(&mut *ctx.conn)
+            .await?;
+            ctx.touch("fiscal_period", id);
+            periods.push(json!({ "id": id, "name": month, "start_date": from, "end_date": to, "status": "open" }));
+        }
+        Ok(json!({ "divided": name, "periods": periods }))
+    }
 }
 
 struct SetPeriodStatus {
