@@ -900,6 +900,7 @@ async fn policy_points_are_described_for_interfaces_and_agents() {
             "payment.write_off",
             "payment_run.approve",
             POSTING_DATE,
+            "price.override",
             "production_order.inactive_bom",
             "production_order.inactive_work_center",
             "purchase_order.approve",

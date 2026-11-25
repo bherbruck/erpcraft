@@ -18,6 +18,7 @@ erpcraft-db.workspace = true
 erpcraft-gl.workspace = true
 erpcraft-inventory.workspace = true
 erpcraft-kernel.workspace = true
+erpcraft-pricing.workspace = true
 erpcraft-manufacturing.workspace = true
 erpcraft-mcp.workspace = true
 erpcraft-openitems.workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "erpcraft-pricing"
+description = "erpcraft pricing: price lists, groups and quantity breaks, and the price an order line is proposed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+erpcraft-kernel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+uuid.workspace = true

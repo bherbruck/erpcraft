@@ -48,7 +48,7 @@ impl Module for SalesModule {
     }
 
     fn depends_on(&self) -> Vec<&'static str> {
-        vec!["gl", "stock", "open_items", "tax"]
+        vec!["gl", "stock", "open_items", "tax", "pricing"]
     }
 
     fn migrations(&self) -> Vec<Migration> {
@@ -929,9 +929,33 @@ struct OrderLineInput {
     account_id: Option<Uuid>,
     description: Option<String>,
     qty: Decimal,
-    unit_price: Decimal,
+    /// Left out on an item line: what the price lists propose.
+    unit_price: Option<Decimal>,
     discount_percent: Option<Decimal>,
     discount_amount: Option<Decimal>,
+}
+
+/// The item lines of an order as the price check reads them.
+async fn price_lines(
+    conn: &mut PgConnection,
+    lines: &[OrderLine],
+) -> Result<Vec<erpcraft_pricing::LinePrice>> {
+    let mut out = vec![];
+    for line in lines {
+        let Some(item) = line.item_id else { continue };
+        let code: String = sqlx::query_scalar("SELECT code FROM item WHERE id = $1")
+            .bind(item)
+            .fetch_one(&mut *conn)
+            .await?;
+        out.push(erpcraft_pricing::LinePrice {
+            line_id: line.id,
+            line_no: line.line_no,
+            item_code: code,
+            unit_price: line.unit_price,
+            discount_percent: line.discount_percent,
+        });
+    }
+    Ok(out)
 }
 
 /// The account a sales line that is not stock posts its revenue to: its
@@ -1079,7 +1103,47 @@ impl DocumentHandler for SalesOrder {
     }
 
     async fn save_body(&self, ctx: &mut Ctx<'_>, doc: &Document, body: &Value) -> Result<()> {
-        let body: OrderBody = erpcraft_kernel::input::parse(body.clone(), "sales order body")?;
+        let mut body: OrderBody = erpcraft_kernel::input::parse(body.clone(), "sales order body")?;
+        // What the price lists propose for each item line: a line without
+        // a price takes it, and its discount unless it gives one.
+        let base = company::base_currency(&mut *ctx.conn, doc.company_id).await?;
+        let order_currency = body.currency.clone().unwrap_or_else(|| base.clone());
+        let mut proposals = vec![];
+        for (index, line) in body.lines.iter_mut().enumerate() {
+            let proposal = match line.item_id {
+                Some(item) => {
+                    erpcraft_pricing::propose(
+                        &mut *ctx.conn,
+                        &erpcraft_pricing::Query {
+                            company_id: doc.company_id,
+                            side: erpcraft_pricing::Side::Sales,
+                            party_id: body.customer_id,
+                            item_id: item,
+                            qty: line.qty,
+                            currency: order_currency.clone(),
+                            date: doc.doc_date,
+                        },
+                    )
+                    .await?
+                }
+                None => None,
+            };
+            if line.unit_price.is_none() {
+                line.unit_price = proposal.as_ref().and_then(|p| p.unit_price);
+                if line.unit_price.is_some() && line.discount_percent.is_none() {
+                    line.discount_percent = proposal.as_ref().and_then(|p| p.discount_percent);
+                }
+            }
+            if line.unit_price.is_none() {
+                return Err(Error::line(
+                    "lines",
+                    index + 1,
+                    Some("unit_price"),
+                    "give a unit price: no price list has one for this line",
+                ));
+            }
+            proposals.push(proposal);
+        }
         for (index, line) in body.lines.iter().enumerate() {
             let n = index + 1;
             if line.item_id.is_some() != line.warehouse_id.is_some() {
@@ -1098,13 +1162,12 @@ impl DocumentHandler for SalesOrder {
                 line.charge_id,
                 line.account_id,
                 line.qty,
-                line.unit_price,
+                line.unit_price.unwrap_or_default(),
                 line.discount_percent,
                 line.discount_amount,
             )
             .await?;
         }
-        let mut body = body;
         for line in &mut body.lines {
             line.discount_percent = line.discount_percent.filter(|p| !p.is_zero());
             line.discount_amount = line.discount_amount.filter(|a| !a.is_zero());
@@ -1117,7 +1180,6 @@ impl DocumentHandler for SalesOrder {
             ));
         }
 
-        let base = company::base_currency(&mut *ctx.conn, doc.company_id).await?;
         let currency = body.currency.filter(|c| *c != base);
         if let Some(currency) = &currency {
             erpcraft_gl::currency_decimals(&mut *ctx.conn, currency)
@@ -1166,6 +1228,12 @@ impl DocumentHandler for SalesOrder {
             .bind(doc.id)
             .execute(&mut *ctx.conn)
             .await?;
+        let kept: Vec<(Uuid, erpcraft_pricing::Proposal)> = line_ids
+            .iter()
+            .zip(proposals)
+            .filter_map(|(id, p)| p.map(|p| (*id, p)))
+            .collect();
+        erpcraft_pricing::keep(&mut *ctx.conn, doc.id, &kept).await?;
         // One statement for all lines.
         if !body.lines.is_empty() {
             let line_nos: Vec<i32> = (1..=body.lines.len() as i32).collect();
@@ -1188,7 +1256,7 @@ impl DocumentHandler for SalesOrder {
             .bind(body.lines.iter().map(|line| line.item_id).collect::<Vec<_>>())
             .bind(body.lines.iter().map(|line| line.warehouse_id).collect::<Vec<_>>())
             .bind(body.lines.iter().map(|line| line.qty).collect::<Vec<_>>())
-            .bind(body.lines.iter().map(|line| line.unit_price).collect::<Vec<_>>())
+            .bind(body.lines.iter().map(|line| line.unit_price.unwrap_or_default()).collect::<Vec<_>>())
             .bind(body.lines.iter().map(|line| line.charge_id).collect::<Vec<_>>())
             .bind(body.lines.iter().map(|line| line.account_id).collect::<Vec<_>>())
             .bind(body.lines.iter().map(|line| line.description.clone()).collect::<Vec<_>>())
@@ -1358,6 +1426,17 @@ impl Command for OrderStep {
                     return Err(Error::validation("a sales order needs at least one line"));
                 }
                 check_customer(ctx, &order, SALES_ORDER).await?;
+                // A price or discount changed from what the lists proposed
+                // goes to the company's policy.
+                let prices = price_lines(&mut *ctx.conn, &lines).await?;
+                erpcraft_pricing::check(
+                    ctx,
+                    order.company_id,
+                    order.id,
+                    erpcraft_pricing::Side::Sales,
+                    &prices,
+                )
+                .await?;
                 // Fail now rather than at the first delivery.
                 settings(&mut *ctx.conn, order.company_id).await?;
                 // The addresses the order is confirmed with.

@@ -36,6 +36,7 @@ crates/
   erpcraft-stock    stock ledger: items, warehouses, quantity and value on hand
   erpcraft-openitems  what is owed to vendors and by customers, item by item
   erpcraft-tax      tax codes, the accounts they post to, tax recorded per posting, tax by destination
+  erpcraft-pricing  price lists, groups and quantity breaks; the price an order line is proposed
   erpcraft-party    addresses, tax identifiers, electronic addresses and contacts of the company, customers and vendors
   erpcraft-api      HTTP
   erpcraft-mcp      MCP server
@@ -544,6 +545,49 @@ Limits:
 - An item at the last level is not dunned again. A letter lists the items that reached a new level, not every overdue item of the customer.
 - A posted letter is not reversed by this module: a fee or interest given back is a customer credit (`sales_credit`), applied to the letter's item.
 - Statements of several currencies are one statement per currency.
+
+### Price lists
+
+The crate `erpcraft-pricing` (module `pricing`, migration 1) proposes the price and discount of an order line from price lists, and on purchases from the last price paid. The proposal is only a proposal: a person can change it before approving. The company's policy decides whether a change needs approval. Sales and purchasing call it the same way: the pricing module does not know what an order is.
+
+**Groups.**
+- `price_group` (shared) is a group of customers, of vendors or of items (`kind`), with a code and name.
+- `price_group_member` puts a customer, vendor or item in at most one group of its kind.
+- Neither the sales nor the stock module knows about groups: they are pricing's.
+
+**Price lists** (`price_list`, per company):
+- `code`, `name`, `side` (`sales` or `purchase`), `currency`, `valid_from` and `valid_to`, `active`;
+- whom the list is for, `scope_type` and `scope_id`: a customer or customer group on the sales side, a vendor or vendor group on the purchase side, or nobody named (the list for everyone on that side).
+
+A line (`price_list_line`) is:
+- for an item, or for an item group;
+- from a `min_qty` (a quantity break; 0 for any quantity);
+- with a `unit_price`, a `discount_percent`, or both.
+
+A line that gives only a discount discounts the price found elsewhere: the item group "fasteners" at 10 % off for a customer group, over the list for everyone's item prices.
+
+**The proposal** (`erpcraft_pricing::propose`, for the company, side, party, item, quantity, currency and date). Lists that are active, of the side and currency, and valid on the order's date count. Their lines that match the item (itself, or its group) and whose `min_qty` the quantity reaches are ordered, most specific first:
+1. the party's list, then its group's, then the list for everyone;
+2. within that, the item before its group;
+3. then the highest break.
+
+The price is the first line's that gives one, and the discount, separately, the first line's that gives one. On a purchase without a listed price, the last price paid applies: the unit price and discount of the latest posted vendor invoice line of the vendor for the item, in the order's currency.
+
+**On an order.**
+- A sales or purchase order line of an item may leave out `unit_price`. Saving fills in the proposal: the price, and the discount when the line gives none. A line that gives its price keeps its price and its discount.
+- A line left without a price and with nothing to propose is refused, naming the line.
+- Each item line's proposal is kept beside the order (`price_proposal`: the line, the price and discount proposed, where from), and approving compares the line with it.
+- When the order is approved, the policy `price.override` is asked for each line whose price or discount differs from what was proposed. Facts: `side`, `item`, `price`, `list_price`, `change_percent` (below zero: cheaper than proposed), `discount`, `list_discount`, `source` (`list` or `last_paid`). It allows by default; a company refuses, or asks for approval (`effect: approve`), for example when `facts.side == 'sales' && facts.change_percent < -5`.
+- Lines with no proposal are not asked about.
+
+Limits:
+- No price in another currency is converted: a list is for one currency.
+- No list price includes tax.
+- Units of measure other than the item's are not priced.
+- Invoices without an order take no proposal.
+- Group membership is one group per kind.
+- The order's date, not the delivery date, decides which list is valid.
+- A proposal is worked out again each time a draft is saved, but a price the line already has is kept.
 
 ### Fixed assets
 

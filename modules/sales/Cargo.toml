@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 erpcraft-kernel.workspace = true
+erpcraft-pricing.workspace = true
 erpcraft-gl.workspace = true
 erpcraft-openitems.workspace = true
 erpcraft-party.workspace = true

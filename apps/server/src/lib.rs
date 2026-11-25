@@ -24,6 +24,7 @@ pub fn modules(pool: PgPool) -> KernelBuilder {
         .module(erpcraft_inventory::InventoryModule)
         .module(erpcraft_openitems::OpenItemsModule)
         .module(erpcraft_tax::TaxModule)
+        .module(erpcraft_pricing::PricingModule)
         .module(erpcraft_purchasing::PurchasingModule)
         .module(erpcraft_sales::SalesModule)
         .module(erpcraft_payments::PaymentsModule)
