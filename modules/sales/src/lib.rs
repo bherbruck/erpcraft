@@ -1750,6 +1750,7 @@ impl Command for PostDelivery {
                 qty: -line.qty,
                 cost: None,
                 source_line_id: Some(line.id),
+                lots: vec![],
             });
         }
 

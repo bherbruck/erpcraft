@@ -912,6 +912,7 @@ async fn policy_points_are_described_for_interfaces_and_agents() {
             SALES_PRICE_DIFFERS,
             SALES_ORDER_CLOSED,
             "sales_order.reopen_on_return",
+            "stock.lot_issue",
             "stock.negative",
             "stock_transfer.between_sites",
             "stock_transfer.close_short",

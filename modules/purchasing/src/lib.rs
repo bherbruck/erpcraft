@@ -1859,6 +1859,7 @@ impl Command for PostReceipt {
                 qty: line.qty,
                 cost: Some(cost),
                 source_line_id: Some(line.id),
+                lots: vec![],
             });
         }
 

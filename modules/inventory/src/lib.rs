@@ -16,7 +16,7 @@ use erpcraft_kernel::{
     FieldType, JsonSchema, Migration, Module, PgConnection, Result, StateMeta, Tone, async_trait,
     command, company, schemars,
 };
-use erpcraft_stock::{Cost, StockLine};
+use erpcraft_stock::{Cost, LineLot, LotQty, StockLine, lots};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -123,6 +123,8 @@ struct LineInput {
     warehouse_id: Uuid,
     qty: Decimal,
     unit_cost: Option<Decimal>,
+    #[serde(default)]
+    lots: Vec<LineLot>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -189,6 +191,7 @@ impl DocumentHandler for StockAdjustment {
                         .unit_of("item_id", "uom")
                         .required(),
                     FieldMeta::new("unit_cost", "Unit cost", FieldType::Decimal).unit_price(),
+                    lots::field(),
                 ],
             }],
             states: vec![
@@ -221,6 +224,7 @@ impl DocumentHandler for StockAdjustment {
             if line.qty.is_zero() {
                 return Err(fail("qty", "the quantity cannot be zero"));
             }
+            lots::check("lines", n, &line.lots)?;
             match (line.qty.is_sign_positive(), line.unit_cost) {
                 (true, None) => return Err(fail("unit_cost", "stock added needs a unit cost")),
                 (true, Some(cost)) if cost.is_sign_negative() => {
@@ -289,6 +293,12 @@ impl DocumentHandler for StockAdjustment {
             .execute(&mut *ctx.conn)
             .await?;
         }
+        let named: Vec<(Uuid, &[LineLot])> = ids
+            .iter()
+            .zip(&body.lines)
+            .map(|(id, line)| (*id, line.lots.as_slice()))
+            .collect();
+        lots::save(&mut *ctx.conn, doc.id, &named).await?;
         Ok(())
     }
 
@@ -301,10 +311,12 @@ impl DocumentHandler for StockAdjustment {
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
         let header = load_header(conn, doc.id).await?;
-        Ok(json!({
+        let mut body = json!({
             "offset_account_id": header.offset_account_id,
             "lines": load_lines(conn, doc.id).await?,
-        }))
+        });
+        lots::attach(conn, doc.id, &mut body, "lines").await?;
+        Ok(body)
     }
 }
 
@@ -386,6 +398,7 @@ async fn move_stock(
     source_line_id: Uuid,
     item_id: Uuid,
     qty: Decimal,
+    lots: &[LotQty],
     (from, to): (Uuid, Uuid),
     gl: &mut Vec<GlLine>,
 ) -> Result<Decimal> {
@@ -419,6 +432,7 @@ async fn move_stock(
         qty,
         cost,
         source_line_id: Some(source_line_id),
+        lots: lots.to_vec(),
     };
     let out = erpcraft_stock::post(ctx, posting, &[movement(from, -qty, None)], "transfer").await?;
     // What left is what arrives, to the cent.
@@ -500,16 +514,30 @@ impl Command for PostAdjustment {
                 "a stock adjustment needs at least one line",
             ));
         }
-        let movements: Vec<StockLine> = lines
-            .iter()
-            .map(|line| StockLine {
+        let named = lots::of_document(&mut *ctx.conn, doc.id).await?;
+        let mut movements: Vec<StockLine> = vec![];
+        for line in &lines {
+            let lots = lots::resolve(
+                &mut *ctx.conn,
+                doc.company_id,
+                line.item_id,
+                line.qty,
+                named.get(&line.id).map_or(&[][..], Vec::as_slice),
+                lots::At {
+                    collection: "lines",
+                    line_no: line.line_no as usize,
+                },
+            )
+            .await?;
+            movements.push(StockLine {
                 item_id: line.item_id,
                 warehouse_id: line.warehouse_id,
                 qty: line.qty,
                 cost: line.unit_cost.map(Cost::Unit),
                 source_line_id: Some(line.id),
-            })
-            .collect();
+                lots,
+            });
+        }
 
         let posting = document::create_posting(ctx, &doc, doc.doc_date, doc.memo.clone()).await?;
         let entries = erpcraft_stock::post(ctx, &posting, &movements, "adjustment").await?;
@@ -620,6 +648,8 @@ struct TransferLineInput {
     id: Option<Uuid>,
     item_id: Uuid,
     qty: Decimal,
+    #[serde(default)]
+    lots: Vec<LineLot>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -714,6 +744,7 @@ impl DocumentHandler for StockTransfer {
                         .unit_of("item_id", "uom")
                         .readonly()
                         .help("Of a transfer closed short: what never arrived."),
+                    lots::field(),
                 ],
             }],
             states: vec![
@@ -780,6 +811,7 @@ impl DocumentHandler for StockTransfer {
                     "the quantity must be more than zero",
                 ));
             }
+            lots::check("lines", index + 1, &line.lots)?;
         }
         let mut warehouses = vec![body.from_warehouse_id, body.to_warehouse_id];
         warehouses.extend(body.transit_warehouse_id);
@@ -844,6 +876,12 @@ impl DocumentHandler for StockTransfer {
             .execute(&mut *ctx.conn)
             .await?;
         }
+        let named: Vec<(Uuid, &[LineLot])> = ids
+            .iter()
+            .zip(&body.lines)
+            .map(|(id, line)| (*id, line.lots.as_slice()))
+            .collect();
+        lots::save(&mut *ctx.conn, doc.id, &named).await?;
         Ok(())
     }
 
@@ -872,12 +910,14 @@ impl DocumentHandler for StockTransfer {
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
         let (from, to, through) = load_transfer(conn, doc.id).await?;
-        Ok(json!({
+        let mut body = json!({
             "from_warehouse_id": from,
             "to_warehouse_id": to,
             "transit_warehouse_id": through,
             "lines": transit::lines_with_progress(conn, doc.id).await?,
-        }))
+        });
+        lots::attach(conn, doc.id, &mut body, "lines").await?;
+        Ok(body)
     }
 }
 
@@ -948,8 +988,21 @@ impl Command for PostTransfer {
         erpcraft_stock::lock_levels(&mut *ctx.conn, doc.company_id, pairs).await?;
         let places = erpcraft_stock::locations(&mut *ctx.conn, [from, to]).await?;
 
+        let named = lots::of_document(&mut *ctx.conn, doc.id).await?;
         let mut gl = vec![];
         for line in &lines {
+            let lots = lots::resolve(
+                &mut *ctx.conn,
+                doc.company_id,
+                line.item_id,
+                -line.qty,
+                named.get(&line.id).map_or(&[][..], Vec::as_slice),
+                lots::At {
+                    collection: "lines",
+                    line_no: line.line_no as usize,
+                },
+            )
+            .await?;
             move_stock(
                 ctx,
                 &doc,
@@ -958,6 +1011,7 @@ impl Command for PostTransfer {
                 line.id,
                 line.item_id,
                 line.qty,
+                &lots,
                 (from, to),
                 &mut gl,
             )

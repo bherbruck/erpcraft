@@ -860,6 +860,7 @@ impl Command for Complete {
                 qty: -component.qty,
                 cost: None,
                 source_line_id: Some(component.id),
+                lots: vec![],
             })
             .collect();
         let consumed = erpcraft_stock::post(ctx, &posting, &issues, "production").await?;
@@ -984,6 +985,7 @@ impl Command for Complete {
                 qty: order.qty,
                 cost: Some(Cost::Total(total)),
                 source_line_id: None,
+                lots: vec![],
             }],
             "production",
         )

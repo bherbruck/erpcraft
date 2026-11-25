@@ -36,8 +36,10 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 mod locations;
+pub mod lots;
 
 pub use locations::{Locations, line_scopes, locations};
+pub use lots::{LineLot, LotQty, Tracking};
 
 pub struct StockModule;
 
@@ -93,6 +95,11 @@ impl Module for StockModule {
                 name: "warehouse_guards",
                 sql: include_str!("../migrations/0009_warehouse_guards.sql"),
             },
+            Migration {
+                version: 10,
+                name: "lots",
+                sql: include_str!("../migrations/0010_lots.sql"),
+            },
         ]
     }
 
@@ -132,6 +139,7 @@ impl Module for StockModule {
             .refusal("there is not enough stock on hand")
             // The ledger checks the allowing rule itself.
             .not_approvable(),
+            lots::policy(),
         ]
     }
 
@@ -156,10 +164,48 @@ impl Module for StockModule {
                              shared out by when it is allocated by weight.",
                         ),
                 )
+                .field(
+                    FieldMeta::new(
+                        "tracking",
+                        "Tracking",
+                        FieldType::options(&["none", "lot", "serial"]),
+                    )
+                    .help(
+                        "Whether every movement names its lots or serial numbers. Changes only \
+                         while the item has no stock anywhere.",
+                    ),
+                )
                 .field(FieldMeta::new("active", "Active", FieldType::Bool))
                 .field(created())
                 .order_by(&["code"])
                 .search(&["code", "name"]),
+            EntityMeta::new("stock_lot", "Lot")
+                .field(company())
+                .field(
+                    FieldMeta::new("item_id", "Item", FieldType::link("item"))
+                        .required()
+                        .immutable(),
+                )
+                .field(
+                    FieldMeta::new("code", "Lot or serial number", FieldType::Text)
+                        .required()
+                        .immutable(),
+                )
+                .field(FieldMeta::new("expiry_date", "Expires", FieldType::Date))
+                .field(FieldMeta::new(
+                    "manufactured_date",
+                    "Manufactured",
+                    FieldType::Date,
+                ))
+                .field(
+                    FieldMeta::new("attributes", "Attributes", FieldType::Json)
+                        .help("Free attributes, such as the supplier's own lot number."),
+                )
+                .field(created())
+                .order_by(&["code"])
+                .search(&["code"])
+                .display(&["code"])
+                .company_field("company_id"),
             EntityMeta::new("site", "Site")
                 .field(company())
                 .field(FieldMeta::new("code", "Code", FieldType::Text).required())
@@ -264,7 +310,13 @@ impl Module for StockModule {
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
-        vec![command(OnHand), command(Reservations)]
+        vec![
+            command(OnHand),
+            command(Reservations),
+            command(lots::Lots),
+            command(lots::Proposal),
+            command(lots::Trace),
+        ]
     }
 }
 
@@ -284,6 +336,10 @@ pub struct StockLine {
     pub cost: Option<Cost>,
     /// The document line this movement comes from.
     pub source_line_id: Option<Uuid>,
+    /// The lots or serial numbers moved, quantities above zero, adding up
+    /// to the quantity: required for a tracked item, none otherwise
+    /// ([`lots::resolve`] makes them from what a document line names).
+    pub lots: Vec<LotQty>,
 }
 
 /// A change in the value of what is on hand of an item in a warehouse,
@@ -729,6 +785,19 @@ pub async fn post(
     .fetch_one(&mut *ctx.conn)
     .await?;
 
+    // Each lot going out, as the company's policy sees it.
+    for line in lines.iter().filter(|l| l.qty.is_sign_negative()) {
+        lots::ask_issue(
+            ctx,
+            posting.company_id,
+            posting.posting_date,
+            line.warehouse_id,
+            &line.lots,
+            context,
+        )
+        .await?;
+    }
+
     // Loaded when the first line is short, so that a posting within what
     // is on hand asks nothing.
     let mut policy = None;
@@ -791,6 +860,33 @@ pub async fn post(
     .await?;
     // Returned in the order given, by their numbers.
     entries.sort_by_key(|e| e.line_no);
+    // The lots of each entry; the ledger keeps their levels and checks at
+    // commit that a tracked item's entry names lots for all of it.
+    let mut lot_entries = vec![];
+    let mut lot_ids = vec![];
+    let mut lot_qtys = vec![];
+    for (line, entry) in lines.iter().zip(&entries) {
+        for lot in &line.lots {
+            lot_entries.push(entry.id);
+            lot_ids.push(lot.lot_id);
+            lot_qtys.push(if line.qty.is_sign_negative() {
+                -lot.qty
+            } else {
+                lot.qty
+            });
+        }
+    }
+    if !lot_entries.is_empty() {
+        sqlx::query(
+            "INSERT INTO stock_entry_lot (entry_id, lot_id, qty)
+             SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::numeric[])",
+        )
+        .bind(&lot_entries)
+        .bind(&lot_ids)
+        .bind(&lot_qtys)
+        .execute(&mut *ctx.conn)
+        .await?;
+    }
     // Goods that left may leave less on hand than is reserved. A sales
     // delivery and production take their own order's reservation first:
     // those commands settle it and then call `cap_reservations`
@@ -942,6 +1038,9 @@ struct StockEntryRow {
     value_after: Option<String>,
     /// Value that went to stock variance.
     variance: Option<String>,
+    /// The lots or serial numbers moved, for a tracked item: a list of
+    /// `{ lot, qty }`, quantities as decimal text, the way the entry goes.
+    lots: Option<Vec<Value>>,
 }
 
 #[async_trait]
@@ -987,6 +1086,7 @@ impl Ledger for StockLedger {
         )
         .await?;
         for entry in originals.iter().rev() {
+            let id = new_id();
             // The trigger replaces qty and value with the exact opposite of
             // the original's.
             sqlx::query(
@@ -994,7 +1094,7 @@ impl Ledger for StockLedger {
                     warehouse_id, posting_date, qty, value, unit_cost, qty_after, value_after, reverses_id)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, 0, 0, $11)",
             )
-            .bind(new_id())
+            .bind(id)
             .bind(reversal.company_id)
             .bind(reversal.id)
             .bind(entry.line_no)
@@ -1004,6 +1104,16 @@ impl Ledger for StockLedger {
             .bind(reversal.posting_date)
             .bind(-entry.qty)
             .bind(-entry.value)
+            .bind(entry.id)
+            .execute(&mut *conn)
+            .await?;
+            // And exactly its lots.
+            sqlx::query(
+                "INSERT INTO stock_entry_lot (entry_id, lot_id, qty)
+                 SELECT $1, lot_id, -qty FROM stock_entry_lot WHERE entry_id = $2
+                 ORDER BY lot_id",
+            )
+            .bind(id)
             .bind(entry.id)
             .execute(&mut *conn)
             .await?;
@@ -1055,7 +1165,11 @@ impl Ledger for StockLedger {
                 'warehouse_code', CASE WHEN $3 THEN w.code END,
                 'qty', e.qty::text, 'value', e.value::text, 'unit_cost', e.unit_cost::text,
                 'qty_after', e.qty_after::text, 'value_after', e.value_after::text,
-                'variance', e.variance::text)
+                'variance', e.variance::text,
+                'lots', (SELECT jsonb_agg(jsonb_build_object('lot', sl.code, 'qty', el.qty::text)
+                                          ORDER BY sl.code)
+                         FROM stock_entry_lot el JOIN stock_lot sl ON sl.id = el.lot_id
+                         WHERE el.entry_id = e.id))
              FROM stock_entry e
              JOIN item i ON i.id = e.item_id
              JOIN warehouse w ON w.id = e.warehouse_id

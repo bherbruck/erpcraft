@@ -394,6 +394,7 @@ impl Command for PostReturn {
                 qty: -line.qty,
                 cost: None,
                 source_line_id: Some(line.id),
+                lots: vec![],
             });
         }
 

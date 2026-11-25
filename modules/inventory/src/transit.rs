@@ -18,8 +18,10 @@ use erpcraft_kernel::{
     CollectionMeta, Command, CommandSpec, Ctx, Decimal, DocTypeMeta, Error, FieldMeta, FieldType,
     JsonSchema, PgConnection, PolicyPoint, Result, StateMeta, async_trait, company, schemars,
 };
+use erpcraft_stock::{LineLot, lots};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use crate::{PostInput, ReverseInput, STOCK_TRANSFER, TransferLine, load_transfer, move_stock};
@@ -237,6 +239,72 @@ async fn left_on_lines(
     .await?)
 }
 
+/// The lots still on their way on each line of a shipped transfer: what
+/// its shipment brought into the transit warehouse, less what posted
+/// receipts took out of it and what was written off, by transfer line and
+/// lot code. Read from the stock ledger, leaving out what was taken back.
+pub(crate) async fn lots_on_way(
+    conn: &mut PgConnection,
+    transfer_id: Uuid,
+) -> Result<BTreeMap<Uuid, BTreeMap<String, Decimal>>> {
+    let rows: Vec<(Uuid, String, Decimal)> = sqlx::query_as(
+        "WITH live AS (
+             SELECT e.* FROM stock_entry e
+             WHERE e.reverses_id IS NULL
+               AND NOT EXISTS (SELECT 1 FROM stock_entry r WHERE r.reverses_id = e.id)
+         ), through AS (
+             SELECT transit_warehouse_id AS id FROM stock_transfer WHERE document_id = $1
+         )
+         SELECT line_id, code, sum(qty) FROM (
+             -- Shipped in, and written off out, under the transfer's own postings.
+             SELECT e.source_line_id AS line_id, l.code, el.qty
+             FROM live e JOIN posting p ON p.id = e.posting_id
+             JOIN stock_entry_lot el ON el.entry_id = e.id
+             JOIN stock_lot l ON l.id = el.lot_id
+             WHERE p.document_id = $1 AND e.warehouse_id = (SELECT id FROM through)
+             UNION ALL
+             -- Taken out by its receipts.
+             SELECT r.transfer_line_id, l.code, el.qty
+             FROM stock_transfer_receipt t
+             JOIN stock_transfer_receipt_line r ON r.document_id = t.document_id
+             JOIN live e ON e.source_line_id = r.id AND e.warehouse_id = (SELECT id FROM through)
+             JOIN stock_entry_lot el ON el.entry_id = e.id
+             JOIN stock_lot l ON l.id = el.lot_id
+             WHERE t.transfer_id = $1
+         ) moved
+         GROUP BY line_id, code HAVING sum(qty) > 0
+         ORDER BY line_id, code",
+    )
+    .bind(transfer_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut out: BTreeMap<Uuid, BTreeMap<String, Decimal>> = BTreeMap::new();
+    for (line, code, qty) in rows {
+        out.entry(line).or_default().insert(code, qty);
+    }
+    Ok(out)
+}
+
+/// The lots on their way on a line, as a document line names them.
+fn as_line_lots(on_way: Option<&BTreeMap<String, Decimal>>, mut qty: Decimal) -> Vec<LineLot> {
+    let mut out = vec![];
+    for (code, left) in on_way.into_iter().flatten() {
+        if qty <= Decimal::ZERO {
+            break;
+        }
+        let take = (*left).min(qty);
+        qty -= take;
+        out.push(LineLot {
+            lot: code.clone(),
+            qty: take.normalize(),
+            expiry_date: None,
+            manufactured_date: None,
+            attributes: None,
+        });
+    }
+    out
+}
+
 // ---------------------------------------------------------- the receipt
 
 #[derive(Debug, Deserialize)]
@@ -253,6 +321,8 @@ struct ReceiptLineInput {
     id: Option<Uuid>,
     transfer_line_id: Uuid,
     qty: Decimal,
+    #[serde(default)]
+    lots: Vec<LineLot>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -324,6 +394,7 @@ impl DocumentHandler for TransferReceipt {
                         .money()
                         .readonly()
                         .help("Known once posted: the value that arrived."),
+                    lots::field(),
                 ],
             }],
             states: vec![
@@ -405,6 +476,7 @@ impl DocumentHandler for TransferReceipt {
                     "the quantity must be more than zero",
                 ));
             }
+            lots::check("lines", index + 1, &line.lots)?;
         }
         if current.is_none() {
             sqlx::query(
@@ -446,6 +518,12 @@ impl DocumentHandler for TransferReceipt {
             .execute(&mut *ctx.conn)
             .await?;
         }
+        let named: Vec<(Uuid, &[LineLot])> = ids
+            .iter()
+            .zip(&body.lines)
+            .map(|(id, line)| (*id, line.lots.as_slice()))
+            .collect();
+        lots::save(&mut *ctx.conn, doc.id, &named).await?;
         Ok(())
     }
 
@@ -472,10 +550,12 @@ impl DocumentHandler for TransferReceipt {
     }
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
-        Ok(json!({
+        let mut body = json!({
             "transfer_id": receipt_transfer(conn, doc.id).await?,
             "lines": receipt_lines(conn, doc.id).await?,
-        }))
+        });
+        lots::attach(conn, doc.id, &mut body, "lines").await?;
+        Ok(body)
     }
 }
 
@@ -519,11 +599,14 @@ impl Command for Receive {
             )));
         }
         let lines = left_on_lines(&mut *ctx.conn, transfer.id).await?;
+        let on_way = lots_on_way(&mut *ctx.conn, transfer.id).await?;
         let rows: Vec<Value> = lines
             .iter()
             .filter(|(_, _, _, shipped, received)| shipped > received)
             .map(|(id, _, _, shipped, received)| {
-                json!({ "transfer_line_id": id, "qty": shipped - received })
+                let qty = shipped - received;
+                json!({ "transfer_line_id": id, "qty": qty,
+                        "lots": as_line_lots(on_way.get(id), qty) })
             })
             .collect();
         document::create(
@@ -626,9 +709,44 @@ impl Command for PostReceipt {
             .collect();
         erpcraft_stock::lock_levels(&mut *ctx.conn, doc.company_id, pairs).await?;
         let places = erpcraft_stock::locations(&mut *ctx.conn, [through, to]).await?;
+        let named = lots::of_document(&mut *ctx.conn, doc.id).await?;
+        let mut on_way = lots_on_way(&mut *ctx.conn, transfer.id).await?;
         let mut gl = vec![];
         let mut values = vec![];
         for line in &lines {
+            let line_lots = named.get(&line.id).map_or(&[][..], Vec::as_slice);
+            // Only lots of this transfer line that are still on their way.
+            for lot in line_lots {
+                let left = on_way
+                    .get_mut(&line.transfer_line_id)
+                    .and_then(|l| l.get_mut(&lot.lot));
+                match left {
+                    Some(left) if *left >= lot.qty => *left -= lot.qty,
+                    _ => {
+                        return Err(Error::line(
+                            "lines",
+                            line.line_no as usize,
+                            Some("lots"),
+                            format!(
+                                "lot {} is not on its way on this transfer line in that quantity",
+                                lot.lot
+                            ),
+                        ));
+                    }
+                }
+            }
+            let lots = lots::resolve(
+                &mut *ctx.conn,
+                doc.company_id,
+                line.item_id,
+                -line.qty,
+                line_lots,
+                lots::At {
+                    collection: "lines",
+                    line_no: line.line_no as usize,
+                },
+            )
+            .await?;
             let value = move_stock(
                 ctx,
                 &doc,
@@ -637,6 +755,7 @@ impl Command for PostReceipt {
                 line.id,
                 line.item_id,
                 line.qty,
+                &lots,
                 (through, to),
                 &mut gl,
             )
@@ -1027,16 +1146,32 @@ impl Command for CloseShort {
                 .collect();
             erpcraft_stock::lock_levels(&mut *ctx.conn, doc.company_id, pairs).await?;
             let places = erpcraft_stock::locations(&mut *ctx.conn, [through]).await?;
-            let movements: Vec<erpcraft_stock::StockLine> = left
-                .iter()
-                .map(|(line, _, item, shipped, done)| erpcraft_stock::StockLine {
+            // The lots still on their way are the lots lost.
+            let on_way = lots_on_way(&mut *ctx.conn, doc.id).await?;
+            let mut movements: Vec<erpcraft_stock::StockLine> = vec![];
+            for (line, line_no, item, shipped, done) in &left {
+                let qty = shipped - done;
+                let lots = lots::resolve(
+                    &mut *ctx.conn,
+                    doc.company_id,
+                    *item,
+                    -qty,
+                    &as_line_lots(on_way.get(line), qty),
+                    lots::At {
+                        collection: "lines",
+                        line_no: *line_no as usize,
+                    },
+                )
+                .await?;
+                movements.push(erpcraft_stock::StockLine {
                     item_id: *item,
                     warehouse_id: through,
-                    qty: -(shipped - done),
+                    qty: -qty,
                     cost: None,
                     source_line_id: Some(*line),
-                })
-                .collect();
+                    lots,
+                });
+            }
             let entries = erpcraft_stock::post(ctx, &posting, &movements, "transfer").await?;
             let mut gl = vec![];
             for entry in &entries {

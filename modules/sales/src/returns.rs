@@ -380,6 +380,7 @@ impl Command for PostReturn {
                 qty: line.qty,
                 cost: Some(Cost::Total(cost)),
                 source_line_id: Some(line.id),
+                lots: vec![],
             });
         }
 
