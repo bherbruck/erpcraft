@@ -26,6 +26,7 @@ import type { FieldValues } from "./field-input";
 import { ReferenceLabels, type ReferenceSource, referenceSource } from "./grid-references";
 import { gridLabels, shadcnGridSlots } from "./grid-skin";
 import { fitWidths } from "./grid-widths";
+import { formatLots, LOTS, LotEditor, parseLots } from "./lot-editor";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
@@ -76,7 +77,8 @@ function gridType(field: FieldMeta): ColumnType {
 /** The fields a line shows: what a person enters or reads, not ids the server keeps. */
 function shownFields(collection: CollectionMeta, lines: Line[], editable: boolean): FieldMeta[] {
   return collection.fields.filter((field) => {
-    if (field.name === "id" || field.type.kind === "json") return false;
+    // Json is shown only where the UI knows its shape: the lots of a stock line.
+    if (field.name === "id" || (field.type.kind === "json" && field.name !== LOTS)) return false;
     // A read-only column with no value on any line is left out of a locked document.
     if (!editable && field.readonly && lines.every((line) => isBlank(line.values[field.name]))) return false;
     return true;
@@ -179,6 +181,31 @@ export function LinesGrid({
   const slots = useMemo(
     () =>
       shadcnGridSlots<Line>({
+        // A line's lots are named in a dialog of their own.
+        editors: (columnId) =>
+          columnId === LOTS
+            ? (p) => {
+                const values = p.row.values;
+                const head = headerRef.current;
+                const text = (value: Json | undefined): string | null =>
+                  typeof value === "string" && value !== "" ? value : null;
+                const itemId = text(values.item_id);
+                return (
+                  <LotEditor
+                    p={p}
+                    context={{
+                      companyId: text(head.company_id),
+                      itemId,
+                      itemLabel: itemId ? (peekLinkLabel("item", "id", itemId) ?? "") : "",
+                      warehouseId: text(values.warehouse_id) ?? text(head.from_warehouse_id) ?? text(head.warehouse_id),
+                      qty: text(values.qty),
+                      date: text(head.doc_date),
+                      line: latest.current.findIndex((line) => line.key === p.row.key) + 1,
+                    }}
+                  />
+                );
+              }
+            : undefined,
         // A box changes the line as typing y or n in the cell would.
         toggle: (columnId, row, on) =>
           onEditRef.current([
@@ -271,6 +298,15 @@ export function LinesGrid({
           // that is still nothing on every line starts hidden, so the lines fit; Columns shows it.
           hidden: quiet.has(name) ? true : undefined,
         };
+        if (name === LOTS) {
+          return {
+            ...base,
+            type: "text",
+            width: 200,
+            format: (value) => formatLots(value),
+            parse: (text, row) => parseLots(text, row.values[LOTS]),
+          };
+        }
         if (field.type.kind === "bool") {
           return { ...base, format: (v) => (v === true ? t("value.yes") : v === false ? t("value.no") : "") };
         }

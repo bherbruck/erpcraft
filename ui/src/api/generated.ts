@@ -4,7 +4,7 @@
 /** Any JSON value. Used where a command's schema leaves a value open. */
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
-export type EntityName = "account" | "account_rule" | "asset" | "asset_class" | "asset_settings" | "bank_account_number" | "bank_csv_mapping" | "bom" | "bom_activity" | "bom_line" | "bom_operation" | "charge" | "company" | "consolidation_group" | "consolidation_member" | "cost_activity" | "cost_activity_rate" | "currency" | "customer" | "dimension" | "dimension_rule" | "dimension_set" | "dimension_value" | "edi_interchange" | "edi_item_xref" | "edi_location_xref" | "edi_message" | "edi_partner" | "edi_settings" | "edi_uom_xref" | "einvoice_import" | "exchange_rate" | "fiscal_period" | "gl_entry" | "intercompany_document" | "intercompany_party" | "intercompany_rule" | "item" | "party_bank_account" | "payment_hold" | "payment_terms" | "payment_terms_instalment" | "payment_terms_step" | "policy_rule" | "print_template" | "purchasing_settings" | "reorder_rule" | "role" | "sales_settings" | "site" | "sso_provider" | "stock_entry" | "tax_area" | "tax_code" | "tax_code_component" | "tax_exemption" | "tax_registration" | "tax_rule" | "tax_settings" | "user" | "vendor" | "warehouse" | "webhook" | "work_center";
+export type EntityName = "account" | "account_rule" | "asset" | "asset_class" | "asset_settings" | "bank_account_number" | "bank_csv_mapping" | "bom" | "bom_activity" | "bom_line" | "bom_operation" | "charge" | "company" | "consolidation_group" | "consolidation_member" | "cost_activity" | "cost_activity_rate" | "currency" | "customer" | "dimension" | "dimension_rule" | "dimension_set" | "dimension_value" | "edi_interchange" | "edi_item_xref" | "edi_location_xref" | "edi_message" | "edi_partner" | "edi_settings" | "edi_uom_xref" | "einvoice_import" | "exchange_rate" | "fiscal_period" | "gl_entry" | "intercompany_document" | "intercompany_party" | "intercompany_rule" | "item" | "party_bank_account" | "payment_hold" | "payment_terms" | "payment_terms_instalment" | "payment_terms_step" | "policy_rule" | "print_template" | "purchasing_settings" | "reorder_rule" | "role" | "sales_settings" | "site" | "sso_provider" | "stock_entry" | "stock_lot" | "tax_area" | "tax_code" | "tax_code_component" | "tax_exemption" | "tax_registration" | "tax_rule" | "tax_settings" | "user" | "vendor" | "warehouse" | "webhook" | "work_center";
 
 export type DocTypeName = "asset_disposal" | "bank_statement" | "depreciation_run" | "fx_revaluation" | "journal_entry" | "payment" | "payment_run" | "production_order" | "purchase_order" | "purchase_receipt" | "purchase_return" | "sales_credit" | "sales_credit_note" | "sales_delivery" | "sales_invoice" | "sales_order" | "sales_return" | "stock_adjustment" | "stock_transfer" | "stock_transfer_receipt" | "vendor_credit" | "vendor_credit_note" | "vendor_invoice" | "year_end_close";
 
@@ -2135,6 +2135,40 @@ export type StockAvailabilityInput = {
 };
 
 /**
+ * Propose the lots or serial numbers for a quantity of an item going out of a warehouse: first expiring first (fefo, the default; lots without an expiry date last) or first received first (fifo). A proposal only: the document line names the lots, and may name others. `short` is what the lots on hand do not cover.
+ */
+export type StockLotProposalInput = {
+  /** The company the goods go out of. */
+  company_id: string;
+  /** The item going out. */
+  item_id: string;
+  /** Leave out lots that have expired by this day (the movement's date). */
+  not_expired_on?: string | null;
+  /** `fefo` (the default) or `fifo`. */
+  order?: "fefo" | "fifo";
+  /** How much is to go out. */
+  qty: string | number;
+  /** The warehouse it goes out of. */
+  warehouse_id: string;
+};
+
+/**
+ * Lots and serial numbers on hand in a company's warehouses: quantity per lot and warehouse, with the lot's expiry and manufacturing dates and attributes, first expiring first. Lots with nothing on hand are left out.
+ */
+export type StockLotsInput = {
+  /** The company whose lots are listed. */
+  company_id: string;
+  /** Only lots that expire on or before this day. */
+  expiring_by?: string | null;
+  /** Only this item. */
+  item_id?: string | null;
+  /** Only lots whose code contains this. */
+  lot?: string | null;
+  /** Only this warehouse. */
+  warehouse_id?: string | null;
+};
+
+/**
  * Quantity, value and average cost of every item on hand in a company's warehouses, in its accounting currency. Items with nothing on hand are left out. An item that the company's policy let go below zero is listed with a negative quantity and a negative value: the estimate its missing goods left stock at, so that the total still equals the inventory accounts. Values are left out for a caller from whom the value of stock entries is withheld. warehouse_id takes the locations inside the warehouse with it; site_id gives one site's warehouses; transit true gives the goods on their way between sites.
  */
 export type StockOnHandInput = {
@@ -2167,6 +2201,20 @@ export type StockReservationsInput = {
   offset?: number | null;
   /** Only this warehouse. */
   warehouse_id?: string | null;
+};
+
+/**
+ * Trace a lot or serial number. Forward: every movement of it (receipts, transfers, deliveries with their customers, returns), and through production the lots of the products it went into, followed in turn, with every customer who received any of them. Backward: where it came from (receipts with their vendors) and, if it was made, the lots of the components its production order consumed, followed in turn, with every vendor who supplied any of them. Production links lots by order: every lot an order consumed went into every lot it made. Movements that were taken back are left out.
+ */
+export type StockTraceInput = {
+  /** The company whose lot is traced. */
+  company_id: string;
+  /** `forward` (the default) or `backward`. */
+  direction?: "forward" | "backward";
+  /** The item of the lot. */
+  item_id: string;
+  /** The lot or serial number to start from. */
+  lot: string;
 };
 
 /**
@@ -2693,6 +2741,9 @@ export type PostingView = {
       item_name: string | null;
       /** Position within the posting, from 1. */
       line_no: number | null;
+      /** The lots or serial numbers moved, for a tracked item: a list of
+       * `{ lot, qty }`, quantities as decimal text, the way the entry goes. */
+      lots: Array<Json> | null;
       /** Quantity in (positive) or out (negative). */
       qty: string | null;
       /** Quantity on hand after the entry. */
@@ -4404,6 +4455,34 @@ export type AvailabilityRow = {
   warehouse_id: string;
 };
 
+export type LineLot = {
+  /** For a new lot coming in: free attributes, such as the supplier's
+   * own lot number. */
+  attributes?: Json;
+  /** For a new lot coming in: when it expires. */
+  expiry_date?: string | null;
+  /** The lot or serial number. */
+  lot: string;
+  /** For a new lot coming in: when it was made. */
+  manufactured_date?: string | null;
+  /** How much of the line is of this lot, above zero; one for a serial
+   * number. */
+  qty: string;
+};
+
+export type LotRow = {
+  attributes: Json;
+  expiry_date: string | null;
+  item_code: string;
+  item_id: string;
+  lot: string;
+  lot_id: string;
+  manufactured_date: string | null;
+  qty: string;
+  warehouse_code: string;
+  warehouse_id: string;
+};
+
 export type OnHandRow = {
   /** Value divided by quantity: what the next issue goes out at. For a
    * quantity below zero, what the missing goods are carried at per unit. */
@@ -4436,6 +4515,44 @@ export type ReservationRow = {
   qty: string;
   updated_at: string;
   warehouse_id: string;
+};
+
+export type TracedLot = {
+  /** Steps from the lot traced from: 0 for itself, 1 for the lots made
+   * from it (forward) or that went into it (backward), and so on. */
+  depth: number;
+  expiry_date: string | null;
+  item_code: string;
+  item_id: string;
+  lot: string;
+  lot_id: string;
+  /** The lot this one was reached from, through a production order. */
+  via_lot_id: string | null;
+};
+
+export type TraceMovement = {
+  /** What kind of document moved it: purchase_receipt, sales_delivery,
+   * production_order, stock_transfer, ... */
+  doc_type: string;
+  document_id: string;
+  item_code: string;
+  lot: string;
+  lot_id: string;
+  number: string | null;
+  party_id: string | null;
+  party_name: string | null;
+  /** The customer or vendor of the document, when it has one. */
+  party_type: string | null;
+  posting_date: string;
+  /** In (positive) or out (negative) of the warehouse. */
+  qty: string;
+  warehouse_code: string;
+};
+
+export type TraceParty = {
+  name: string | null;
+  party_id: string;
+  party_type: string;
 };
 
 export type ExemptionRow = {
@@ -7371,6 +7488,18 @@ export type StockAvailabilityOutput = {
   rows: Array<AvailabilityRow>;
 };
 
+export type StockLotProposalOutput = {
+  /** The lots to name on the line, as a document line takes them. */
+  lots: Array<LineLot>;
+  /** What the lots on hand do not cover; zero when they do. */
+  short: string;
+};
+
+export type StockLotsOutput = {
+  company_id: string;
+  rows: Array<LotRow>;
+};
+
 export type StockOnHandOutput = {
   company_id: string;
   currency: string;
@@ -7383,6 +7512,15 @@ export type StockReservationsOutput = {
   rows: Array<ReservationRow>;
   /** How many reservations match, whatever the page. */
   total: number;
+};
+
+export type StockTraceOutput = {
+  lots: Array<TracedLot>;
+  /** Every movement of those lots that was not taken back, oldest first. */
+  movements: Array<TraceMovement>;
+  /** Forward: the customers who received any of the lots. Backward: the
+   * vendors who supplied any of them. */
+  parties: Array<TraceParty>;
 };
 
 export type TaxAreaImportOutput = {
@@ -7974,8 +8112,11 @@ export interface CommandOutputs {
   "stock_transfer.receive": StockTransferReceiveOutput;
   "stock_transfer.reverse": StockTransferReverseOutput;
   "stock.availability": StockAvailabilityOutput;
+  "stock.lot_proposal": StockLotProposalOutput;
+  "stock.lots": StockLotsOutput;
   "stock.on_hand": StockOnHandOutput;
   "stock.reservations": StockReservationsOutput;
+  "stock.trace": StockTraceOutput;
   "tax_area.import": TaxAreaImportOutput;
   "tax.exemptions": TaxExemptionsOutput;
   "tax.oss_report": TaxOssReportOutput;
@@ -8165,8 +8306,11 @@ export interface CommandInputs {
   "stock_transfer.receive": StockTransferReceiveInput;
   "stock_transfer.reverse": StockTransferReverseInput;
   "stock.availability": StockAvailabilityInput;
+  "stock.lot_proposal": StockLotProposalInput;
+  "stock.lots": StockLotsInput;
   "stock.on_hand": StockOnHandInput;
   "stock.reservations": StockReservationsInput;
+  "stock.trace": StockTraceInput;
   "tax_area.import": TaxAreaImportInput;
   "tax.exemptions": TaxExemptionsInput;
   "tax.oss_report": TaxOssReportInput;
@@ -8200,4 +8344,4 @@ export interface CommandInputs {
 export type CommandName = keyof CommandInputs;
 
 /** Commands that only read. */
-export type ReadOnlyCommandName = "approval.delegations" | "approval.get" | "approval.list" | "asset.cost_lines" | "asset.register" | "asset.schedule" | "audit.history" | "audit.list" | "auth.events" | "bank_statement.proposals" | "bank.reconciliation" | "company_logo.get" | "consolidation.report" | "document.get" | "document.list" | "document.messages" | "document.parties" | "document.render" | "document.render_pdf" | "edi_interchange.content" | "edi.explain" | "edi.label" | "edi.pending" | "edi.proposal" | "einvoice.export" | "einvoice.export_pdf" | "einvoice.read" | "entity.get" | "entity.list" | "gl.account_ledger" | "gl.balance_sheet" | "gl.income_statement" | "gl.trial_balance" | "intercompany.balances" | "meta.describe" | "open_item.aging" | "open_item.list" | "outbox.list" | "party.get" | "payment_run.bank_file" | "planning.suggestions" | "print_template.builtin" | "print_template.preview" | "purchase_order.awaiting_credit" | "sales_order.awaiting_credit" | "search.records" | "setup.templates" | "smtp_settings.get" | "sso_identity.list" | "sso_provider.list" | "stock_transfer.in_transit" | "stock.availability" | "stock.on_hand" | "stock.reservations" | "tax.exemptions" | "tax.oss_report" | "tax.report" | "user.get" | "user.list" | "webhook.deliveries" | "work_center.load";
+export type ReadOnlyCommandName = "approval.delegations" | "approval.get" | "approval.list" | "asset.cost_lines" | "asset.register" | "asset.schedule" | "audit.history" | "audit.list" | "auth.events" | "bank_statement.proposals" | "bank.reconciliation" | "company_logo.get" | "consolidation.report" | "document.get" | "document.list" | "document.messages" | "document.parties" | "document.render" | "document.render_pdf" | "edi_interchange.content" | "edi.explain" | "edi.label" | "edi.pending" | "edi.proposal" | "einvoice.export" | "einvoice.export_pdf" | "einvoice.read" | "entity.get" | "entity.list" | "gl.account_ledger" | "gl.balance_sheet" | "gl.income_statement" | "gl.trial_balance" | "intercompany.balances" | "meta.describe" | "open_item.aging" | "open_item.list" | "outbox.list" | "party.get" | "payment_run.bank_file" | "planning.suggestions" | "print_template.builtin" | "print_template.preview" | "purchase_order.awaiting_credit" | "sales_order.awaiting_credit" | "search.records" | "setup.templates" | "smtp_settings.get" | "sso_identity.list" | "sso_provider.list" | "stock_transfer.in_transit" | "stock.availability" | "stock.lot_proposal" | "stock.lots" | "stock.on_hand" | "stock.reservations" | "stock.trace" | "tax.exemptions" | "tax.oss_report" | "tax.report" | "user.get" | "user.list" | "webhook.deliveries" | "work_center.load";

@@ -330,11 +330,17 @@ const checking = await ensure(
   { name: "Checking (demo)", account_type: "asset", is_bank: true },
 );
 // The number the bank's files name the account by: a statement is imported only into the account that has it.
-await ensure(
+const checkingNumber = await ensure(
   "bank_account_number",
   { company_id: company, bank_account_id: checking },
   { iban: "GB33BUKB20201555555555" },
 );
+// Seeds before the server checked IBANs gave this one an example number that is not one.
+await session.run("entity.update", {
+  entity: "bank_account_number",
+  id: checkingNumber,
+  data: { iban: "GB33BUKB20201555555555" },
+});
 const junRent = await ensureDoc("journal_entry", company, "Demo: storage rent from checking", "2026-06-03", () => ({
   lines: [
     line({ account_id: account("6000"), debit: "25.00", credit: "0" }),
@@ -766,5 +772,26 @@ if (run.status === "draft" && asArray(run.body.lines).length === 0) {
   await session.run("payment_run.propose", { id: run.id });
   log("payment_run.propose", "done");
 }
+
+// ------------------------------------------------------------ lots
+
+// Flour is tracked by lot: two lots with their expiry dates came into the main warehouse.
+const flour = await ensure("item", { code: "FLOUR" }, { name: "Flour", uom: "kg", tracking: "lot" });
+const flourIn = await ensureDoc("stock_adjustment", company, "Demo: flour in two lots", "2026-06-02", () => ({
+  offset_account_id: account("3000"),
+  lines: [
+    line({
+      item_id: flour,
+      warehouse_id: warehouse,
+      qty: "50",
+      unit_cost: "1.20",
+      lots: [
+        { lot: "F-0601", qty: "30", expiry_date: "2027-01-31", manufactured_date: "2026-05-30" },
+        { lot: "F-0602", qty: "20", expiry_date: "2027-03-31", manufactured_date: "2026-06-01" },
+      ],
+    }),
+  ],
+}));
+await advance("stock_adjustment", flourIn, "draft", "post");
 
 console.log(`\n${created} created, ${found} already there.`);

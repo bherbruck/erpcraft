@@ -105,12 +105,15 @@ In development builds only (`import.meta.env.DEV`), a page opened with `#token=<
 - **Delegating approvals**: the Approvals inbox has a Delegations tab for those who may delegate (`approval.delegate`): who decides in their place from when to when and why, what was delegated to them, and End (`approval.end_delegation`).
 - **Lookups on lines** name the rows the lines hold by their keys where the command takes them (`by_keys`), so an item past the first page is still named.
 
+- **Lots and serial numbers**: a stock line's lots (`lots`) are a column of the lines grid that shows them as "F-0601 ×30, F-0602 ×20" (also what is copied, and what may be typed or pasted). Enter opens a dialog to name them, with expiry and manufacturing dates for a new lot and "Propose lots" (`stock.lot_proposal`, first expiring first) for goods going out. "Lots on hand" (`stock.lots`) filters by item, warehouse, lot and expiry, and each lot opens its trace; "Lot traceability" (`stock.trace`) shows, forward or backward, the lots reached through production, every movement with its document and party, and the customers or vendors involved.
+
 ## What does not exist yet
 
 - **Still decided by the UI, because the server does not say:**
   - The four ledgers the UI knows (`gl`, `stock`, `open_items`, `tax`) have a layout of their own: which fields are columns, and how a settlement reads. Their column titles come from the entry schemas.
   - Money is shown in the currency its field declares. Where a document is in another currency, the server declares some of its amounts in the company's currency although they are in the document's (reported; the UI follows the declaration and will follow its correction).
 - Saved views are kept in the browser only.
+- The shape of a stock line's `lots` (a list of lot, quantity and, for new lots, dates and attributes) is the UI's: the registry declares the field as Json. Lot attributes are kept but not edited.
 - `asset.capitalise` takes a document line as plain ids; which lines qualify is worked out in the UI (`src/components/line-pickers.tsx`) from the command's description: debits to the class's `asset_cost` account not yet capitalised. Openings of taken-over assets are offered too, as the server does not link them.
 - Records that belong to another record without being its lines (a bank account's numbers) are found by a required typed link that can name the record's entity, or a display that starts with a required link to it (`src/pages/attached-records.tsx`).
 - Party data is not a generic entity, so which records have it (company, customer, vendor) and the labels of its fields and tax schemes are the UI's (`src/pages/party-details.tsx`); `party.get` and `party.set` describe the fields only in their schemas.

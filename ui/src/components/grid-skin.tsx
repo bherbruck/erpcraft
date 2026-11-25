@@ -365,9 +365,14 @@ function TextEditor<R>(p: EditorSlotProps<R>) {
   );
 }
 
-function makeEditor<R>(pickers?: GridRowPickers<R>) {
+/** An editor of the consumer's own for some columns (a dialog for a line's lots). */
+export type GridEditors<R> = (columnId: string) => ((p: EditorSlotProps<R>) => ReactNode) | undefined;
+
+function makeEditor<R>(pickers?: GridRowPickers<R>, editors?: GridEditors<R>) {
   // biome-ignore lint/correctness/noComponentHookFactories: made once per grid (its slots are memoised), so its identity is stable
   return function Editor(p: EditorSlotProps<R>) {
+    const own = editors?.(p.column.id);
+    if (own) return <>{own(p)}</>;
     if (p.column.type === "enum" || p.column.type === "state" || p.column.type === "reference") {
       return <PickerEditor {...p} pickers={pickers} />;
     }
@@ -707,6 +712,7 @@ export function shadcnGridSlots<R>(
     pickers?: GridRowPickers<R>;
     problem?: GridProblem<R>;
     toggle?: GridToggle<R>;
+    editors?: GridEditors<R>;
   } = {},
 ): GridSlots<R> {
   return {
@@ -716,7 +722,7 @@ export function shadcnGridSlots<R>(
     Cell: makeCell(options.link, options.check, options.decorate, options.problem, options.toggle),
     FooterCell,
     ResizeHandle,
-    Editor: makeEditor(options.pickers),
+    Editor: makeEditor(options.pickers, options.editors),
     ColumnMenu,
     FilterPopover,
     ConditionFilter,

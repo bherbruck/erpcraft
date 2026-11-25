@@ -967,6 +967,113 @@ async function delegationChecks(): Promise<void> {
   );
 }
 
+/** Lots: named on a stock line in a dialog (proposed by the server) or typed, then traced. */
+async function lotChecks(): Promise<void> {
+  const companyId = asString((await first("company", { code: "OHIO" }))?.id);
+  const flour = await first("item", { code: "FLOUR" });
+  const main = await first("warehouse", { company_id: companyId, code: "MAIN" });
+  const offset = await first("account", { company_id: companyId, code: "5000" });
+  if (!flour || !main || !offset) throw new Error("the seed data is missing; run `bun run seed` first");
+  const today = new Date().toISOString().slice(0, 10);
+  const draft = async (memo: string): Promise<string> =>
+    asString(
+      asObject(
+        await session.run("document.create", {
+          doc_type: "stock_adjustment",
+          company_id: companyId,
+          doc_date: today,
+          memo,
+          body: {
+            offset_account_id: asString(offset.id),
+            lines: [{ item_id: asString(flour.id), warehouse_id: asString(main.id), qty: "-2" }],
+          },
+        }),
+      ).id,
+    );
+  const lotsOf = async (id: string): Promise<JsonObject[]> =>
+    asArray(
+      asObject(
+        asArray(
+          asObject(asObject(await session.run("document.get", { doc_type: "stock_adjustment", id })).body).lines,
+        )[0],
+      ).lots,
+    ).map(asObject);
+
+  // Proposed: the dialog asks the server which lots go out first.
+  const proposedId = await draft(`E2E lots proposed ${stamp}`);
+  cleanup.push(async () => {
+    const doc = asObject(await session.run("document.get", { doc_type: "stock_adjustment", id: proposedId }));
+    if (doc.status === "posted") await session.run("stock_adjustment.reverse", { id: proposedId }).catch(() => null);
+    else await session.run("document.delete", { doc_type: "stock_adjustment", id: proposedId }).catch(() => null);
+  });
+  await open(`/c/OHIO/d/stock_adjustment/${proposedId}`);
+  await focusCell("Lots", 0);
+  await browser.key("Enter");
+  await browser.settle();
+  check(
+    "Enter on a line's lots opens a dialog to name them",
+    (await textOf("[role=dialog]")).includes("Lots of line 1"),
+  );
+  await dialogClick("Propose lots");
+  await browser.settle();
+  const proposal = String(await browser.evaluate(`document.querySelector('[aria-label="Lot 1"]')?.value ?? ""`));
+  check("the server proposes the lot that expires first", proposal === "F-0601", proposal);
+  await dialogClick("Use these lots");
+  await browser.settle();
+  check("the line shows its lots", (await cellText("Lots", 0)).includes("F-0601"), await cellText("Lots", 0));
+  await browser.key("s", CTRL);
+  await browser.settle();
+  const saved = await lotsOf(proposedId);
+  check(
+    "the lots are saved with the line",
+    saved.length === 1 && saved[0]?.lot === "F-0601" && String(saved[0]?.qty).startsWith("2"),
+    JSON.stringify(saved),
+  );
+  await browser.click("Post");
+  await dialogClick("Post");
+  await browser.settle();
+  check(
+    "a line that names its lots posts",
+    asObject(await session.run("document.get", { doc_type: "stock_adjustment", id: proposedId })).status === "posted",
+  );
+
+  // Typed: lots go into the cell as the cell shows them.
+  const typedId = await draft(`E2E lots typed ${stamp}`);
+  cleanup.push(() => session.run("document.delete", { doc_type: "stock_adjustment", id: typedId }).catch(() => null));
+  await open(`/c/OHIO/d/stock_adjustment/${typedId}`);
+  await focusCell("Lots", 0);
+  // A character starts the edit, which is the dialog; its first lot takes what is typed there.
+  await browser.key("Enter");
+  await browser.settle();
+  await browser.fill('[role=dialog] [aria-label="Lot 1"]', "F-0602");
+  await browser.fill('[role=dialog] [aria-label="Quantity of lot 1"]', "1");
+  await dialogClick("Add a lot");
+  await browser.fill('[role=dialog] [aria-label="Lot 2"]', "F-0601");
+  await browser.fill('[role=dialog] [aria-label="Quantity of lot 2"]', "1");
+  await dialogClick("Use these lots");
+  await browser.key("s", CTRL);
+  await browser.settle();
+  const typed = await lotsOf(typedId);
+  check(
+    "lots typed in the dialog are saved in their order",
+    typed.map((lot) => lot.lot).join(",") === "F-0602,F-0601",
+    JSON.stringify(typed),
+  );
+
+  // The reports: lots on hand, and where a lot went.
+  await open("/c/OHIO/r/stock.lots");
+  await browser.settle();
+  check("Lots on hand lists the lots with their expiry", (await textOf("main")).includes("F-0602"));
+  await open(`/c/OHIO/r/stock.trace?item=${asString(flour.id)}&lot=F-0601`);
+  await browser.settle();
+  const trace = await textOf("main");
+  check(
+    "tracing a lot lists its movements",
+    trace.includes("F-0601") && trace.includes("Stock adjustment SA-"),
+    trace.slice(0, 500),
+  );
+}
+
 /** A user whose role withholds fields sees what it may, and changes only what it may. */
 async function accessChecks(): Promise<void> {
   const restricted = await signInRestricted(session, RESTRICTED_PERMISSIONS);
@@ -1985,6 +2092,7 @@ const groups: [string, () => Promise<void>][] = [
   ["payment runs", paymentRunChecks],
   ["sites and transfers", transferChecks],
   ["delegation", delegationChecks],
+  ["lots", lotChecks],
 ];
 const only = process.argv.slice(2);
 
@@ -1996,6 +2104,19 @@ undoOnSignal(undoAll);
 
 try {
   await browser.viewport(1440, 900);
+  // The first page a fresh browser asks the development server for makes it compile the whole
+  // app, which on a busy machine can take longer than a page may take to render: it is loaded
+  // first, given a few tries, so the first group judges the app and not the compiler.
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await browser.goto(`${APP}/sign-in`);
+      break;
+    } catch (cause) {
+      console.log(
+        `warming up the development server (${attempt}/3): ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+  }
   for (const [name, run] of groups) {
     if (only.length > 0 && !only.includes(name)) continue;
     console.log(`\n${name}`);

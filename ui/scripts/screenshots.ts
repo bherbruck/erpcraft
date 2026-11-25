@@ -684,6 +684,17 @@ const shots: Shot[] = [
       `${base}/e/site/${asString((await first("entity.list", { entity: "site", filters: { company_id: companyId, code: "DAY" } })).id)}`,
   },
   { name: "65-delegations", path: `${base}/approvals?scope=delegations` },
+  { name: "66-lots-on-hand", path: `${base}/r/stock.lots` },
+  {
+    name: "67-lot-trace",
+    path: async () =>
+      `${base}/r/stock.trace?item=${asString((await first("entity.list", { entity: "item", filters: { code: "FLOUR" } })).id)}&lot=F-0601`,
+    height: 1000,
+  },
+  {
+    name: "68-line-lots",
+    path: async () => `${base}/d/stock_adjustment/${await byMemo("stock_adjustment", "Demo: flour in two lots")}`,
+  },
   {
     // Last of the company's pictures: it leaves a form with unsaved changes.
     name: "21-line-error",

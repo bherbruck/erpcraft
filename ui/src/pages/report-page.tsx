@@ -25,6 +25,7 @@ import { AccountLedgerPage } from "./account-ledger";
 import { AgingPage } from "./aging";
 import { BankReconciliationPage } from "./bank-reconciliation";
 import { AssetRegisterPage, AssetSchedulePage } from "./fixed-assets";
+import { LotsPage, LotTracePage } from "./lots";
 import { NotFoundPage } from "./not-found";
 import { OpenItemsPage } from "./open-items";
 import { BalanceSheetPage, IncomeStatementPage } from "./statements";
@@ -43,6 +44,8 @@ const CUSTOM: Record<string, () => ReactNode> = {
   "open_item.aging": AgingPage,
   "asset.register": AssetRegisterPage,
   "asset.schedule": AssetSchedulePage,
+  "stock.lots": LotsPage,
+  "stock.trace": LotTracePage,
 };
 
 export function ReportPage() {

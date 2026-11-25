@@ -128,11 +128,22 @@ export async function launchBrowser(port: number): Promise<Browser> {
     }
   });
 
+  const CALL_PATIENCE = 120_000;
   function send(method: string, params: JsonObject = {}): Promise<JsonObject> {
     nextId += 1;
     const id = nextId;
     socket.send(JSON.stringify({ id, method, params }));
-    return new Promise((done) => waiting.set(id, done));
+    // A call the browser never answers (a page stuck in a script) fails the step rather than the run.
+    return new Promise((done, fail) => {
+      const timer = setTimeout(() => {
+        waiting.delete(id);
+        fail(new Error(`the browser did not answer ${method} within ${CALL_PATIENCE / 1000} seconds`));
+      }, CALL_PATIENCE);
+      waiting.set(id, (answer: JsonObject) => {
+        clearTimeout(timer);
+        done(answer);
+      });
+    });
   }
 
   async function evaluate(expression: string): Promise<unknown> {

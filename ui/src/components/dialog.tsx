@@ -27,6 +27,7 @@ export function Dialog({
   footer,
   className,
   wide = false,
+  inGrid = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -39,6 +40,8 @@ export function Dialog({
   className?: string;
   /** For content with tables, such as the ledger entries of a preview. */
   wide?: boolean;
+  /** Opened from a cell of a grid (@erpcraft/grid): the grid leaves its keys and clicks alone. */
+  inGrid?: boolean;
 }) {
   return (
     <ShadcnDialog
@@ -49,6 +52,7 @@ export function Dialog({
     >
       <DialogContent
         showCloseButton={false}
+        data-grid-menu={inGrid ? "" : undefined}
         aria-describedby={description ? undefined : ""}
         onInteractOutside={(event) => event.preventDefault()}
         onPointerDownOutside={(event) => event.preventDefault()}
