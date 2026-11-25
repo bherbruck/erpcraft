@@ -32,6 +32,10 @@ pub use transit::{InTransit, in_transit};
 pub struct InventoryModule;
 
 impl Module for InventoryModule {
+    fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("de", include_str!("../i18n/de.json"))]
+    }
+
     fn name(&self) -> &'static str {
         "inventory"
     }

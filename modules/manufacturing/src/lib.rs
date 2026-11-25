@@ -36,6 +36,10 @@ pub const INACTIVE_BOM: &str = "production_order.inactive_bom";
 pub const INACTIVE_WORK_CENTER: &str = "production_order.inactive_work_center";
 
 impl Module for ManufacturingModule {
+    fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("de", include_str!("../i18n/de.json"))]
+    }
+
     fn name(&self) -> &'static str {
         "manufacturing"
     }

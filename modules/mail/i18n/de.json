@@ -1,0 +1,17 @@
+{
+  "Bcc": "Bcc",
+  "Cc": "Cc",
+  "Email settings": "E-Mail-Einstellungen",
+  "From address": "Absenderadresse",
+  "From name": "Absendername",
+  "Host": "Server",
+  "Mail": "E-Mail",
+  "Port": "Port",
+  "Recipients": "Empfänger",
+  "Reply to": "Antwort an",
+  "Security": "Verschlüsselung",
+  "Send by email": "Per E-Mail senden",
+  "To party only": "Nur an den Geschäftspartner",
+  "Username": "Benutzername",
+  "a draft is not sent, and a document goes only to the addresses its party has on record unless the company allows otherwise": "ein Entwurf wird nicht versendet, und ein Beleg geht nur an die hinterlegten Adressen seines Geschäftspartners, sofern der Mandant nichts anderes erlaubt"
+}

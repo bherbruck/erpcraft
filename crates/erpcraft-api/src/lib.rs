@@ -239,6 +239,8 @@ async fn me(Auth(actor): Auth) -> ApiResult {
 #[derive(Deserialize)]
 struct MetaQuery {
     module: Option<String>,
+    /// The language to describe in; else the Accept-Language header.
+    locale: Option<String>,
 }
 
 async fn meta(
@@ -251,7 +253,13 @@ async fn meta(
         &kernel,
         &actor,
         "meta.describe",
-        json!({ "module": query.module }),
+        json!({
+            "module": query.module,
+            "locale": query.locale.or_else(|| headers
+                .get(axum::http::header::ACCEPT_LANGUAGE)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)),
+        }),
         &headers,
     )
     .await?)

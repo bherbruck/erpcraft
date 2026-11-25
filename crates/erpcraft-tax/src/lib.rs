@@ -39,6 +39,10 @@ use uuid::Uuid;
 pub struct TaxModule;
 
 impl Module for TaxModule {
+    fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("de", include_str!("../i18n/de.json"))]
+    }
+
     fn name(&self) -> &'static str {
         "tax"
     }

@@ -41,6 +41,10 @@ use uuid::Uuid;
 pub struct OpenItemsModule;
 
 impl Module for OpenItemsModule {
+    fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("de", include_str!("../i18n/de.json"))]
+    }
+
     fn name(&self) -> &'static str {
         "open_items"
     }

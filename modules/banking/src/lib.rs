@@ -43,6 +43,10 @@ pub const AMOUNT_DIFFERENCE: &str = "bank_statement.amount_difference";
 pub struct BankingModule;
 
 impl Module for BankingModule {
+    fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("de", include_str!("../i18n/de.json"))]
+    }
+
     fn name(&self) -> &'static str {
         "banking"
     }

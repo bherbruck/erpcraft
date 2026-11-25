@@ -22,6 +22,10 @@ pub const EXPIRED: &str = "sales_quote.expired";
 pub struct QuotesModule;
 
 impl Module for QuotesModule {
+    fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("de", include_str!("../i18n/de.json"))]
+    }
+
     fn name(&self) -> &'static str {
         "quotes"
     }

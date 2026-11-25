@@ -25,6 +25,10 @@ pub const OVERRIDE: &str = "price.override";
 pub struct PricingModule;
 
 impl Module for PricingModule {
+    fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("de", include_str!("../i18n/de.json"))]
+    }
+
     fn name(&self) -> &'static str {
         "pricing"
     }

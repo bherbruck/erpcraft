@@ -43,6 +43,10 @@ const SALES_INVOICE: &str = "sales_invoice";
 pub struct SalesModule;
 
 impl Module for SalesModule {
+    fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("de", include_str!("../i18n/de.json"))]
+    }
+
     fn name(&self) -> &'static str {
         "sales"
     }

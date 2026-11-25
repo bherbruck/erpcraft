@@ -17,6 +17,7 @@ pub mod command;
 pub mod company;
 pub mod document;
 pub mod entity;
+pub mod i18n;
 pub mod input;
 pub mod maintenance;
 pub mod numbering;

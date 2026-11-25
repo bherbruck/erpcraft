@@ -46,6 +46,10 @@ pub use lots::{LineLot, LotQty, Tracking};
 pub struct StockModule;
 
 impl Module for StockModule {
+    fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("de", include_str!("../i18n/de.json"))]
+    }
+
     fn name(&self) -> &'static str {
         "stock"
     }

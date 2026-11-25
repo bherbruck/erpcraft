@@ -69,6 +69,14 @@ pub trait Module: Send + Sync + 'static {
     fn authenticator(&self) -> Option<Arc<dyn Authenticator>> {
         None
     }
+
+    /// The module's message catalogues: a locale (`de`) and a JSON object
+    /// from the English text of its labels, help and refusals to the
+    /// translation, usually `include_str!("../i18n/de.json")`. See
+    /// [`crate::i18n`].
+    fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
+        vec![]
+    }
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -1033,6 +1041,7 @@ pub struct Registry {
     ledgers: Vec<Arc<dyn Ledger>>,
     subscribers: Vec<Arc<dyn Subscriber>>,
     authenticator: Option<Arc<dyn Authenticator>>,
+    catalogues: crate::i18n::Catalogues,
 }
 
 fn is_ident(s: &str) -> bool {
@@ -1058,6 +1067,7 @@ impl Registry {
             ledgers: vec![],
             subscribers: vec![],
             authenticator: None,
+            catalogues: crate::i18n::Catalogues::default(),
         };
         let mut seen = BTreeSet::new();
 
@@ -1087,6 +1097,9 @@ impl Registry {
                 module: name.into(),
                 migrations: module.migrations(),
             });
+            for (locale, json) in module.catalogues() {
+                reg.catalogues.add(name, locale, json)?;
+            }
 
             for mut entity in module.entities() {
                 entity.module = name.into();
@@ -1543,6 +1556,11 @@ impl Registry {
     }
 
     /// Describe the system, optionally limited to one module.
+    /// The message catalogues of every module.
+    pub fn catalogues(&self) -> &crate::i18n::Catalogues {
+        &self.catalogues
+    }
+
     pub fn describe(&self, module: Option<&str>) -> Description {
         let keep = |m: &str| module.is_none_or(|want| want == m);
         Description {

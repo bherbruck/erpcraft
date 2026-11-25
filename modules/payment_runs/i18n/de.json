@@ -1,0 +1,23 @@
+{
+  "Also propose items not yet due whose early-payment discount is still open on the pay date, and take the discount.": "Auch noch nicht fällige Posten vorschlagen, deren Skonto am Zahltag noch offen ist, und das Skonto ziehen.",
+  "Approved": "Freigegeben",
+  "Bank file": "Bankdatei",
+  "Discount until": "Skonto bis",
+  "Due by": "Fällig bis",
+  "Hold": "Sperre",
+  "Hold everything owed to this vendor.": "Alles sperren, was diesem Kreditor geschuldet wird.",
+  "Items due on or before this day are proposed.": "Posten, die an oder vor diesem Tag fällig sind, werden vorgeschlagen.",
+  "Keep the item on the run but do not pay it.": "Den Posten im Lauf belassen, aber nicht zahlen.",
+  "Or hold this one item.": "Oder nur diesen Posten sperren.",
+  "Payment hold": "Zahlungssperre",
+  "Payment holds": "Zahlungssperren",
+  "Payment run": "Zahlungslauf",
+  "Payment runs": "Zahlungsläufe",
+  "Sec code": "SEC-Code",
+  "Send remittances": "Zahlungsavise senden",
+  "Take discounts": "Skonto ziehen",
+  "The bank account's currency, else the company's.": "Die Währung des Bankkontos, sonst die des Mandanten.",
+  "What the run pays out.": "Was der Lauf auszahlt.",
+  "Without reversed": "Ohne stornierte",
+  "this payment run is not approved": "dieser Zahlungslauf ist nicht freigegeben"
+}

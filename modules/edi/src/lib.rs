@@ -70,6 +70,10 @@ pub fn syntax_of(bytes: &[u8]) -> Option<Syntax> {
 pub struct EdiModule;
 
 impl Module for EdiModule {
+    fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("de", include_str!("../i18n/de.json"))]
+    }
+
     fn name(&self) -> &'static str {
         "edi"
     }

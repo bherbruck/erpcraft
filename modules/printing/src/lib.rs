@@ -36,6 +36,10 @@ pub mod xmp;
 pub struct PrintingModule;
 
 impl Module for PrintingModule {
+    fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("de", include_str!("../i18n/de.json"))]
+    }
+
     fn name(&self) -> &'static str {
         "printing"
     }

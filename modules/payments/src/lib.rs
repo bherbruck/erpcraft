@@ -36,6 +36,10 @@ pub const WRITE_OFF: &str = "payment.write_off";
 pub struct PaymentsModule;
 
 impl Module for PaymentsModule {
+    fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("de", include_str!("../i18n/de.json"))]
+    }
+
     fn name(&self) -> &'static str {
         "payments"
     }

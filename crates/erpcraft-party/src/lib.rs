@@ -34,6 +34,10 @@ use uuid::Uuid;
 pub struct PartyModule;
 
 impl Module for PartyModule {
+    fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("de", include_str!("../i18n/de.json"))]
+    }
+
     fn name(&self) -> &'static str {
         "party"
     }

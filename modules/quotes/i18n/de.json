@@ -1,0 +1,18 @@
+{
+  "Accept": "Annehmen",
+  "After it, accepting asks the policy sales_quote.expired.": "Danach fragt die Annahme die Regel sales_quote.expired.",
+  "Days expired": "Tage abgelaufen",
+  "For a stock line, with the warehouse it would leave from.": "Für eine Lagerzeile, mit dem Lager, aus dem sie ginge.",
+  "Its valid-until date has passed.": "Das Gültigkeitsdatum ist überschritten.",
+  "Lose": "Verloren geben",
+  "Lost": "Verloren",
+  "Order date": "Auftragsdatum",
+  "Quotes": "Angebote",
+  "Sales quote": "Angebot",
+  "Sales quotes": "Angebote",
+  "The lines at their prices, without tax.": "Die Zeilen zu ihren Preisen, ohne Steuer.",
+  "Valid until": "Gültig bis",
+  "Why it was won or lost.": "Warum es gewonnen oder verloren wurde.",
+  "Won": "Gewonnen",
+  "the quote has expired": "das Angebot ist abgelaufen"
+}

@@ -1,0 +1,16 @@
+{
+  "Accounting": "Finanzbuchhaltung",
+  "Closing posting": "Abschlussbuchung",
+  "First period of the year": "Erste Periode des Geschäftsjahres",
+  "For a year kept as several periods (months): its first. The close then covers every period from this one to the fiscal period above, its last, and closes them all. Left out: the year is the fiscal period alone.": "Für ein Jahr aus mehreren Perioden (Monaten): seine erste. Der Abschluss umfasst dann jede Periode von dieser bis zur obigen Buchungsperiode, seiner letzten, und schließt sie alle. Ohne Angabe: ab der ersten Periode nach dem letzten gültigen Abschluss, innerhalb eines Jahres.",
+  "Ids of dimension values, at most one per dimension. The company's other dimensions take their defaults when the entry is posted.": "IDs von Dimensionswerten, höchstens einer je Dimension. Die übrigen Dimensionen des Mandanten erhalten beim Buchen ihre Standardwerte.",
+  "Journal entries": "Buchungssätze",
+  "Journal entry": "Buchungssatz",
+  "Result of the year": "Jahresergebnis",
+  "Retained earnings account": "Konto Gewinnvortrag",
+  "Reversal posting": "Stornobuchung",
+  "The debit side in the accounting currency, which equals the credit side.": "Die Sollseite in Buchungswährung; sie entspricht der Habenseite.",
+  "What went to retained earnings: a profit, or a loss if negative.": "Was in den Gewinnvortrag ging: ein Gewinn, negativ ein Verlust.",
+  "Year-end close": "Jahresabschluss",
+  "Year-end closes": "Jahresabschlüsse"
+}

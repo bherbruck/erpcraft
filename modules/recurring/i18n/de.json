@@ -1,0 +1,20 @@
+{
+  "At most": "Höchstens",
+  "Empty: what the tax rules propose.": "Leer: was die Steuerregeln vorschlagen.",
+  "Every": "Alle",
+  "Every so many of the frequency: 2 with monthly is every two months.": "Jeweils so viele Einheiten des Rhythmus: 2 bei monatlich ist alle zwei Monate.",
+  "First invoice": "Erste Rechnung",
+  "Frequency": "Rhythmus",
+  "Invoices to make in all; empty: until it ends.": "Rechnungen insgesamt; leer: bis zum Ende.",
+  "Made": "Erstellt",
+  "Next invoice": "Nächste Rechnung",
+  "Or the revenue account, with a description.": "Oder das Erlöskonto, mit einer Beschreibung.",
+  "Post the invoices it makes, as far as the policy recurring_invoice.post allows; otherwise leave them as drafts.": "Die erstellten Rechnungen buchen, soweit die Regel recurring_invoice.post es erlaubt; sonst als Entwürfe lassen.",
+  "Recurring invoice": "Abo-Rechnung",
+  "Recurring invoice line": "Zeile der Abo-Rechnung",
+  "Recurring invoice lines": "Zeilen der Abo-Rechnung",
+  "Recurring invoices": "Abo-Rechnungen",
+  "The others are counted from it.": "Die weiteren werden ab ihr gezählt.",
+  "The template's company; filled in from it.": "Der Mandant der Vorlage; wird aus ihr übernommen.",
+  "this invoice is left for a person to post": "diese Rechnung bleibt zum Buchen durch eine Person liegen"
+}

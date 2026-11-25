@@ -1,0 +1,15 @@
+{
+  "Built-in template": "Mitgelieferte Vorlage",
+  "HTML with MiniJinja tags. See the built-in templates for the data.": "HTML mit MiniJinja-Tags. Die Daten zeigen die mitgelieferten Vorlagen.",
+  "Logo": "Logo",
+  "Only for this company's documents. Empty: for every company's.": "Nur für Belege dieses Mandanten. Leer: für alle Mandanten.",
+  "PDF": "PDF",
+  "Print": "Drucken",
+  "Print template": "Druckvorlage",
+  "Print templates": "Druckvorlagen",
+  "Printing": "Druck",
+  "Remove logo": "Logo entfernen",
+  "Set logo": "Logo setzen",
+  "The document type the template prints, such as sales_invoice.": "Die Belegart, die die Vorlage druckt, etwa sales_invoice.",
+  "Used when no template is asked for. One per document type and company, and one for all companies.": "Wird verwendet, wenn keine Vorlage verlangt wird. Eine je Belegart und Mandant und eine für alle Mandanten."
+}

@@ -59,6 +59,10 @@ impl WebhooksModule {
 }
 
 impl Module for WebhooksModule {
+    fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("de", include_str!("../i18n/de.json"))]
+    }
+
     fn name(&self) -> &'static str {
         "webhooks"
     }

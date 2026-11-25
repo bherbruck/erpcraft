@@ -29,6 +29,10 @@ impl Module for KernelModule {
         "kernel"
     }
 
+    fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("de", include_str!("../i18n/de.json"))]
+    }
+
     fn migrations(&self) -> Vec<Migration> {
         vec![
             Migration {
@@ -291,6 +295,26 @@ const REFRESH_SUMMARIES: &str = "document:refresh_summaries";
 struct DescribeInput {
     /// Limit the description to one module.
     module: Option<String>,
+    /// The language of labels, help and refusals, as an Accept-Language
+    /// header gives it (`de`, `de-DE,de;q=0.9`). English when omitted or
+    /// when there is no catalogue for it.
+    locale: Option<String>,
+}
+
+/// A description, translated: what [`Described`] is, in the caller's
+/// language.
+#[derive(Serialize)]
+#[serde(transparent)]
+struct Translated(serde_json::Value);
+
+impl JsonSchema for Translated {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        Described::schema_name()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        Described::json_schema(generator)
+    }
 }
 
 /// The system, and what the caller could do in it.
@@ -306,7 +330,7 @@ struct Describe;
 #[async_trait]
 impl Command for Describe {
     type Input = DescribeInput;
-    type Output = Described;
+    type Output = Translated;
 
     fn spec(&self) -> CommandSpec {
         CommandSpec::query(
@@ -315,11 +339,12 @@ impl Command for Describe {
              under `access` what you could do with each: actions, fields and commands. \
              `policies` lists the business judgements a company can configure with \
              `policy_rule` records, with the facts each one supplies. Pass a module name to \
-             see only that module.",
+             see only that module, and a locale (such as `de`) for labels, help and refusals in \
+             that language; English where it has no translation.",
         )
     }
 
-    async fn run(&self, ctx: &mut Ctx<'_>, input: DescribeInput) -> Result<Described> {
+    async fn run(&self, ctx: &mut Ctx<'_>, input: DescribeInput) -> Result<Translated> {
         let kernel = ctx.kernel;
         let mut description = kernel.registry().describe(input.module.as_deref());
         // What only the tables know: how many decimal places a column
@@ -337,10 +362,21 @@ impl Command for Describe {
             }
         }
         let access = Access::of(ctx.actor, &description);
-        Ok(Described {
+        let mut out = serde_json::to_value(Described {
             description,
             access,
         })
+        .map_err(Error::internal)?;
+        let catalogues = kernel.registry().catalogues();
+        if let Some(locale) = input
+            .locale
+            .as_deref()
+            .and_then(|l| catalogues.negotiate(l))
+        {
+            catalogues.translate(&mut out, &locale);
+            out["locale"] = serde_json::json!(locale);
+        }
+        Ok(Translated(out))
     }
 }
 

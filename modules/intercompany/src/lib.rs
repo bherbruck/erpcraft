@@ -37,6 +37,10 @@ const MIRROR: &str = "intercompany.mirror";
 pub struct IntercompanyModule;
 
 impl Module for IntercompanyModule {
+    fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("de", include_str!("../i18n/de.json"))]
+    }
+
     fn name(&self) -> &'static str {
         "intercompany"
     }
