@@ -22,7 +22,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use chrono::{Datelike, Months, NaiveDate};
 use erpcraft_kernel::{
     Command, CommandSpec, Ctx, Decimal, DynCommand, Error, JsonSchema, Module, Result, async_trait,
-    command, entity, schemars,
+    command, entity, new_id, schemars,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -275,6 +275,46 @@ pub struct TaxSpec {
     pub exemption_reason_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exemption_reason: Option<String>,
+    /// Accounted for by the buyer (reverse charge, self-assessed PST, use
+    /// tax). Not for a group.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub self_assessed: bool,
+    /// The jurisdiction: the registration a company must hold to charge
+    /// the code (`CA` for GST and HST, `CA` and `BC` for British Columbia
+    /// PST). Not for a group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// What the buyer accounts for when the vendor does not charge this
+    /// code: a self-assessed code listed before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_assessed_code: Option<String>,
+    /// A line may carry the code only under a customer's exemption
+    /// certificate.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exemption_certificate: bool,
+}
+
+/// A place and the template's code charged there (see `tax_area`).
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaxAreaSpec {
+    pub country_code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// A tax code of the template.
+    pub code: String,
+}
+
+/// Where a new company is registered to charge tax (see
+/// `tax_registration`).
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaxRegistrationSpec {
+    pub country_code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -305,6 +345,13 @@ pub struct SetupTemplate {
     pub roles: Roles,
     #[serde(default)]
     pub tax_codes: Vec<TaxSpec>,
+    /// Which of the codes is charged where. Shared: an area that exists
+    /// is kept.
+    #[serde(default)]
+    pub tax_areas: Vec<TaxAreaSpec>,
+    /// Where the company is registered to charge tax.
+    #[serde(default)]
+    pub tax_registrations: Vec<TaxRegistrationSpec>,
     /// Payment terms vendors and customers can be given.
     #[serde(default)]
     pub payment_terms: Vec<TermsSpec>,
@@ -478,6 +525,42 @@ impl SetupTemplate {
                     tax.code
                 )));
             }
+            let country_ok = |c: &str| c.len() == 2 && c.chars().all(|c| c.is_ascii_uppercase());
+            if tax.country_code.as_deref().is_some_and(|c| !country_ok(c))
+                || (tax.region.is_some() && tax.country_code.is_none())
+            {
+                return Err(at(format!(
+                    "tax code {} has a jurisdiction that is not a two-letter country with an \
+                     optional region",
+                    tax.code
+                )));
+            }
+            if let Some(instead) = &tax.self_assessed_code {
+                let listed = self
+                    .tax_codes
+                    .iter()
+                    .take_while(|t| t.code != tax.code)
+                    .find(|t| &t.code == instead);
+                if !listed.is_some_and(|t| t.self_assessed && t.components.is_empty()) {
+                    return Err(at(format!(
+                        "tax code {} names {instead} for the buyer to account for, which is not \
+                         a plain code accounted for by the buyer listed before it",
+                        tax.code
+                    )));
+                }
+            }
+            if !tax.components.is_empty()
+                && (tax.self_assessed
+                    || tax.country_code.is_some()
+                    || tax.self_assessed_code.is_some()
+                    || tax.exemption_certificate)
+            {
+                return Err(at(format!(
+                    "tax group {} takes what the buyer accounts for, its jurisdiction and \
+                     certificates from its components",
+                    tax.code
+                )));
+            }
             if tax.components.is_empty() {
                 let missing =
                     |side: &str| at(format!("tax code {} has no {side} account", tax.code));
@@ -523,6 +606,14 @@ impl SetupTemplate {
                 return Err(at(format!(
                     "tax group {} shows rate {rate}, but its components add up to {total}",
                     tax.code
+                )));
+            }
+        }
+        for area in &self.tax_areas {
+            if !codes.contains(&area.code) {
+                return Err(at(format!(
+                    "tax area {} names {}, which is not a tax code of the template",
+                    area.country_code, area.code
                 )));
             }
         }
@@ -1058,6 +1149,19 @@ impl Command for Setup {
                                 == tax.authority.as_deref().map(str::trim)
                             && parts == wanted_parts =>
                     {
+                        // A code made before codes had jurisdictions gets the
+                        // template's; one that has its own keeps it.
+                        if tax.country_code.is_some() {
+                            sqlx::query(
+                                "UPDATE tax_code SET country_code = $2, region = $3
+                                 WHERE id = $1 AND country_code IS NULL",
+                            )
+                            .bind(id)
+                            .bind(&tax.country_code)
+                            .bind(&tax.region)
+                            .execute(&mut *ctx.conn)
+                            .await?;
+                        }
                         // And of the VAT category the template states.
                         if let Some(wanted) = &tax.vat_category {
                             let category: Option<String> = sqlx::query_scalar(
@@ -1111,10 +1215,21 @@ impl Command for Setup {
                             ("vat_category", &tax.vat_category),
                             ("exemption_reason_code", &tax.exemption_reason_code),
                             ("exemption_reason", &tax.exemption_reason),
+                            ("country_code", &tax.country_code),
+                            ("region", &tax.region),
                         ] {
                             if let Some(value) = value {
                                 code[field] = json!(value);
                             }
+                        }
+                        if tax.self_assessed {
+                            code["self_assessed"] = json!(true);
+                        }
+                        if tax.exemption_certificate {
+                            code["exemption_certificate"] = json!(true);
+                        }
+                        if let Some(instead) = &tax.self_assessed_code {
+                            code["self_assessed_code_id"] = json!(group_parts[instead]);
                         }
                         let id = id_of(&entity::create(ctx, "tax_code", code).await?)?;
                         for (position, component) in tax.components.iter().enumerate() {
@@ -1148,6 +1263,34 @@ impl Command for Setup {
                     .await?;
                 }
                 tax_codes.push(tax.code.clone());
+            }
+            // Where the codes are charged: shared, so an area that exists
+            // is kept.
+            for area in &template.tax_areas {
+                sqlx::query(
+                    "INSERT INTO tax_area (id, country_code, region, tax_code_id, source)
+                     VALUES ($1, $2, $3, $4, $5)
+                     ON CONFLICT ON CONSTRAINT tax_area_once DO NOTHING",
+                )
+                .bind(new_id())
+                .bind(&area.country_code)
+                .bind(&area.region)
+                .bind(group_parts[&area.code])
+                .bind(format!("setup template {}", template.code))
+                .execute(&mut *ctx.conn)
+                .await?;
+            }
+            for registration in &template.tax_registrations {
+                entity::create(
+                    ctx,
+                    "tax_registration",
+                    json!({
+                        "company_id": company_id,
+                        "country_code": registration.country_code,
+                        "region": registration.region,
+                    }),
+                )
+                .await?;
             }
         }
 

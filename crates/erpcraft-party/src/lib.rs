@@ -266,6 +266,53 @@ async fn load_at(conn: &mut PgConnection, kind: &str, id: Uuid, pick: Pick) -> R
     Ok(data)
 }
 
+/// The address goods go to, as a sale keeps it: the shipping address
+/// named, else the party's default shipping address, else the billing
+/// address named, else its default billing address. `None` when the party
+/// has no address. An address named that is no longer on record counts as
+/// not named.
+pub async fn ship_to(
+    conn: &mut PgConnection,
+    kind: &str,
+    id: Uuid,
+    shipping_address_id: Option<Uuid>,
+    billing_address_id: Option<Uuid>,
+) -> Result<Option<Address>> {
+    Ok(sqlx::query_as(
+        "SELECT attention, street, additional_street, city, postcode, region, country_code
+         FROM party_address
+         WHERE party_type = $1 AND party_id = $2
+         ORDER BY id = $3 DESC NULLS LAST, kind = 'shipping' AND is_default DESC,
+                  kind = 'shipping' DESC, id = $4 DESC NULLS LAST, is_default DESC, created_at
+         LIMIT 1",
+    )
+    .bind(Kind::parse(kind)?.as_str())
+    .bind(id)
+    .bind(shipping_address_id)
+    .bind(billing_address_id)
+    .fetch_optional(&mut *conn)
+    .await?)
+}
+
+/// Whether the party has a tax identifier of the scheme (`eu_vat`: a
+/// business in the EU rather than a consumer).
+pub async fn has_tax_id(
+    conn: &mut PgConnection,
+    kind: &str,
+    id: Uuid,
+    scheme: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM party_tax_id
+                        WHERE party_type = $1 AND party_id = $2 AND scheme = $3)",
+    )
+    .bind(Kind::parse(kind)?.as_str())
+    .bind(id)
+    .bind(scheme)
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
 /// The owner's record as the caller may read it; nothing if they may not.
 pub async fn owner(ctx: &mut Ctx<'_>, kind: &str, id: Uuid) -> Result<Option<Value>> {
     Kind::parse(kind)?;

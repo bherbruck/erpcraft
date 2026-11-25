@@ -12,7 +12,8 @@
     "Manitoba RST 7 %: Manitoba Finance, 'Retail Sales Tax', https://www.gov.mb.ca/finance/taxation/taxes/retail.html (read on 2026-11-17): 'The general sales tax rate is 7%.'",
     "Quebec QST 9.975 % on the selling price excluding the GST: Revenu Québec, 'Basic Rules for Applying the GST/HST and QST', https://www.revenuquebec.ca/en/businesses/consumption-taxes/gsthst-and-qst/basic-rules-for-applying-the-gsthst-and-qst/ (read on 2026-11-17). The same four provincial rates are listed by the Canada Revenue Agency's GST/HST calculator cited above. A QST registrant claims input tax refunds for the QST it pays; the British Columbia, Saskatchewan and Manitoba taxes have no such credit for a business's own purchases.",
     "Zero-rated and exempt supplies carry no GST/HST; only zero-rated supplies give a right to input tax credits, which at 0 % changes nothing in the books.",
-    "Manufacturing accounts 1310, 1320, 4930, 5050, 5060, 6160 and 6170 are numbered by this template within the small-business chart's ranges; they follow no published standard. Rename or renumber them to your own chart."
+    "Manufacturing accounts 1310, 1320, 4930, 5050, 5060, 6160 and 6170 are numbered by this template within the small-business chart's ranges; they follow no published standard. Rename or renumber them to your own chart.",
+    "Tax by destination: each province and territory charges the code of its place of supply (HST in Ontario, New Brunswick, Newfoundland and Labrador, Nova Scotia and Prince Edward Island; GST with the provincial tax in British Columbia, Saskatchewan, Manitoba and Quebec; GST alone in Alberta and the territories), as the Canada Revenue Agency's rates page cited above lists them. A company is registered for GST/HST; it adds a registration for each provincial tax it collects. The self-assessed PST codes (CA-PST-BC-SA, CA-PST-SK-SA, CA-RST-MB-SA) are what a business in those provinces accounts for itself on taxable goods bought from a vendor outside the province that does not charge the tax; they post to the PST payable account and the non-recoverable tax expense."
   ],
   "roles": {
     "bank": "1020",
@@ -415,42 +416,48 @@
       "rate": "5",
       "collected": "2100",
       "paid": "1350",
-      "authority": "Canada Revenue Agency"
+      "authority": "Canada Revenue Agency",
+      "country_code": "CA"
     },
     {
       "code": "CA-HST-ON",
       "name": "HST Ontario 13 %",
       "rate": "13",
       "collected": "2100",
-      "paid": "1350"
+      "paid": "1350",
+      "country_code": "CA"
     },
     {
       "code": "CA-HST-NB",
       "name": "HST New Brunswick 15 %",
       "rate": "15",
       "collected": "2100",
-      "paid": "1350"
+      "paid": "1350",
+      "country_code": "CA"
     },
     {
       "code": "CA-HST-NL",
       "name": "HST Newfoundland and Labrador 15 %",
       "rate": "15",
       "collected": "2100",
-      "paid": "1350"
+      "paid": "1350",
+      "country_code": "CA"
     },
     {
       "code": "CA-HST-NS",
       "name": "HST Nova Scotia 14 %",
       "rate": "14",
       "collected": "2100",
-      "paid": "1350"
+      "paid": "1350",
+      "country_code": "CA"
     },
     {
       "code": "CA-HST-PE",
       "name": "HST Prince Edward Island 15 %",
       "rate": "15",
       "collected": "2100",
-      "paid": "1350"
+      "paid": "1350",
+      "country_code": "CA"
     },
     {
       "code": "CA-ZERO",
@@ -470,12 +477,48 @@
       "exemption_reason": "Exempt supply (no GST/HST)"
     },
     {
+      "code": "CA-PST-BC-SA",
+      "name": "PST British Columbia 7 %, self-assessed",
+      "rate": "7",
+      "collected": "2110",
+      "paid": "6130",
+      "authority": "British Columbia Ministry of Finance",
+      "self_assessed": true,
+      "country_code": "CA",
+      "region": "BC"
+    },
+    {
+      "code": "CA-PST-SK-SA",
+      "name": "PST Saskatchewan 6 %, self-assessed",
+      "rate": "6",
+      "collected": "2120",
+      "paid": "6130",
+      "authority": "Saskatchewan Ministry of Finance",
+      "self_assessed": true,
+      "country_code": "CA",
+      "region": "SK"
+    },
+    {
+      "code": "CA-RST-MB-SA",
+      "name": "RST Manitoba 7 %, self-assessed",
+      "rate": "7",
+      "collected": "2130",
+      "paid": "6130",
+      "authority": "Manitoba Finance",
+      "self_assessed": true,
+      "country_code": "CA",
+      "region": "MB"
+    },
+    {
       "code": "CA-PST-BC",
       "name": "PST British Columbia 7 %",
       "rate": "7",
       "collected": "2110",
       "paid": "6130",
-      "authority": "British Columbia Ministry of Finance"
+      "authority": "British Columbia Ministry of Finance",
+      "country_code": "CA",
+      "region": "BC",
+      "self_assessed_code": "CA-PST-BC-SA"
     },
     {
       "code": "CA-PST-SK",
@@ -483,7 +526,10 @@
       "rate": "6",
       "collected": "2120",
       "paid": "6130",
-      "authority": "Saskatchewan Ministry of Finance"
+      "authority": "Saskatchewan Ministry of Finance",
+      "country_code": "CA",
+      "region": "SK",
+      "self_assessed_code": "CA-PST-SK-SA"
     },
     {
       "code": "CA-RST-MB",
@@ -491,7 +537,10 @@
       "rate": "7",
       "collected": "2130",
       "paid": "6130",
-      "authority": "Manitoba Finance"
+      "authority": "Manitoba Finance",
+      "country_code": "CA",
+      "region": "MB",
+      "self_assessed_code": "CA-RST-MB-SA"
     },
     {
       "code": "CA-QST",
@@ -499,7 +548,9 @@
       "rate": "9.975",
       "collected": "2140",
       "paid": "1360",
-      "authority": "Revenu Québec"
+      "authority": "Revenu Québec",
+      "country_code": "CA",
+      "region": "QC"
     },
     {
       "code": "CA-GST-PST-BC",
@@ -536,6 +587,78 @@
         "CA-GST",
         "CA-QST"
       ]
+    }
+  ],
+  "tax_areas": [
+    {
+      "country_code": "CA",
+      "region": "ON",
+      "code": "CA-HST-ON"
+    },
+    {
+      "country_code": "CA",
+      "region": "NB",
+      "code": "CA-HST-NB"
+    },
+    {
+      "country_code": "CA",
+      "region": "NL",
+      "code": "CA-HST-NL"
+    },
+    {
+      "country_code": "CA",
+      "region": "NS",
+      "code": "CA-HST-NS"
+    },
+    {
+      "country_code": "CA",
+      "region": "PE",
+      "code": "CA-HST-PE"
+    },
+    {
+      "country_code": "CA",
+      "region": "BC",
+      "code": "CA-GST-PST-BC"
+    },
+    {
+      "country_code": "CA",
+      "region": "SK",
+      "code": "CA-GST-PST-SK"
+    },
+    {
+      "country_code": "CA",
+      "region": "MB",
+      "code": "CA-GST-RST-MB"
+    },
+    {
+      "country_code": "CA",
+      "region": "QC",
+      "code": "CA-GST-QST"
+    },
+    {
+      "country_code": "CA",
+      "region": "AB",
+      "code": "CA-GST"
+    },
+    {
+      "country_code": "CA",
+      "region": "NT",
+      "code": "CA-GST"
+    },
+    {
+      "country_code": "CA",
+      "region": "NU",
+      "code": "CA-GST"
+    },
+    {
+      "country_code": "CA",
+      "region": "YT",
+      "code": "CA-GST"
+    }
+  ],
+  "tax_registrations": [
+    {
+      "country_code": "CA"
     }
   ],
   "payment_terms": [

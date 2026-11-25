@@ -2198,6 +2198,36 @@ impl DocumentHandler for SalesInvoice {
             let (currency, _) = currency_of(&mut *ctx.conn, "sales_invoice", doc).await?;
             erpcraft_gl::currency_decimals(&mut *ctx.conn, &currency).await?
         };
+        // Where the goods go, which the tax by destination is chosen by:
+        // the address the invoice will keep as ship-to, else as buyer.
+        let (order_shipping, order_billing): (Option<Uuid>, Option<Uuid>) =
+            match body.sales_order_id {
+                Some(order_id) => sqlx::query_as(
+                    "SELECT shipping_address_id, billing_address_id FROM sales_order
+                     WHERE document_id = $1",
+                )
+                .bind(order_id)
+                .fetch_optional(&mut *ctx.conn)
+                .await?
+                .unwrap_or_default(),
+                None => (None, None),
+            };
+        let place = erpcraft_party::ship_to(
+            &mut *ctx.conn,
+            "customer",
+            party,
+            body.shipping_address_id.or(order_shipping),
+            body.billing_address_id.or(order_billing),
+        )
+        .await?
+        .map(|a| erpcraft_tax::Place {
+            country_code: a.country_code,
+            region: a.region,
+            postcode: a.postcode,
+            city: a.city,
+        });
+        let consumer =
+            !erpcraft_party::has_tax_id(&mut *ctx.conn, "customer", party, "eu_vat").await?;
         for line in &mut body.lines {
             if let Some(order_line) = line.order_line_id.and_then(|id| ordered.get(&id))
                 && line.discount_percent.is_none()
@@ -2215,12 +2245,19 @@ impl DocumentHandler for SalesInvoice {
             // item or the charge.
             if line.tax_code_id.is_none() {
                 let ordered_line = line.order_line_id.and_then(|id| ordered.get(&id));
-                line.tax_code_id = erpcraft_tax::proposed_code(
+                line.tax_code_id = erpcraft_tax::propose(
                     &mut *ctx.conn,
-                    doc.company_id,
-                    ("customer", party),
-                    ordered_line.and_then(|l| l.item_id),
-                    line.charge_id.or(ordered_line.and_then(|l| l.charge_id)),
+                    &erpcraft_tax::Proposal {
+                        company_id: doc.company_id,
+                        date: doc.doc_date,
+                        side: erpcraft_tax::Side::Sale {
+                            customer_id: party,
+                            consumer,
+                        },
+                        item_id: ordered_line.and_then(|l| l.item_id),
+                        charge_id: line.charge_id.or(ordered_line.and_then(|l| l.charge_id)),
+                        place: place.as_ref(),
+                    },
                 )
                 .await?;
             }
@@ -2758,6 +2795,25 @@ impl Command for PostInvoice {
             erpcraft_gl::add_scopes(&mut gl, &scopes, &[("customer", customer)]);
             erpcraft_gl::post(ctx, &posting, &gl).await?;
         }
+        // The parties as the invoice shows them, kept from now on; the tax
+        // recorded reads where the goods went from them.
+        let (billing, shipping): (Option<Uuid>, Option<Uuid>) = sqlx::query_as(
+            "SELECT billing_address_id, shipping_address_id FROM sales_invoice
+             WHERE document_id = $1",
+        )
+        .bind(doc.id)
+        .fetch_one(&mut *ctx.conn)
+        .await?;
+        let customer = invoice_customer(&mut *ctx.conn, doc.id).await?;
+        erpcraft_party::snapshot_sale(
+            &mut *ctx.conn,
+            doc.id,
+            doc.company_id,
+            customer,
+            billing,
+            shipping,
+        )
+        .await?;
         erpcraft_tax::record(&mut *ctx.conn, &posting, &taxes).await?;
         // What is now owed, as one open item for a payment to settle.
         if !owed.is_zero() {
@@ -2797,24 +2853,6 @@ impl Command for PostInvoice {
         if let Some(order) = &mut order {
             settle_order(ctx, order, &order_lines, false).await?;
         }
-        // The parties as the invoice shows them, kept from now on.
-        let (billing, shipping): (Option<Uuid>, Option<Uuid>) = sqlx::query_as(
-            "SELECT billing_address_id, shipping_address_id FROM sales_invoice
-             WHERE document_id = $1",
-        )
-        .bind(doc.id)
-        .fetch_one(&mut *ctx.conn)
-        .await?;
-        let customer = invoice_customer(&mut *ctx.conn, doc.id).await?;
-        erpcraft_party::snapshot_sale(
-            &mut *ctx.conn,
-            doc.id,
-            doc.company_id,
-            customer,
-            billing,
-            shipping,
-        )
-        .await?;
         document::transition(ctx, &mut doc, "posted").await?;
         document::view(ctx, doc).await
     }

@@ -525,6 +525,9 @@ impl Command for PostCredit {
             erpcraft_gl::add_scopes(&mut gl, &scopes, &[("customer", customer)]);
             erpcraft_gl::post(ctx, &posting, &gl).await?;
         }
+        // The parties, kept before the tax that reads them is recorded.
+        erpcraft_party::snapshot_sale(&mut *ctx.conn, doc.id, doc.company_id, customer, None, None)
+            .await?;
         erpcraft_tax::record(&mut *ctx.conn, &posting, &taxes).await?;
         if !owed_back.is_zero() {
             erpcraft_openitems::open(
@@ -553,8 +556,6 @@ impl Command for PostCredit {
                 .execute(&mut *ctx.conn)
                 .await?;
         }
-        erpcraft_party::snapshot_sale(&mut *ctx.conn, doc.id, doc.company_id, customer, None, None)
-            .await?;
         document::transition(ctx, &mut doc, "posted").await?;
         document::view(ctx, doc).await
     }

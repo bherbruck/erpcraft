@@ -1289,6 +1289,7 @@ name = "erpcraft-tax"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "csv",
  "erpcraft-gl",
  "erpcraft-kernel",
  "rust_decimal",

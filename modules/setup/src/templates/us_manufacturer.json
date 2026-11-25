@@ -422,6 +422,16 @@
       "exemption_reason": "Exempt from sales tax"
     },
     {
+      "code": "US-EXEMPT-CERT",
+      "name": "Exempt under the customer's exemption certificate",
+      "rate": "0",
+      "collected": "2100",
+      "paid": "6130",
+      "vat_category": "E",
+      "exemption_reason": "Exempt under the buyer's exemption certificate",
+      "exemption_certificate": true
+    },
+    {
       "code": "US-EXAMPLE-STATE",
       "name": "Example state sales tax 4 % (not a real rate)",
       "rate": "4",

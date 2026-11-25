@@ -10,14 +10,19 @@
 //! Tax is worked out per line and rounded per line, to the decimals of the
 //! company's accounting currency.
 //!
-//! What is deliberately not here: which code applies to which customer,
-//! item or place, rates that change over time, and the form of any
-//! country's return. Those are for country modules, which can build on
-//! the codes and on the record kept here.
+//! Which code a line starts with is data: tax rules for parties and
+//! items, and by destination ([`destination`]) areas, registrations and
+//! exemption certificates, so that US sales tax, Canada's GST/HST and
+//! provincial taxes and the EU One-Stop Shop are configured, not coded.
+//! The form of any country's return is not here; country modules build it
+//! on the codes and on the record kept here.
 //!
 //! [`tax.report`]: Report
 
+pub mod destination;
 pub mod lines;
+
+pub use destination::{Place, Proposal, Side, propose};
 
 use std::sync::Arc;
 
@@ -98,6 +103,11 @@ impl Module for TaxModule {
                 version: 11,
                 name: "adjustment_reversal",
                 sql: include_str!("../migrations/0011_adjustment_reversal.sql"),
+            },
+            Migration {
+                version: 12,
+                name: "destination",
+                sql: include_str!("../migrations/0012_destination.sql"),
             },
         ]
     }
@@ -203,9 +213,171 @@ impl Module for TaxModule {
                          K, G and O.",
                     ),
                 )
+                .field(
+                    FieldMeta::new("country_code", "Jurisdiction: country", FieldType::Text).help(
+                        "The registration a company must hold to charge the code, with the \
+                         region: US and OH for an Ohio county's tax (nexus is per state), CA \
+                         alone for GST and HST, CA and BC for British Columbia PST. Empty: \
+                         charged by anyone.",
+                    ),
+                )
+                .field(
+                    FieldMeta::new("region", "Jurisdiction: region", FieldType::Text)
+                        .help("The subdivision as ISO 3166-2 writes it without the country."),
+                )
+                .field(
+                    FieldMeta::new(
+                        "self_assessed_code_id",
+                        "Accounted for by the buyer instead",
+                        FieldType::link("tax_code"),
+                    )
+                    .help(
+                        "On a purchase from a vendor outside the code's jurisdiction, which \
+                         does not charge it: the code (accounted for by the buyer) the company \
+                         assesses instead, such as self-assessed PST or US use tax.",
+                    ),
+                )
+                .field(
+                    FieldMeta::new(
+                        "exemption_certificate",
+                        "For exemption certificates",
+                        FieldType::Bool,
+                    )
+                    .help(
+                        "A sale is taxed with this code only under a customer's valid \
+                         exemption certificate for the place; posting refuses it otherwise.",
+                    ),
+                )
                 .field(created())
                 .order_by(&["code"])
                 .search(&["code", "name"]),
+            EntityMeta::new("tax_area", "Tax area")
+                .field(
+                    FieldMeta::new("country_code", "Country", FieldType::Text)
+                        .required()
+                        .help("ISO 3166-1 alpha-2."),
+                )
+                .field(
+                    FieldMeta::new("region", "Region", FieldType::Text).help(
+                        "The subdivision as ISO 3166-2 writes it without the country: OH, BC.",
+                    ),
+                )
+                .field(
+                    FieldMeta::new("postcode_from", "Post codes from", FieldType::Text).help(
+                        "Compared on as many characters as given, upper case, without spaces.",
+                    ),
+                )
+                .field(FieldMeta::new(
+                    "postcode_to",
+                    "Post codes to",
+                    FieldType::Text,
+                ))
+                .field(FieldMeta::new("city", "City", FieldType::Text))
+                .field(
+                    FieldMeta::new("tax_code_id", "Tax code", FieldType::link("tax_code"))
+                        .required()
+                        .help("A group of every jurisdiction there, or one code."),
+                )
+                .field(FieldMeta::new("valid_from", "Valid from", FieldType::Date))
+                .field(FieldMeta::new("valid_to", "Valid to", FieldType::Date))
+                .field(
+                    FieldMeta::new("source", "Source", FieldType::Text)
+                        .help("Where the rate was taken from."),
+                )
+                .field(created())
+                .order_by(&["country_code", "region", "postcode_from", "valid_from"])
+                .search(&["country_code", "region", "city", "postcode_from"]),
+            EntityMeta::new("tax_registration", "Tax registration")
+                .field(
+                    FieldMeta::new("company_id", "Company", FieldType::link("company"))
+                        .required()
+                        .immutable(),
+                )
+                .field(
+                    FieldMeta::new("country_code", "Country", FieldType::Text)
+                        .required()
+                        .help("For the One-Stop Shop, the member state of identification."),
+                )
+                .field(
+                    FieldMeta::new("region", "Region", FieldType::Text)
+                        .help("A state or province; empty: the whole country."),
+                )
+                .field(
+                    FieldMeta::new(
+                        "scheme",
+                        "Scheme",
+                        FieldType::labelled(&[
+                            ("local", "Registered there"),
+                            ("oss", "EU One-Stop Shop"),
+                        ]),
+                    )
+                    .help(
+                        "Registered there: the company charges the taxes of that jurisdiction \
+                         (US nexus in a state, GST/HST, a provincial tax, VAT). One-Stop Shop: \
+                         sales to consumers in the other member states are taxed there once \
+                         past the threshold.",
+                    ),
+                )
+                .field(FieldMeta::new(
+                    "number",
+                    "Registration number",
+                    FieldType::Text,
+                ))
+                .field(FieldMeta::new("valid_from", "Valid from", FieldType::Date))
+                .field(FieldMeta::new("valid_to", "Valid to", FieldType::Date))
+                .field(
+                    FieldMeta::new("consumers_only", "Consumers only", FieldType::Bool).help(
+                        "Destination tax only for buyers without a VAT identifier, as for a \
+                         VAT registration in another member state.",
+                    ),
+                )
+                .field(
+                    FieldMeta::new("threshold", "Threshold", FieldType::Decimal)
+                        .money()
+                        .help(
+                            "One-Stop Shop: distance sales to consumers in a calendar year, in \
+                         the accounting currency, above which they are taxed at destination \
+                         (EUR 10,000 under Article 59c). 0 or empty: from the first sale.",
+                        ),
+                )
+                .field(created())
+                .order_by(&["country_code", "region", "valid_from"])
+                .company_field("company_id"),
+            EntityMeta::new("tax_exemption", "Exemption certificate")
+                .field(
+                    FieldMeta::new("company_id", "Company", FieldType::link("company"))
+                        .required()
+                        .immutable(),
+                )
+                .field(
+                    FieldMeta::new("customer_id", "Customer", FieldType::link("customer"))
+                        .required(),
+                )
+                .field(FieldMeta::new("country_code", "Country", FieldType::Text).required())
+                .field(
+                    FieldMeta::new("region", "Region", FieldType::Text)
+                        .help("The state or province it holds in; empty: the whole country."),
+                )
+                .field(
+                    FieldMeta::new("certificate_number", "Certificate number", FieldType::Text)
+                        .required(),
+                )
+                .field(
+                    FieldMeta::new("reason", "Reason", FieldType::Text)
+                        .required()
+                        .help("Resale, manufacturing, a charity, a government body."),
+                )
+                .field(FieldMeta::new("valid_from", "Valid from", FieldType::Date).required())
+                .field(FieldMeta::new("expires_on", "Expires on", FieldType::Date))
+                .field(
+                    FieldMeta::new("tax_code_id", "Tax code", FieldType::link("tax_code"))
+                        .required()
+                        .help("The code its lines take: one marked for exemption certificates."),
+                )
+                .field(created())
+                .order_by(&["customer_id", "certificate_number"])
+                .search(&["certificate_number"])
+                .company_field("company_id"),
             EntityMeta::new("tax_rule", "Tax rule")
                 .field(
                     FieldMeta::new("company_id", "Company", FieldType::link("company"))
@@ -320,7 +492,12 @@ impl Module for TaxModule {
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
-        vec![command(Report)]
+        vec![
+            command(Report),
+            command(destination::Import),
+            command(destination::OssReport),
+            command(destination::ExemptionsReport),
+        ]
     }
 }
 
@@ -1046,7 +1223,42 @@ pub async fn posted_value(conn: &mut PgConnection, document_id: Uuid) -> Result<
 
 /// Record tax under `posting`, after the caller has posted it to the
 /// general ledger. Can be called more than once for one posting.
+///
+/// Each entry keeps the place of the parties the document kept (its
+/// `ship_to`, else its `buyer`) and whether the buyer was a consumer, so a
+/// document keeps its parties before its tax is recorded. A sale at a code
+/// for exemption certificates is refused unless the customer has a valid
+/// certificate for the place on the posting date, which the entry names.
 pub async fn record(conn: &mut PgConnection, posting: &Posting, taxes: &[Tax]) -> Result<()> {
+    let kept = destination::kept(&mut *conn, posting.id).await?;
+    let ids: Vec<Uuid> = taxes.iter().map(|t| t.tax_code_id).collect();
+    let certified: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM tax_code WHERE id = ANY($1) AND exemption_certificate")
+            .bind(&ids)
+            .fetch_all(&mut *conn)
+            .await?;
+    let mut exemptions = Vec::with_capacity(taxes.len());
+    for tax in taxes {
+        let exemption = if tax.direction == Direction::Collected
+            && tax.credits_id.is_none()
+            && !tax.adjustment
+            && certified.contains(&tax.tax_code_id)
+        {
+            Some(
+                destination::exemption_for(
+                    &mut *conn,
+                    posting.company_id,
+                    &kept,
+                    tax.tax_code_id,
+                    posting.posting_date,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        exemptions.push(exemption);
+    }
     let numbered: i32 =
         sqlx::query_scalar("SELECT COALESCE(max(line_no), 0) FROM tax_entry WHERE posting_id = $1")
             .bind(posting.id)
@@ -1057,9 +1269,9 @@ pub async fn record(conn: &mut PgConnection, posting: &Posting, taxes: &[Tax]) -
             "INSERT INTO tax_entry (id, company_id, posting_id, line_no, source_line_id,
                 tax_code_id, direction, posting_date, rate, base, amount, credits_id,
                 group_code_id, compound, currency, txn_base, txn_amount, account_id,
-                self_assessed, adjustment)
+                self_assessed, adjustment, country_code, region, consumer, exemption_id)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18, $19, $20)",
+                     $18, $19, $20, $21, $22, $23, $24)",
         )
         .bind(new_id())
         .bind(posting.company_id)
@@ -1083,6 +1295,10 @@ pub async fn record(conn: &mut PgConnection, posting: &Posting, taxes: &[Tax]) -
         .bind(tax.account_id)
         .bind(tax.self_assessed)
         .bind(tax.adjustment)
+        .bind(&kept.country_code)
+        .bind(&kept.region)
+        .bind(kept.consumer)
+        .bind(exemptions[index])
         .execute(&mut *conn)
         .await?;
     }
@@ -1116,6 +1332,11 @@ struct TaxEntryRow {
     base: Option<String>,
     /// The tax.
     amount: Option<String>,
+    /// Where the goods went, as the document kept it.
+    country_code: Option<String>,
+    region: Option<String>,
+    /// The exemption certificate the sale was exempt under.
+    exemption_id: Option<Uuid>,
 }
 
 #[async_trait]
@@ -1195,7 +1416,9 @@ impl Ledger for TaxLedger {
                 'code', CASE WHEN $2 THEN c.code END,
                 'name', CASE WHEN $2 THEN c.name END,
                 'direction', e.direction, 'rate', e.rate::text,
-                'base', e.base::text, 'amount', e.amount::text)
+                'base', e.base::text, 'amount', e.amount::text,
+                'country_code', e.country_code, 'region', e.region,
+                'exemption_id', e.exemption_id)
              FROM tax_entry e JOIN tax_code c ON c.id = e.tax_code_id
              WHERE e.posting_id = $1 ORDER BY e.line_no",
         )
@@ -1218,6 +1441,11 @@ struct ReportInput {
     from: NaiveDate,
     /// Last posting date to include.
     to: NaiveDate,
+    /// A row per code and place (the country and region the goods went
+    /// to, as the document kept them), as a US state's or a province's
+    /// return needs.
+    #[serde(default)]
+    by_place: bool,
 }
 
 #[derive(Serialize, JsonSchema, sqlx::FromRow)]
@@ -1225,6 +1453,9 @@ struct ReportRow {
     tax_code_id: Uuid,
     code: String,
     name: String,
+    /// With `by_place`: where the goods went.
+    country_code: Option<String>,
+    region: Option<String>,
     /// Net sales taxed with this code, and the tax charged on them.
     collected_base: Decimal,
     collected: Decimal,
@@ -1259,8 +1490,9 @@ impl Command for Report {
             "tax.report",
             "Tax by code for a company over a range of posting dates: the net amount taxed and \
              the tax, separately for tax collected from customers and tax paid to vendors. \
-             Reversals count in the period they were posted in. This is the raw material for a \
-             tax return, not the return of any country.",
+             Reversals count in the period they were posted in. With by_place, a row per code \
+             and place the goods went to. This is the raw material for a tax return, not the \
+             return of any country.",
         )
         .report("Tax report")
         .permission("tax_entry:read")
@@ -1272,16 +1504,21 @@ impl Command for Report {
             return Err(Error::validation("'from' must not be after 'to'"));
         }
         let currency = company::base_currency(&mut *ctx.conn, input.company_id).await?;
-        let rows: Vec<ReportRow> = sqlx::query_as(
-            "SELECT c.id AS tax_code_id, c.code, c.name,
+        let place = if input.by_place {
+            "e.country_code, e.region"
+        } else {
+            "NULL::text AS country_code, NULL::text AS region"
+        };
+        let rows: Vec<ReportRow> = sqlx::query_as(&format!(
+            "SELECT c.id AS tax_code_id, c.code, c.name, {place},
                     COALESCE(sum(e.base) FILTER (WHERE e.direction = 'collected'), 0) AS collected_base,
                     COALESCE(sum(e.amount) FILTER (WHERE e.direction = 'collected'), 0) AS collected,
                     COALESCE(sum(e.base) FILTER (WHERE e.direction = 'paid'), 0) AS paid_base,
                     COALESCE(sum(e.amount) FILTER (WHERE e.direction = 'paid'), 0) AS paid
              FROM tax_entry e JOIN tax_code c ON c.id = e.tax_code_id
              WHERE e.company_id = $1 AND e.posting_date BETWEEN $2 AND $3
-             GROUP BY c.id ORDER BY c.code",
-        )
+             GROUP BY c.id, 4, 5 ORDER BY c.code, 4, 5"
+        ))
         .bind(input.company_id)
         .bind(input.from)
         .bind(input.to)
