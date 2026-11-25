@@ -4,6 +4,7 @@ use erpcraft_kernel::PolicyPoint;
 
 pub const AUTO_DRAFT: &str = "edi.auto_draft";
 pub const DUPLICATE_ORDER: &str = "edi_order.duplicate";
+pub const PRICE_ZERO: &str = "edi_order.price_zero";
 pub const AUTO_APPROVE: &str = "edi.auto_approve";
 pub const SEND: &str = "edi.send";
 pub const BEFORE_ASN: &str = "edi_invoice.before_asn";
@@ -45,6 +46,18 @@ pub fn points() -> Vec<PolicyPoint> {
         )
         .refuse_by_default()
         .refusal("this order number was drafted before"),
+        PolicyPoint::new(
+            PRICE_ZERO,
+            "Asked for each line of a partner's order priced at nothing: is it drafted free, \
+             at a price of zero? Unless configured otherwise it is refused, and a person gives \
+             the price meant (or 0, to supply it free). A partner that sends samples or \
+             replacements at no charge is allowed by a rule, for example when \
+             `facts.partner_code == 'P01'`; a rule may also ask for approval.",
+        )
+        .text("partner_code", "The partner's code")
+        .text("line", "The partner's line id")
+        .refuse_by_default()
+        .refusal("a line priced at nothing needs a price, or 0 given for it"),
         PolicyPoint::new(
             AUTO_APPROVE,
             "Asked when a partner's order was drafted without a person (edi.auto_draft): is \

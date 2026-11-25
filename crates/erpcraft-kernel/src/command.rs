@@ -124,6 +124,8 @@ pub struct CommandSpec {
     pub sensitive: bool,
     /// See [`CommandSpec::redact`].
     pub redact: &'static [&'static str],
+    /// See [`CommandSpec::max_input_bytes`].
+    pub max_input_bytes: Option<usize>,
     /// See [`CommandSpec::label`].
     pub label: Option<&'static str>,
     /// See [`CommandSpec::resource`].
@@ -152,6 +154,7 @@ impl CommandSpec {
             read_only: false,
             sensitive: false,
             redact: &[],
+            max_input_bytes: None,
             label: None,
             resource: None,
             target: None,
@@ -182,11 +185,20 @@ impl CommandSpec {
 
     /// Top-level input fields too large to keep, such as a file's content:
     /// the audit log and the outbox hold `{sha256, bytes}` of each instead
-    /// of its value. Unlike [`CommandSpec::sensitive`], the rest of the
+    /// of its value; for a field named `*_base64`, of the bytes it decodes
+    /// to. Unlike [`CommandSpec::sensitive`], the rest of the
     /// input is kept, and the idempotency key still compares the whole
     /// input, so different contents are different requests.
     pub const fn redact(mut self, fields: &'static [&'static str]) -> Self {
         self.redact = fields;
+        self
+    }
+
+    /// The largest request body the command takes, in bytes, when that is
+    /// more than [`DEFAULT_MAX_INPUT_BYTES`]: a command that takes a file.
+    /// The command still checks the size of what it was given.
+    pub const fn max_input_bytes(mut self, bytes: usize) -> Self {
+        self.max_input_bytes = Some(bytes);
         self
     }
 
@@ -253,6 +265,10 @@ impl CommandSpec {
         self
     }
 }
+
+/// The largest request body a command takes unless it declares more
+/// ([`CommandSpec::max_input_bytes`]).
+pub const DEFAULT_MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
 
 /// See [`CommandSpec::primary_when`]: the command is the primary action
 /// on a record in one of `states` (any state when empty), when the
@@ -353,6 +369,8 @@ pub struct CommandMeta {
     /// See [`CommandSpec::redact`].
     #[serde(skip)]
     pub redact: &'static [&'static str],
+    /// The largest request body the command takes, in bytes.
+    pub max_input_bytes: usize,
     /// JSON Schema of the input.
     pub input_schema: Value,
     /// JSON Schema of the output.
@@ -473,6 +491,10 @@ impl<C: Command> DynCommand for Erased<C> {
             read_only: spec.read_only,
             sensitive: spec.sensitive,
             redact: spec.redact,
+            max_input_bytes: spec
+                .max_input_bytes
+                .unwrap_or(DEFAULT_MAX_INPUT_BYTES)
+                .max(DEFAULT_MAX_INPUT_BYTES),
             input_schema: titled(schema(schemars::schema_for!(C::Input))),
             // As the output is written, not as it would be read: a decimal
             // is always a string on the way out.
@@ -622,21 +644,37 @@ pub(crate) fn recorded(meta: &CommandMeta, input: &Value) -> Option<Value> {
     let kept = map.iter().map(|(key, value)| {
         let value = match value {
             Value::Null => Value::Null,
-            _ if meta.redact.contains(&key.as_str()) => {
-                let text = match value {
-                    Value::String(s) => std::borrow::Cow::Borrowed(s.as_str()),
-                    other => std::borrow::Cow::Owned(other.to_string()),
-                };
-                json!({
-                    "sha256": format!("{:x}", Sha256::digest(text.as_bytes())),
-                    "bytes": text.len(),
-                })
-            }
+            _ if meta.redact.contains(&key.as_str()) => redacted(key, value),
             _ => value.clone(),
         };
         (key.clone(), value)
     });
     Some(Value::Object(kept.collect()))
+}
+
+/// `{sha256, bytes}` of a redacted field: of the text, or of the bytes a
+/// field named `*_base64` decodes to, so that the hash is the file's
+/// whichever way it was sent. Base64 that does not decode is hashed as
+/// text.
+fn redacted(key: &str, value: &Value) -> Value {
+    use base64::Engine as _;
+    let text = match value {
+        Value::String(s) => std::borrow::Cow::Borrowed(s.as_str()),
+        other => std::borrow::Cow::Owned(other.to_string()),
+    };
+    let decoded = key
+        .ends_with("_base64")
+        .then(|| {
+            base64::engine::general_purpose::STANDARD
+                .decode(text.trim())
+                .ok()
+        })
+        .flatten();
+    let bytes = decoded.as_deref().unwrap_or(text.as_bytes());
+    json!({
+        "sha256": format!("{:x}", Sha256::digest(bytes)),
+        "bytes": bytes.len(),
+    })
 }
 
 /// Write the audit record of a failed command. The command's transaction

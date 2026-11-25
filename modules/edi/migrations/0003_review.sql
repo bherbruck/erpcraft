@@ -85,22 +85,30 @@ ALTER TABLE edi_uom_xref ADD COLUMN company_id uuid REFERENCES company (id);
 ALTER TABLE edi_location_xref ADD COLUMN company_id uuid REFERENCES company (id);
 UPDATE edi_item_xref x SET company_id = p.company_id FROM edi_partner p WHERE p.id = x.partner_id;
 UPDATE edi_uom_xref x SET company_id = p.company_id FROM edi_partner p WHERE p.id = x.partner_id;
+-- Only the company is set: 0001's check of the address would refuse a
+-- row whose address was removed since, or whose partner now names another
+-- customer, and fail the whole upgrade. Such rows are kept; 0004 clears
+-- their address so that they show as needing one.
+ALTER TABLE edi_location_xref DISABLE TRIGGER edi_location_xref_check;
 UPDATE edi_location_xref x SET company_id = p.company_id FROM edi_partner p WHERE p.id = x.partner_id;
+ALTER TABLE edi_location_xref ENABLE TRIGGER edi_location_xref_check;
 -- The old unique indexes don't know the company: drop them before a
 -- partner-less reference is copied per company, or the copy collides with
 -- the row it was copied from.
 DROP INDEX edi_item_xref_value;
 DROP INDEX edi_uom_xref_code;
--- A reference for every partner was for the companies that had partners.
+-- A reference for every partner was for every company: items and units
+-- belong to no company, and a GTIN is often set up with the items before
+-- any partner exists. Each company gets its own copy.
 INSERT INTO edi_item_xref (id, company_id, partner_id, item_id, kind, value, partner_uom,
                            units_per, created_at)
-SELECT gen_random_uuid(), c.company_id, NULL, x.item_id, x.kind, x.value, x.partner_uom,
+SELECT gen_random_uuid(), c.id, NULL, x.item_id, x.kind, x.value, x.partner_uom,
        x.units_per, x.created_at
-FROM edi_item_xref x CROSS JOIN (SELECT DISTINCT company_id FROM edi_partner) c
+FROM edi_item_xref x CROSS JOIN company c
 WHERE x.company_id IS NULL;
 INSERT INTO edi_uom_xref (id, company_id, partner_id, partner_uom, uom, created_at)
-SELECT gen_random_uuid(), c.company_id, NULL, x.partner_uom, x.uom, x.created_at
-FROM edi_uom_xref x CROSS JOIN (SELECT DISTINCT company_id FROM edi_partner) c
+SELECT gen_random_uuid(), c.id, NULL, x.partner_uom, x.uom, x.created_at
+FROM edi_uom_xref x CROSS JOIN company c
 WHERE x.company_id IS NULL;
 DELETE FROM edi_item_xref WHERE company_id IS NULL;
 DELETE FROM edi_uom_xref WHERE company_id IS NULL;

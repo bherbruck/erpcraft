@@ -103,6 +103,11 @@ impl Module for EdiModule {
                 name: "review",
                 sql: include_str!("../migrations/0003_review.sql"),
             },
+            Migration {
+                version: 4,
+                name: "company_scope",
+                sql: include_str!("../migrations/0004_company_scope.sql"),
+            },
         ]
     }
 

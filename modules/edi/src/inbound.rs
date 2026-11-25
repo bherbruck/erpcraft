@@ -228,7 +228,7 @@ pub async fn receive(
     let Some(id) =
         store::insert_routed(&mut *ctx.conn, &bytes, &hash, &partner, ctx.actor.user_id).await?
     else {
-        let id = store::routed_repeat(&mut *ctx.conn, &hash).await?;
+        let id = store::routed_repeat(&mut *ctx.conn, partner.company_id, &hash).await?;
         ctx.no_change();
         return output(ctx.conn, id, true).await;
     };

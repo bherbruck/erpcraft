@@ -34,7 +34,8 @@ pub async fn insert_routed(
         "INSERT INTO edi_interchange (id, company_id, partner_id, direction, syntax, sha256, size,
              payload, transport, state, received_by)
          VALUES ($1, $2, $3, 'in', 'x12', $4, $5, $6, 'manual', 'stored', $7)
-         ON CONFLICT (sha256) WHERE direction = 'in' AND partner_id IS NOT NULL DO NOTHING
+         ON CONFLICT (company_id, sha256) WHERE direction = 'in' AND partner_id IS NOT NULL
+         DO NOTHING
          RETURNING id",
     )
     .bind(new_id())
@@ -49,11 +50,13 @@ pub async fn insert_routed(
 }
 
 /// The interchange that holds bytes received and routed before.
-pub async fn routed_repeat(conn: &mut PgConnection, hash: &str) -> Result<Uuid> {
+pub async fn routed_repeat(conn: &mut PgConnection, company_id: Uuid, hash: &str) -> Result<Uuid> {
     Ok(sqlx::query_scalar(
         "SELECT id FROM edi_interchange
-         WHERE sha256 = $1 AND direction = 'in' AND partner_id IS NOT NULL FOR UPDATE",
+         WHERE company_id = $1 AND sha256 = $2 AND direction = 'in' AND partner_id IS NOT NULL
+         FOR UPDATE",
     )
+    .bind(company_id)
     .bind(hash)
     .fetch_one(&mut *conn)
     .await?)

@@ -1141,10 +1141,15 @@ async fn a_zugferd_pdf_is_read_and_hostile_files_are_refused() {
             .unwrap()
             .contains("BR-CO-15")
     );
-    // Too large: the server's request limit refuses it before the
-    // module's own (5 MiB of XML, 20 MiB of PDF) would.
+    // Too large: the module's own limit (5 MiB of XML, 20 MiB of PDF)
+    // refuses it; the request may be as large as a PDF as base64.
     let big = "<a>".to_owned() + &"x".repeat(6 * 1024 * 1024) + "</a>";
-    let (status, _) = read(json!({ "content": big })).await;
+    let (status, body) = read(json!({ "content": big })).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.to_string().contains("larger than 5 MiB"), "{body}");
+    // Larger than any file the command takes: the request is refused.
+    let huge = "x".repeat(30 * 1024 * 1024);
+    let (status, _) = read(json!({ "content_base64": huge })).await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     t.stop().await;
 }

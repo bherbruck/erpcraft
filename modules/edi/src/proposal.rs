@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::inbound::{ReadInterchange, SetRead, blocking, read_file};
 use crate::partner::{self, Partner};
-use crate::policy::DUPLICATE_ORDER;
+use crate::policy::{DUPLICATE_ORDER, PRICE_ZERO};
 use crate::x12::po850::{Line, PurchaseOrder};
 
 /// The places a price may have after it is divided into the item's unit:
@@ -319,6 +319,11 @@ async fn sales_factor(ctx: &mut Ctx<'_>, item_id: Uuid, uom: &str) -> Result<Opt
 }
 
 /// Whether a quantity or price fits a sales order line, `numeric(20, 6)`.
+/// The facts of [`PRICE_ZERO`] for one line.
+pub fn price_zero_facts(partner: &Partner, line: &str) -> Value {
+    json!({ "partner_code": partner.code, "line": line })
+}
+
 fn fits(value: Decimal) -> bool {
     value.abs() < Decimal::from(100_000_000_000_000i64) && value.normalize().scale() <= 6
 }
@@ -438,7 +443,7 @@ pub async fn build(
             how: "chosen".into(),
         }
     } else if let Some(party) = sent.filter(|p| !p.id.is_empty()) {
-        let found: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
+        let known: Option<(Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
             "SELECT address_id, warehouse_id FROM edi_location_xref
              WHERE partner_id = $1 AND qualifier = $2 AND code = $3",
         )
@@ -447,16 +452,21 @@ pub async fn build(
         .bind(&party.id)
         .fetch_optional(&mut *ctx.conn)
         .await?;
-        location_warehouse = found.and_then(|f| f.1);
-        let found = found.map(|f| f.0);
+        location_warehouse = known.and_then(|f| f.1);
+        let found = known.and_then(|f| f.0);
         if found.is_none() {
+            let why = if known.is_some() {
+                "whose location cross-reference has lost its address (removed from the \
+                 customer, or the partner names another customer now)"
+            } else {
+                "which no location cross-reference names"
+            };
             findings.push(Finding::blocking(
                 "ship_to_unknown",
                 None,
                 format!(
-                    "The order ships to {} ({} {}), which no location cross-reference names: \
-                     choose one of the customer's addresses (shipping_address_id), and \
-                     remember it for the next order.",
+                    "The order ships to {} ({} {}), {why}: choose one of the customer's \
+                     addresses (shipping_address_id), and remember it for the next order.",
                     party.name, party.id_qualifier, party.id
                 ),
             ));
@@ -628,14 +638,26 @@ pub async fn build(
         proposed.units_per = Some(units_per);
 
         match line.quantity {
-            Some(q) if q > Decimal::ZERO => match q.checked_mul(units_per).filter(|q| fits(*q)) {
-                Some(qty) => proposed.qty = Some(qty),
-                None => findings.push(Finding::blocking(
+            Some(q) if q > Decimal::ZERO => match q.checked_mul(units_per) {
+                Some(qty) if fits(qty) => proposed.qty = Some(qty),
+                Some(qty) if qty.abs() < Decimal::from(100_000_000_000_000i64) => {
+                    findings.push(Finding::blocking(
+                        "quantity_precision",
+                        Some(id),
+                        format!(
+                            "Line {id} comes to {} {uom}, more decimal places than a sales \
+                             order line holds (at most 6): correct the quantity or the \
+                             cross-reference's units per.",
+                            qty.normalize()
+                        ),
+                    ))
+                }
+                _ => findings.push(Finding::blocking(
                     "quantity_too_large",
                     Some(id),
                     format!(
                         "Line {id} orders more than a sales order line holds (at most 14 \
-                         digits before the point and 6 after)."
+                         digits before the point)."
                     ),
                 )),
             },
@@ -658,14 +680,31 @@ pub async fn build(
                 format!("Line {id} has a price below zero."),
             )),
             Some(p) if p.is_zero() && !choices.prices.contains_key(id) => {
-                findings.push(Finding::blocking(
-                    "price_zero",
-                    Some(id),
-                    format!(
-                        "Line {id} is priced at nothing: give the price meant (prices), or 0 \
-                         there to supply it free."
+                let decision = ctx
+                    .policy(PRICE_ZERO, partner.company_id)
+                    .await?
+                    .evaluate(price_zero_facts(partner, id))?;
+                findings.push(match decision {
+                    erpcraft_kernel::Decision::Allowed => {
+                        proposed.unit_price = Some(Decimal::ZERO);
+                        Finding::note(
+                            "price_zero",
+                            Some(id),
+                            format!(
+                                "Line {id} is priced at nothing, and the policy {PRICE_ZERO} \
+                                 lets it be supplied free."
+                            ),
+                        )
+                    }
+                    erpcraft_kernel::Decision::Refused(_) => Finding::blocking(
+                        "price_zero",
+                        Some(id),
+                        format!(
+                            "Line {id} is priced at nothing: give the price meant (prices), or \
+                             0 there to supply it free; the policy {PRICE_ZERO} may allow it."
+                        ),
                     ),
-                ))
+                })
             }
             Some(p) if !fits(p) => findings.push(Finding::blocking(
                 "price_too_large",

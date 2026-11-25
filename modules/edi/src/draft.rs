@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::partner;
-use crate::policy::{AUTO_APPROVE, AUTO_DRAFT, DUPLICATE_ORDER};
+use crate::policy::{AUTO_APPROVE, AUTO_DRAFT, DUPLICATE_ORDER, PRICE_ZERO};
 use crate::proposal::{self, Choices, Finding, Proposal, Severity};
 use crate::x12::po850::{DateOf, PurchaseOrder};
 
@@ -69,7 +69,10 @@ pub async fn draft(ctx: &mut Ctx<'_>, request: Request) -> Result<DocumentView> 
     let blocking: Vec<&Finding> = proposal
         .findings
         .iter()
-        .filter(|f| f.severity == Severity::Blocking && f.code != "duplicate_order")
+        .filter(|f| {
+            f.severity == Severity::Blocking
+                && !matches!(f.code.as_str(), "duplicate_order" | "price_zero")
+        })
         .collect();
     if !blocking.is_empty() {
         return Err(Error::validation(format!(
@@ -102,10 +105,24 @@ pub async fn draft(ctx: &mut Ctx<'_>, request: Request) -> Result<DocumentView> 
         )
         .await?;
     }
+    // A line priced at nothing: the policy decides, line by line, and may
+    // ask for an approval.
+    for finding in proposal.findings.iter().filter(|f| f.code == "price_zero") {
+        let line = finding.line.as_deref().unwrap_or_default();
+        ctx.decide(
+            PRICE_ZERO,
+            partner.company_id,
+            proposal::price_zero_facts(&partner, line),
+        )
+        .await?;
+    }
     let notes: Vec<&Finding> = proposal
         .findings
         .iter()
-        .filter(|f| f.severity == Severity::Note && f.code != "duplicate_order")
+        .filter(|f| {
+            f.severity == Severity::Note
+                && !matches!(f.code.as_str(), "duplicate_order" | "price_zero")
+        })
         .collect();
     if request.automatic {
         // Whoever allowed this read the notes in the rule's condition.
@@ -429,23 +446,38 @@ async fn remember(
             sent["id"].as_str().unwrap_or_default(),
         );
         if !qualifier.is_empty() && !code.is_empty() {
-            let taken: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM edi_location_xref
-                                WHERE partner_id = $1 AND qualifier = $2 AND code = $3)",
+            // A place known by its number whose address was removed or
+            // belonged to the partner's former customer is given this one.
+            let known: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
+                "SELECT id, address_id FROM edi_location_xref
+                 WHERE partner_id = $1 AND qualifier = $2 AND code = $3",
             )
             .bind(partner.id)
             .bind(qualifier)
             .bind(code)
-            .fetch_one(&mut *ctx.conn)
+            .fetch_optional(&mut *ctx.conn)
             .await?;
-            if !taken {
-                entity::create(
-                    ctx,
-                    "edi_location_xref",
-                    json!({ "company_id": partner.company_id, "partner_id": partner.id,
-                            "qualifier": qualifier, "code": code, "address_id": address }),
-                )
-                .await?;
+            match known {
+                None => {
+                    entity::create(
+                        ctx,
+                        "edi_location_xref",
+                        json!({ "company_id": partner.company_id, "partner_id": partner.id,
+                                "qualifier": qualifier, "code": code, "address_id": address }),
+                    )
+                    .await?;
+                }
+                Some((id, None)) => {
+                    entity::update(
+                        ctx,
+                        "edi_location_xref",
+                        id,
+                        json!({ "address_id": address }),
+                        None,
+                    )
+                    .await?;
+                }
+                Some(_) => {}
             }
         }
     }

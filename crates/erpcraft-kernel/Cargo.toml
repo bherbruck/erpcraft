@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+base64.workspace = true
 erpcraft-core.workspace = true
 erpcraft-db.workspace = true
 erpcraft-rules.workspace = true

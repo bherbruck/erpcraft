@@ -1673,6 +1673,68 @@ async fn a_free_line_and_a_quantity_too_large_are_for_a_person() {
     t.stop().await;
 }
 
+/// Review 8: a policy may let a line priced at nothing be drafted free,
+/// and a quantity with too many places says so, not that it is too large.
+#[tokio::test]
+async fn a_policy_lets_a_free_line_be_drafted_and_places_are_named() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let odd = renumbered(
+        &PO850.replace("PO1*1*48*EA*12.5*", "PO1*1*48.1234567*EA*0*"),
+        621,
+    );
+    let got = received(&t, &odd).await;
+    let message = &got["messages"][0];
+    let p = proposal(&t, &t.admin, message).await;
+    assert_eq!(findings(&p, "price_zero")[0]["severity"], "blocking", "{p}");
+    let places = findings(&p, "quantity_precision");
+    assert_eq!(places[0]["line"], "1", "{p}");
+    assert!(
+        places[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("decimal places"),
+        "{p}"
+    );
+    assert!(findings(&p, "quantity_too_large").is_empty(), "{p}");
+
+    let (status, rule) = t
+        .post(
+            &t.admin,
+            "/api/entities/policy_rule",
+            json!({ "company_id": f.c.id, "point": "edi_order.price_zero", "effect": "allow",
+                    "condition": "facts.partner_code == 'NM' && facts.line == '1'" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{rule}");
+    let p = proposal(&t, &t.admin, message).await;
+    assert_eq!(findings(&p, "price_zero")[0]["severity"], "note", "{p}");
+    // Line 1 still has too many places; with that corrected by a new
+    // file, the free line is drafted at zero without a price given.
+    let fixed = renumbered(
+        &PO850
+            .replace("PO1*1*48*EA*12.5*", "PO1*1*48*EA*0*")
+            .replace("BEG*00*SA*4500018842", "BEG*00*SA*4500018850"),
+        622,
+    );
+    let got = received(&t, &fixed).await;
+    let (status, order) = t
+        .command(
+            &t.admin,
+            "edi.draft",
+            json!({ "message_id": got["messages"][0]["id"], "items": knife_choice(&f),
+                    "accept_notes": true }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{order}");
+    assert_eq!(
+        dec(&order["body"]["lines"][0]["unit_price"]),
+        0.0,
+        "{order}"
+    );
+    t.stop().await;
+}
+
 #[tokio::test]
 async fn partners_and_their_numbers_stay_inside_their_company() {
     let t = TestApp::start().await;
@@ -1900,6 +1962,28 @@ async fn the_audit_log_keeps_a_hash_of_the_file_not_the_file() {
     .await
     .unwrap();
     assert_eq!(input["content_base64"]["bytes"], 11, "{input}");
+    // The same file as base64 is audited with the file's own hash.
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(first.as_bytes());
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "edi.receive",
+            json!({ "content_base64": encoded }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (input,): (Value,) = sqlx::query_as(
+        "SELECT input FROM audit_log WHERE command = 'edi.receive' AND outcome = 'ok'
+         AND input ? 'content_base64'",
+    )
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        input["content_base64"],
+        json!({ "sha256": format!("{:x}", Sha256::digest(first.as_bytes())), "bytes": first.len() })
+    );
     t.stop().await;
 }
 

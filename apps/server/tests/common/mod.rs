@@ -3,6 +3,8 @@
 
 #![allow(dead_code)]
 
+pub mod upgrade;
+
 use std::str::FromStr;
 
 use axum::Router;

@@ -236,7 +236,11 @@ fn location_xref() -> EntityMeta {
         .field(
             FieldMeta::new("address_id", "Address", FieldType::Uuid)
                 .required()
-                .help("One of the shipping addresses of the partner's customer (party.get)."),
+                .help(
+                    "One of the shipping addresses of the partner's customer (party.get). \
+                     Empty when that address was removed or the partner names another \
+                     customer now: an order to this place then asks for one.",
+                ),
         )
         .field(
             FieldMeta::new("warehouse_id", "Ships from", FieldType::link("warehouse"))

@@ -86,6 +86,8 @@ impl Command for Receive {
         .target(false)
         // The file is stored once, in edi_interchange; the audit log keeps its hash.
         .redact(&["content", "content_base64"])
+        // 4 MiB as base64, or as JSON text with its escapes.
+        .max_input_bytes(3 * MAX_BYTES)
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: ReceiveInput) -> Result<ReceiveOutput> {

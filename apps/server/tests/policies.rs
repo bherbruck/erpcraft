@@ -892,6 +892,7 @@ async fn policy_points_are_described_for_interfaces_and_agents() {
             "edi.send",
             "edi_invoice.before_asn",
             "edi_order.duplicate",
+            "edi_order.price_zero",
             "fx.rate_differs",
             "gl.dimensions",
             "payment.discount_tax",

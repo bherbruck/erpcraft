@@ -30,6 +30,14 @@ pub fn router(kernel: Kernel) -> Router {
 /// itself, for example with a user interface. It should still answer
 /// unknown paths under `/api` with [`not_found`].
 pub fn routes(kernel: Kernel) -> Router {
+    // Each command's own limit is checked in `run_command`; the route
+    // takes the largest any command declares.
+    let largest = kernel
+        .registry()
+        .commands()
+        .map(|c| c.meta.max_input_bytes)
+        .max()
+        .unwrap_or(command::DEFAULT_MAX_INPUT_BYTES);
     Router::new()
         .route(
             "/healthz",
@@ -37,7 +45,10 @@ pub fn routes(kernel: Kernel) -> Router {
         )
         .route("/api/auth/me", get(me))
         .route("/api/meta", get(meta))
-        .route("/api/commands/{name}", post(run_command))
+        .route(
+            "/api/commands/{name}",
+            post(run_command).layer(axum::extract::DefaultBodyLimit::max(largest)),
+        )
         .route(
             "/api/entities/{entity}",
             get(entity_list).post(entity_create),
@@ -283,6 +294,20 @@ async fn run_command(
     headers: HeaderMap,
     body: Bytes,
 ) -> ApiResult {
+    let limit = kernel.registry().command(&name)?.meta.max_input_bytes;
+    if body.len() > limit {
+        // As the route's own limit answers a body larger than any
+        // command takes.
+        let error = Error::validation(format!(
+            "the request is {} bytes; {name} takes at most {limit}",
+            body.len()
+        ));
+        return Ok((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({ "error": error.to_json() })),
+        )
+            .into_response());
+    }
     let options = Options {
         idempotency_key: idempotency_key(&headers),
         preview: query.preview,

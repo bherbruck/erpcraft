@@ -144,6 +144,10 @@ pub fn read_xml(content: &str) -> std::result::Result<Invoice, String> {
     Ok(invoice)
 }
 
+/// The largest request that carries a file: a PDF of
+/// [`pdf::MAX_PDF_BYTES`] as base64, with room for the rest of the input.
+const FILE_INPUT_BYTES: usize = pdf::MAX_PDF_BYTES / 3 * 4 + 1024 * 1024;
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContentInput {
@@ -160,7 +164,18 @@ pub struct ContentInput {
 /// The invoice in a request, and where it came from.
 async fn invoice_of(input: &ContentInput) -> Result<(Invoice, &'static str, String)> {
     let (bytes, field): (Vec<u8>, &str) = match (&input.content, &input.content_base64) {
-        (Some(text), None) => (text.as_bytes().to_vec(), "content"),
+        (Some(text), None) => {
+            if text.len() > xml::MAX_BYTES {
+                return Err(Error::field(
+                    "content",
+                    format!(
+                        "the file is larger than {} MiB",
+                        xml::MAX_BYTES / 1024 / 1024
+                    ),
+                ));
+            }
+            (text.as_bytes().to_vec(), "content")
+        }
         (None, Some(encoded)) => {
             if encoded.len() > pdf::MAX_PDF_BYTES * 4 / 3 + 4 {
                 return Err(Error::field(
@@ -330,6 +345,7 @@ impl Command for Read {
         .label("Read e-invoice")
         .resource("einvoice")
         .target(false)
+        .max_input_bytes(FILE_INPUT_BYTES)
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: ContentInput) -> Result<import::ReadOutput> {
@@ -398,6 +414,8 @@ impl Command for Import {
         .label("Import e-invoice")
         .resource("einvoice")
         .target(false)
+        .redact(&["content", "content_base64"])
+        .max_input_bytes(FILE_INPUT_BYTES)
         .creates("vendor_invoice")
     }
 
