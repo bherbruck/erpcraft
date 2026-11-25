@@ -897,6 +897,7 @@ async fn policy_points_are_described_for_interfaces_and_agents() {
             "payment.late_discount",
             "payment.post",
             "payment.write_off",
+            "payment_run.approve",
             POSTING_DATE,
             "production_order.inactive_bom",
             "production_order.inactive_work_center",

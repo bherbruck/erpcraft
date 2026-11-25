@@ -1094,6 +1094,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "erpcraft-payment-runs"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "erpcraft-banking",
+ "erpcraft-kernel",
+ "erpcraft-openitems",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
 name = "erpcraft-payments"
 version = "0.1.0"
 dependencies = [
@@ -1219,6 +1233,7 @@ dependencies = [
  "erpcraft-mcp",
  "erpcraft-openitems",
  "erpcraft-party",
+ "erpcraft-payment-runs",
  "erpcraft-payments",
  "erpcraft-planning",
  "erpcraft-printing",

@@ -1392,7 +1392,14 @@ impl Command for Parties {
         let company_id = view.header.company_id;
         let doc = input.id;
         let mut out = PartiesOutput::default();
-        if let Some(customer) = uuid("customer_id") {
+        // A document about a party of either kind, such as a payment, names
+        // it as `party_type` and `party_id`.
+        let party = |kind: &str| {
+            (summary["party_type"].as_str() == Some(kind))
+                .then(|| uuid("party_id"))
+                .flatten()
+        };
+        if let Some(customer) = uuid("customer_id").or_else(|| party("customer")) {
             out.seller = Some(company_view(ctx, doc, Role::Seller, company_id).await?);
             out.buyer = party_view(ctx, doc, Role::Buyer, "customer", customer).await?;
             if out.buyer.is_some()
@@ -1401,7 +1408,7 @@ impl Command for Parties {
             {
                 out.ship_to = Some(d.into());
             }
-        } else if let Some(vendor) = uuid("vendor_id") {
+        } else if let Some(vendor) = uuid("vendor_id").or_else(|| party("vendor")) {
             out.seller = party_view(ctx, doc, Role::Seller, "vendor", vendor).await?;
             out.buyer = Some(company_view(ctx, doc, Role::Buyer, company_id).await?);
         } else {

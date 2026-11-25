@@ -149,7 +149,7 @@ async fn books(t: &TestApp) -> Books {
     t.create(
         "bank_account_number",
         json!({ "company_id": company, "bank_account_id": bank,
-                "iban": "US00SAMPLE0000000001", "account_number": "SAMPLE0001",
+                "iban": "US68SAMPLE0000000001", "account_number": "SAMPLE0001",
                 "bic": "SAMPUS33", "account_name": "Acme Operating" }),
     )
     .await;
@@ -632,7 +632,7 @@ async fn malformed_files_are_refused_with_where() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     let euro_file = MARCH
         .replace("USD", "EUR")
-        .replace("US00SAMPLE0000000001", "DE00SAMPLE0000000002");
+        .replace("US68SAMPLE0000000001", "DE42SAMPLE0000000002");
     // Not before the account's number is recorded.
     let (status, body) = import(&t, &eur, "camt053", &euro_file).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
@@ -646,7 +646,7 @@ async fn malformed_files_are_refused_with_where() {
     t.create(
         "bank_account_number",
         json!({ "company_id": b.company, "bank_account_id": eur,
-                "iban": "DE00SAMPLE0000000002" }),
+                "iban": "DE42SAMPLE0000000002" }),
     )
     .await;
     // The euro account's statement is not the dollar account's.
@@ -654,7 +654,7 @@ async fn malformed_files_are_refused_with_where() {
         &t,
         &b.bank,
         "camt053",
-        &MARCH.replace("US00SAMPLE0000000001", "DE00SAMPLE0000000002"),
+        &MARCH.replace("US68SAMPLE0000000001", "DE42SAMPLE0000000002"),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
@@ -969,7 +969,7 @@ async fn hostile_statement_files_are_refused_not_believed() {
         .await;
     let numbers = |bic: &str| {
         json!({ "company_id": b.company, "bank_account_id": savings,
-                "iban": "US00SAMPLE0000000009", "bic": bic })
+                "iban": "US46SAMPLE0000000009", "bic": bic })
     };
     let (status, body) = t
         .post(

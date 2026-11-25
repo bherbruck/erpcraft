@@ -73,11 +73,20 @@ impl Module for BankingModule {
                 name: "bank_account_details",
                 sql: include_str!("../migrations/0004_bank_account_details.sql"),
             },
+            Migration {
+                version: 5,
+                name: "party_bank_account",
+                sql: include_str!("../migrations/0005_party_bank_account.sql"),
+            },
         ]
     }
 
     fn entities(&self) -> Vec<EntityMeta> {
-        vec![csv_mapping(), account_number_entity()]
+        vec![
+            csv_mapping(),
+            account_number_entity(),
+            party_account_entity(),
+        ]
     }
 
     fn doc_types(&self) -> Vec<Arc<dyn DocumentHandler>> {
@@ -218,10 +227,116 @@ fn account_number_entity() -> EntityMeta {
             FieldMeta::new("account_name", "Account holder", FieldType::Text)
                 .help("The name the account is held in, when it is not the company's."),
         )
+        .field(
+            FieldMeta::new("routing_number", "Routing number", FieldType::Text)
+                .help("For a US bank: its nine-digit ABA routing number."),
+        )
+        .field(
+            FieldMeta::new("ach_company_id", "ACH company ID", FieldType::Text).help(
+                "The company identification the bank gave for NACHA files, up to 10 characters.",
+            ),
+        )
+        .field(
+            FieldMeta::new("ach_origin", "ACH immediate origin", FieldType::Text).help(
+                "What the bank wants as the file's immediate origin, when not the company ID.",
+            ),
+        )
         .field(FieldMeta::new("created_at", "Created", FieldType::Timestamp).readonly())
         .order_by(&["created_at"])
         .search(&["iban", "account_number"])
         .company_field("company_id")
+}
+
+/// The bank accounts of vendors and customers: where a payment run pays
+/// them.
+fn party_account_entity() -> EntityMeta {
+    EntityMeta::new("party_bank_account", "Party bank account")
+        .field(
+            FieldMeta::new(
+                "party_type",
+                "Party type",
+                FieldType::options(&["vendor", "customer"]),
+            )
+            .required(),
+        )
+        .field(
+            FieldMeta::new(
+                "party_id",
+                "Party",
+                FieldType::entity_named_by("party_type"),
+            )
+            .required(),
+        )
+        .field(
+            FieldMeta::new("iban", "IBAN", FieldType::Text)
+                .help("Without spaces, in capitals; checked by its check digits."),
+        )
+        .field(FieldMeta::new("bic", "BIC", FieldType::Text))
+        .field(
+            FieldMeta::new("routing_number", "Routing number", FieldType::Text)
+                .help("For a US bank: its nine-digit ABA routing number."),
+        )
+        .field(FieldMeta::new(
+            "account_number",
+            "Account number",
+            FieldType::Text,
+        ))
+        .field(FieldMeta::new(
+            "account_type",
+            "Account type",
+            FieldType::options(&["checking", "savings"]),
+        ))
+        .field(
+            FieldMeta::new("account_name", "Account holder", FieldType::Text)
+                .help("The name the account is held in, when it is not the party's."),
+        )
+        .field(FieldMeta::new(
+            "currency",
+            "Currency",
+            FieldType::link_by("currency", "code"),
+        ))
+        .field(
+            FieldMeta::new("is_default", "Default", FieldType::Bool)
+                .help("The account a payment run pays into."),
+        )
+        .field(FieldMeta::new("active", "Active", FieldType::Bool))
+        .field(FieldMeta::new("created_at", "Created", FieldType::Timestamp).readonly())
+        .order_by(&["party_type", "party_id"])
+        .search(&["iban", "account_number"])
+        .display(&["iban", "account_number"])
+        .written_together(&["party_type", "party_id"])
+}
+
+/// A vendor's or customer's bank account, as a bank file writes it.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct PartyAccount {
+    pub iban: Option<String>,
+    pub bic: Option<String>,
+    pub routing_number: Option<String>,
+    pub account_number: Option<String>,
+    /// `checking` or `savings`.
+    pub account_type: String,
+    pub account_name: Option<String>,
+    pub currency: Option<String>,
+}
+
+/// The default active bank account of a party, else its only active one.
+pub async fn party_account(
+    conn: &mut PgConnection,
+    party_type: &str,
+    party_id: Uuid,
+) -> Result<Option<PartyAccount>> {
+    let found: Vec<PartyAccount> = sqlx::query_as(
+        "SELECT iban, bic, routing_number, account_number, account_type, account_name, currency
+         FROM party_bank_account
+         WHERE party_type = $1 AND party_id = $2 AND active
+         ORDER BY is_default DESC, created_at",
+    )
+    .bind(party_type)
+    .bind(party_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(found.into_iter().next())
 }
 
 /// The numbers the bank knows a bank account by, as recorded in
@@ -237,6 +352,12 @@ pub struct AccountNumber {
     pub bic: Option<String>,
     /// The name the account is held in, when it is not the company's.
     pub account_name: Option<String>,
+    /// A US bank's ABA routing number.
+    pub routing_number: Option<String>,
+    /// The company identification of a NACHA file.
+    pub ach_company_id: Option<String>,
+    /// The immediate origin of a NACHA file, when not the company ID.
+    pub ach_origin: Option<String>,
 }
 
 /// The numbers recorded for bank account `account_id`; `None` when none are.
@@ -245,8 +366,9 @@ pub async fn account_number(
     account_id: Uuid,
 ) -> Result<Option<AccountNumber>> {
     Ok(sqlx::query_as(
-        "SELECT iban, account_number, bic, account_name FROM bank_account_number
-         WHERE bank_account_id = $1",
+        "SELECT iban, account_number, bic, account_name, routing_number, ach_company_id,
+                ach_origin
+         FROM bank_account_number WHERE bank_account_id = $1",
     )
     .bind(account_id)
     .fetch_optional(&mut *conn)

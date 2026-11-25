@@ -1,0 +1,17 @@
+[package]
+name = "erpcraft-payment-runs"
+description = "erpcraft payment runs: paying vendors in a batch, with bank files and remittance advice"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+erpcraft-banking.workspace = true
+erpcraft-kernel.workspace = true
+erpcraft-openitems.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
