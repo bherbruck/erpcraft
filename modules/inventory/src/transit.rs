@@ -286,23 +286,8 @@ pub(crate) async fn lots_on_way(
 }
 
 /// The lots on their way on a line, as a document line names them.
-fn as_line_lots(on_way: Option<&BTreeMap<String, Decimal>>, mut qty: Decimal) -> Vec<LineLot> {
-    let mut out = vec![];
-    for (code, left) in on_way.into_iter().flatten() {
-        if qty <= Decimal::ZERO {
-            break;
-        }
-        let take = (*left).min(qty);
-        qty -= take;
-        out.push(LineLot {
-            lot: code.clone(),
-            qty: take.normalize(),
-            expiry_date: None,
-            manufactured_date: None,
-            attributes: None,
-        });
-    }
-    out
+fn as_line_lots(on_way: Option<&BTreeMap<String, Decimal>>, qty: Decimal) -> Vec<LineLot> {
+    on_way.map(|lots| lots::take(lots, qty)).unwrap_or_default()
 }
 
 // ---------------------------------------------------------- the receipt

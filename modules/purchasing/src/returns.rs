@@ -29,7 +29,7 @@ use erpcraft_kernel::{
     schemars,
 };
 use erpcraft_openitems::{Kind, NewOpenItem};
-use erpcraft_stock::StockLine;
+use erpcraft_stock::{LineLot, StockLine, lots};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -112,6 +112,8 @@ struct ReturnLineInput {
     id: Option<Uuid>,
     order_line_id: Uuid,
     qty: Decimal,
+    #[serde(default)]
+    lots: Vec<LineLot>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -186,6 +188,7 @@ impl DocumentHandler for PurchaseReturn {
                         .money()
                         .readonly()
                         .help("Set when posted: what the goods left stock at."),
+                    lots::field(),
                 ],
             }],
             states: states(StateMeta::editable("draft", "Draft")),
@@ -224,6 +227,7 @@ impl DocumentHandler for PurchaseReturn {
                     "the quantity must be more than zero",
                 ));
             }
+            lots::check("lines", index + 1, &line.lots)?;
         }
         let existing: Option<Uuid> = sqlx::query_scalar(
             "SELECT purchase_order_id FROM purchase_return WHERE document_id = $1",
@@ -286,6 +290,12 @@ impl DocumentHandler for PurchaseReturn {
             .execute(&mut *ctx.conn)
             .await?;
         }
+        let named: Vec<(Uuid, &[LineLot])> = line_ids
+            .iter()
+            .zip(&body.lines)
+            .map(|(id, line)| (*id, line.lots.as_slice()))
+            .collect();
+        lots::save(&mut *ctx.conn, doc.id, &named).await?;
         Ok(())
     }
 
@@ -309,7 +319,10 @@ impl DocumentHandler for PurchaseReturn {
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
         let order = return_order(conn, doc.id).await?;
-        Ok(json!({ "purchase_order_id": order, "lines": return_lines(conn, doc.id).await? }))
+        let mut body =
+            json!({ "purchase_order_id": order, "lines": return_lines(conn, doc.id).await? });
+        lots::attach(conn, doc.id, &mut body, "lines").await?;
+        Ok(body)
     }
 }
 
@@ -354,6 +367,7 @@ impl Command for PostReturn {
         let accounts = settings(&mut *ctx.conn, doc.company_id).await?;
         let decimals = company::currency_decimals(&mut *ctx.conn, doc.company_id).await?;
 
+        let named = lots::of_document(&mut *ctx.conn, doc.id).await?;
         let mut movements = vec![];
         let mut inventory = vec![];
         let mut values = vec![];
@@ -388,13 +402,25 @@ impl Command for PostReturn {
                 )
                 .await?,
             );
+            let lots = lots::resolve(
+                &mut *ctx.conn,
+                doc.company_id,
+                item_id,
+                -line.qty,
+                named.get(&line.id).map_or(&[][..], Vec::as_slice),
+                lots::At {
+                    collection: "lines",
+                    line_no: line.line_no as usize,
+                },
+            )
+            .await?;
             movements.push(StockLine {
                 item_id,
                 warehouse_id,
                 qty: -line.qty,
                 cost: None,
                 source_line_id: Some(line.id),
-                lots: vec![],
+                lots,
             });
         }
 
@@ -556,6 +582,18 @@ fn today_or(date: Option<NaiveDate>) -> NaiveDate {
     date.unwrap_or_else(|| erpcraft_kernel::Utc::now().date_naive())
 }
 
+/// The receipt and return lines of an order line: the document lines whose
+/// stock entries moved its goods.
+async fn stock_lines_of(conn: &mut PgConnection, order_line_id: Uuid) -> Result<Vec<Uuid>> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM purchase_receipt_line WHERE order_line_id = $1
+         UNION ALL SELECT id FROM purchase_return_line WHERE order_line_id = $1",
+    )
+    .bind(order_line_id)
+    .fetch_all(&mut *conn)
+    .await?)
+}
+
 pub(crate) struct DraftReturn;
 
 #[async_trait]
@@ -585,12 +623,18 @@ impl Command for DraftReturn {
                 order.status
             )));
         }
-        let rows: Vec<Value> = order_lines(&mut *ctx.conn, order.id)
+        let mut rows: Vec<Value> = vec![];
+        for line in order_lines(&mut *ctx.conn, order.id)
             .await?
             .iter()
             .filter(|l| l.qty_received > Decimal::ZERO)
-            .map(|l| json!({ "order_line_id": l.id, "qty": l.qty_received }))
-            .collect();
+        {
+            // The lots its receipts brought in, less those returned.
+            let sources = stock_lines_of(&mut *ctx.conn, line.id).await?;
+            let moved = lots::net_by_source(&mut *ctx.conn, &sources).await?;
+            rows.push(json!({ "order_line_id": line.id, "qty": line.qty_received,
+                              "lots": lots::take(&moved, line.qty_received) }));
+        }
         if rows.is_empty() {
             return Err(Error::validation(
                 "nothing has been received on this order that is not yet returned",

@@ -26,7 +26,7 @@ use erpcraft_kernel::{
     StateMeta, async_trait, command, company, round_money, schemars,
 };
 use erpcraft_openitems::{Kind, NewOpenItem};
-use erpcraft_stock::StockLine;
+use erpcraft_stock::{LineLot, StockLine, lots};
 use erpcraft_tax::Direction;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1462,6 +1462,8 @@ struct DeliveryLineInput {
     id: Option<Uuid>,
     order_line_id: Uuid,
     qty: Decimal,
+    #[serde(default)]
+    lots: Vec<LineLot>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -1522,6 +1524,7 @@ impl DocumentHandler for SalesDelivery {
                     FieldMeta::new("value", "Cost", FieldType::Decimal)
                         .money()
                         .readonly(),
+                    lots::field(),
                 ],
             }],
             states: states(StateMeta::editable("draft", "Draft")),
@@ -1561,6 +1564,7 @@ impl DocumentHandler for SalesDelivery {
                     "the quantity must be more than zero",
                 ));
             }
+            lots::check("lines", index + 1, &line.lots)?;
         }
         save_order_ref(ctx, "sales_delivery", doc, body.sales_order_id, "delivery").await?;
         // The order's shipping address unless the delivery names another.
@@ -1616,6 +1620,12 @@ impl DocumentHandler for SalesDelivery {
             .execute(&mut *ctx.conn)
             .await?;
         }
+        let named: Vec<(Uuid, &[LineLot])> = line_ids
+            .iter()
+            .zip(&body.lines)
+            .map(|(id, line)| (*id, line.lots.as_slice()))
+            .collect();
+        lots::save(&mut *ctx.conn, doc.id, &named).await?;
         Ok(())
     }
 
@@ -1644,11 +1654,13 @@ impl DocumentHandler for SalesDelivery {
         .bind(doc.id)
         .fetch_one(&mut *conn)
         .await?;
-        Ok(json!({
+        let mut body = json!({
             "sales_order_id": order,
             "shipping_address_id": shipping,
             "lines": delivery_lines(conn, doc.id).await?,
-        }))
+        });
+        lots::attach(conn, doc.id, &mut body, "lines").await?;
+        Ok(body)
     }
 }
 
@@ -1708,6 +1720,7 @@ impl Command for PostDelivery {
         let accounts = settings(&mut *ctx.conn, doc.company_id).await?;
 
         let over_delivery = ctx.policy(policy::OVER_DELIVERY, doc.company_id).await?;
+        let named = lots::of_document(&mut *ctx.conn, doc.id).await?;
         let mut movements = vec![];
         // The inventory account of each line, by what is delivered from where.
         let mut inventory = vec![];
@@ -1743,6 +1756,18 @@ impl Command for PostDelivery {
                     why,
                 ));
             }
+            let lots = lots::resolve(
+                &mut *ctx.conn,
+                doc.company_id,
+                item_id,
+                -line.qty,
+                named.get(&line.id).map_or(&[][..], Vec::as_slice),
+                lots::At {
+                    collection: "lines",
+                    line_no: line.line_no as usize,
+                },
+            )
+            .await?;
             // No cost: the stock ledger values what goes out.
             movements.push(StockLine {
                 item_id,
@@ -1750,7 +1775,7 @@ impl Command for PostDelivery {
                 qty: -line.qty,
                 cost: None,
                 source_line_id: Some(line.id),
-                lots: vec![],
+                lots,
             });
         }
 

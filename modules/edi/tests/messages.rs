@@ -6,7 +6,7 @@
 use chrono::NaiveDate;
 use erpcraft_edi::Delimiters;
 use erpcraft_edi::segment::Segment;
-use erpcraft_edi::x12::asn856::{self, Item, Node, Pack, PackKind, ShipNotice, ShipOrder};
+use erpcraft_edi::x12::asn856::{self, Item, ItemLot, Node, Pack, PackKind, ShipNotice, ShipOrder};
 use erpcraft_edi::x12::invoice810::{self, Charge, Invoice, InvoiceLine, Tax};
 use erpcraft_edi::x12::po850::{Party, ProductId, Reference};
 use erpcraft_edi::x12::poack855::{self, AckLine, LineStatus, OrderAck};
@@ -97,6 +97,24 @@ fn notice(standard_carton: bool) -> ShipNotice {
         ordered_uom: "CA".into(),
         description: String::new(),
         packs,
+        // One lot with its expiry date in the LIN, or two as REF segments.
+        lots: if standard_carton {
+            vec![
+                ItemLot {
+                    lot: "L-77".into(),
+                    expiry: None,
+                },
+                ItemLot {
+                    lot: "L-78".into(),
+                    expiry: None,
+                },
+            ]
+        } else {
+            vec![ItemLot {
+                lot: "L-77".into(),
+                expiry: NaiveDate::from_ymd_opt(2026, 12, 31),
+            }]
+        },
     };
     let carton = |sscc: &str, contents: Vec<Node>| Pack {
         kind: PackKind::Carton,
@@ -233,7 +251,7 @@ fn an_856_tree_reads_back_both_ways_round() {
     // Shipment 1, order 2 under it, pallet 3 under the order, cartons and
     // items under it, each numbered in order.
     assert!(text.contains("HL*1**S*1~"), "{text}");
-    assert!(text.contains("HL*2*1*O*1~PRF*4500018842***20261120~HL*3*2*T*1~MAN*GM*000400001000000031~HL*4*3*P*1~MAN*GM*000400001000000017~HL*5*4*I*0~LIN*2*UK*10400001000202*VN*CH-2040-C~SN1**1*CA**120*CA~"), "{text}");
+    assert!(text.contains("HL*2*1*O*1~PRF*4500018842***20261120~HL*3*2*T*1~MAN*GM*000400001000000031~HL*4*3*P*1~MAN*GM*000400001000000017~HL*5*4*I*0~LIN*2*UK*10400001000202*VN*CH-2040-C*LT*L-77~SN1**1*CA**120*CA~DTM*036*20261231~"), "{text}");
     assert!(text.contains("CTT*7~"), "{text}");
 }
 

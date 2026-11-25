@@ -11,7 +11,7 @@
 </section>
 <table class="lines">
   <thead>
-    <tr><th class="num">#</th><th>Item</th><th class="num">Quantity</th><th>Unit</th></tr>
+    <tr><th class="num">#</th><th>Item</th><th class="num">Quantity</th><th>Unit</th><th>Lots</th></tr>
   </thead>
   <tbody>
   {%- for line in doc.body.lines %}
@@ -21,6 +21,7 @@
       <td>{{ line.order_line_id | ref }}</td>
       <td class="num">{{ line.qty | decimal }}</td>
       <td>{{ refs[ordered.item_id].record.uom }}</td>
+      <td class="short">{{ line.lots | lots }}</td>
     </tr>
   {%- endfor %}
   </tbody>

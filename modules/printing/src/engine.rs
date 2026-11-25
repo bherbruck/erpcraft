@@ -55,6 +55,7 @@ pub(crate) fn environment() -> Environment<'static> {
     env.add_filter("date", date);
     env.add_filter("ref", reference);
     env.add_filter("show", show);
+    env.add_filter("lots", lots);
     env
 }
 
@@ -702,6 +703,36 @@ fn reference(state: &State, value: Value, form: Option<String>) -> String {
         .unwrap_or_default()
 }
 
+/// `{{ line.lots | lots }}`: the lots or serial numbers of a line, as
+/// `F-1 × 6, F-2 × 4`; a serial number (one unit) without its quantity.
+fn lots(value: Value) -> Result<String, TemplateError> {
+    let Ok(items) = value.try_iter() else {
+        return Ok(String::new());
+    };
+    let mut shown = vec![];
+    for item in items {
+        let Ok(lot) = item.get_attr("lot") else {
+            continue;
+        };
+        let Some(lot) = lot.as_str().map(str::to_owned) else {
+            continue;
+        };
+        let qty = item
+            .get_attr("qty")
+            .ok()
+            .map(|q| to_decimal(&q))
+            .transpose()?
+            .flatten();
+        shown.push(match qty {
+            Some(qty) if qty != Decimal::ONE => {
+                format!("{lot} × {}", format_decimal(qty.normalize(), None))
+            }
+            _ => lot,
+        });
+    }
+    Ok(shown.join(", "))
+}
+
 /// `{{ value | show(field) }}`: a value as its field in the metadata says
 /// to show it. Money with the places of the company's currency; a unit
 /// price with at least those and at most its scale; a quantity without
@@ -771,6 +802,15 @@ fn show(
         }
         "date" | "timestamp" => date(value, None),
         "bool" => Ok(if value.is_true() { "Yes" } else { "No" }.to_owned()),
+        // A line's lots, from the stock ledger's `lots` field.
+        "json"
+            if attr(&field, "name")
+                .and_then(|n| n.as_str().map(str::to_owned))
+                .as_deref()
+                == Some("lots") =>
+        {
+            lots(value)
+        }
         "enum" => {
             let text = value.as_str().unwrap_or_default().to_owned();
             Ok(ty

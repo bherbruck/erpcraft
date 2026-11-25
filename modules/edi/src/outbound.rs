@@ -30,7 +30,7 @@ use crate::policy::{BEFORE_ASN, SEND};
 use crate::proposal::{Finding, Severity};
 use crate::store;
 use crate::x12::asn856::{
-    self, Carrier, Item, Lading, Node, Pack, PackKind, ShipNotice, ShipOrder,
+    self, Carrier, Item, ItemLot, Lading, Node, Pack, PackKind, ShipNotice, ShipOrder,
 };
 use crate::x12::invoice810::{self, Charge, Invoice, InvoiceLine, Tax};
 use crate::x12::po850::{DateOf, Party, ProductId, Reference};
@@ -536,6 +536,28 @@ async fn notice(ctx: &mut Ctx<'_>, made: &mut Made) -> Result<()> {
         }
     }
 
+    // The lots of each delivery line, with their expiry dates.
+    let lot_rows: Vec<(Uuid, String, Option<NaiveDate>)> = sqlx::query_as(
+        "SELECT sl.line_id, sl.lot, COALESCE(l.expiry_date, sl.expiry_date)
+         FROM stock_line_lot sl
+         JOIN sales_delivery_line dl ON dl.id = sl.line_id
+         JOIN sales_order_line ol ON ol.id = dl.order_line_id
+         LEFT JOIN stock_lot l
+             ON l.company_id = $2 AND l.item_id = ol.item_id AND l.code = sl.lot
+         WHERE sl.document_id = $1 ORDER BY sl.line_id, sl.seq",
+    )
+    .bind(delivery_id)
+    .bind(made.view.header.company_id)
+    .fetch_all(&mut *ctx.conn)
+    .await?;
+    let mut lots_of: HashMap<Uuid, Vec<ItemLot>> = HashMap::new();
+    for (line, lot, expiry) in lot_rows {
+        lots_of
+            .entry(line)
+            .or_default()
+            .push(ItemLot { lot, expiry });
+    }
+
     // What the cartons hold, in the partner's units, checked against the
     // delivery line by line.
     let mut packed: HashMap<Uuid, Decimal> = HashMap::new();
@@ -568,6 +590,7 @@ async fn notice(ctx: &mut Ctx<'_>, made: &mut Made) -> Result<()> {
             ordered_uom: sent.partner_uom.clone(),
             description: String::new(),
             packs: Vec::new(),
+            lots: lots_of.get(line_id).cloned().unwrap_or_default(),
         }));
     }
     for (line_id, (qty, sent)) in &delivery_lines {

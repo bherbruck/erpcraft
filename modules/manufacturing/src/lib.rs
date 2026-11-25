@@ -19,7 +19,7 @@ use erpcraft_kernel::{
     PolicyPoint, Registry, Result, StateMeta, async_trait, command, company, new_id, round_money,
     schemars,
 };
-use erpcraft_stock::{Cost, StockLine};
+use erpcraft_stock::{Cost, LineLot, StockLine, lots};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -779,6 +779,24 @@ struct CompleteInput {
     /// Accounting date of the production. Defaults to the date of the
     /// order.
     posting_date: Option<NaiveDate>,
+    /// For a product tracked by lot or serial number: the lots made,
+    /// adding up to the quantity made, with their expiry and manufacturing
+    /// dates.
+    #[serde(default)]
+    lots: Vec<LineLot>,
+    /// For components tracked by lot or serial number: the lots consumed,
+    /// per component line.
+    #[serde(default)]
+    components: Vec<ComponentLots>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ComponentLots {
+    /// The component line (its id in `components`).
+    line_id: Uuid,
+    /// The lots of it consumed, adding up to its quantity.
+    lots: Vec<LineLot>,
 }
 
 struct Complete;
@@ -798,7 +816,9 @@ impl Command for Complete {
              product's, where the account rules make them differ, and the absorbed cost is \
              credited to the account for absorbed_cost. If any \
              component is short, nothing is posted, unless the company's policy lets stock go \
-             below zero. Completing an order that is already \
+             below zero. Components and products tracked by lot or serial number name their \
+             lots here (`components`, `lots`): what was consumed and what was made, which \
+             traceability links by the order. Completing an order that is already \
              completed returns it unchanged.",
         )
         .from_states(&["released"])
@@ -852,17 +872,46 @@ impl Command for Complete {
             .collect();
         erpcraft_stock::lock_levels(&mut *ctx.conn, doc.company_id, pairs).await?;
 
-        let issues: Vec<StockLine> = components
-            .iter()
-            .map(|component| StockLine {
+        for (index, named) in input.components.iter().enumerate() {
+            if !components.iter().any(|c| c.id == named.line_id) {
+                return Err(Error::line(
+                    "components",
+                    index + 1,
+                    Some("line_id"),
+                    "not a component line of this order",
+                ));
+            }
+        }
+        let mut issues: Vec<StockLine> = vec![];
+        for component in &components {
+            let named = input
+                .components
+                .iter()
+                .find(|c| c.line_id == component.id)
+                .map_or(&[][..], |c| c.lots.as_slice());
+            let at = lots::At {
+                collection: "components",
+                line_no: component.line_no as usize,
+            };
+            lots::check(at.collection, at.line_no, named)?;
+            let lots = lots::resolve(
+                &mut *ctx.conn,
+                doc.company_id,
+                component.item_id,
+                -component.qty,
+                named,
+                at,
+            )
+            .await?;
+            issues.push(StockLine {
                 item_id: component.item_id,
                 warehouse_id: order.warehouse_id,
                 qty: -component.qty,
                 cost: None,
                 source_line_id: Some(component.id),
-                lots: vec![],
-            })
-            .collect();
+                lots,
+            });
+        }
         let consumed = erpcraft_stock::post(ctx, &posting, &issues, "production").await?;
         // The labor and overhead absorbed: each activity's quantity times
         // its rate, rounded, credited to the account for absorbed cost.
@@ -976,6 +1025,20 @@ impl Command for Complete {
             .sum::<Decimal>()
             .checked_add(absorbed_total)
             .ok_or_else(|| Error::validation("the product's cost is too large"))?;
+        let at = lots::At {
+            collection: "lots",
+            line_no: 1,
+        };
+        lots::check(at.collection, at.line_no, &input.lots)?;
+        let product_lots = lots::resolve(
+            &mut *ctx.conn,
+            doc.company_id,
+            order.item_id,
+            order.qty,
+            &input.lots,
+            at,
+        )
+        .await?;
         let made = erpcraft_stock::post(
             ctx,
             &posting,
@@ -985,7 +1048,7 @@ impl Command for Complete {
                 qty: order.qty,
                 cost: Some(Cost::Total(total)),
                 source_line_id: None,
-                lots: vec![],
+                lots: product_lots,
             }],
             "production",
         )

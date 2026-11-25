@@ -155,6 +155,17 @@ pub struct Item {
     pub description: String,
     /// Packs under the item ("standard carton").
     pub packs: Vec<Pack>,
+    /// The lots or serial numbers of the line shipped. One lot is written
+    /// in the LIN (`LT`) with its expiry date in a `DTM*036`; several, as a
+    /// `REF*LT` each. They are the delivery line's, not the carton's:
+    /// packing does not record which lot is in which carton.
+    pub lots: Vec<ItemLot>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ItemLot {
+    pub lot: String,
+    pub expiry: Option<NaiveDate>,
 }
 
 impl ShipNotice {
@@ -317,6 +328,9 @@ impl Writer {
         let id = self.hl(Some(parent), "I", !item.packs.is_empty());
         let mut lin = vec![item.line_id.clone()];
         lin.extend(product_elements(&item.product_ids));
+        if let [one] = item.lots.as_slice() {
+            lin.extend(["LT".to_owned(), one.lot.clone()]);
+        }
         self.out.push(segment("LIN", lin));
         self.out.push(segment(
             "SN1",
@@ -340,6 +354,23 @@ impl Writer {
                     item.description.clone(),
                 ],
             ));
+        }
+        match item.lots.as_slice() {
+            [] => {}
+            [one] => {
+                if let Some(expiry) = one.expiry {
+                    self.out.push(segment(
+                        "DTM",
+                        vec!["036".into(), expiry.format("%Y%m%d").to_string()],
+                    ));
+                }
+            }
+            several => {
+                for lot in several {
+                    self.out
+                        .push(segment("REF", vec!["LT".into(), lot.lot.clone()]));
+                }
+            }
         }
         id
     }
@@ -497,6 +528,10 @@ pub fn read(set: &TransactionSet) -> (ShipNotice, SetVerdict) {
                 match &mut flat.level {
                     Level::Shipment => notice.references.push(reference),
                     Level::Order(order) => order.references.push(reference),
+                    Level::Item(item) if reference.qualifier == "LT" => item.lots.push(ItemLot {
+                        lot: reference.value,
+                        expiry: None,
+                    }),
                     _ => notice.unhandled.push((position, tag.to_owned())),
                 }
             }
@@ -510,6 +545,19 @@ pub fn read(set: &TransactionSet) -> (ShipNotice, SetVerdict) {
                 let qualifier = fields.required(position, segment, 1);
                 if let Some(date) = fields.date(position, segment, 2) {
                     notice.dates.push(DateOf { qualifier, date });
+                }
+            }
+            (
+                "DTM",
+                Some(Flat {
+                    level: Level::Item(item),
+                    ..
+                }),
+            ) if segment.get(1) == "036" => {
+                let date = fields.date(position, segment, 2);
+                match item.lots.as_mut_slice() {
+                    [one] => one.expiry = date,
+                    _ => notice.unhandled.push((position, tag.to_owned())),
                 }
             }
             ("N1" | "N2" | "N3" | "N4", Some(flat)) => {
@@ -556,7 +604,14 @@ pub fn read(set: &TransactionSet) -> (ShipNotice, SetVerdict) {
                 }),
             ) => {
                 item.line_id = segment.get(1).to_owned();
-                item.product_ids = read_product_ids(&mut fields, position, segment, 2, 30);
+                let ids = read_product_ids(&mut fields, position, segment, 2, 30);
+                let (lots, ids): (Vec<ProductId>, Vec<ProductId>) =
+                    ids.into_iter().partition(|id| id.qualifier == "LT");
+                item.product_ids = ids;
+                item.lots.extend(lots.into_iter().map(|id| ItemLot {
+                    lot: id.value,
+                    expiry: None,
+                }));
             }
             (
                 "SN1",

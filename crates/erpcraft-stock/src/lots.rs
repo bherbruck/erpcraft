@@ -236,6 +236,53 @@ pub async fn attach(
     Ok(())
 }
 
+/// The lots that live stock entries of these document lines moved, by
+/// lot code, signed: what came in less what went out. Entries taken back
+/// are left out. A follow-on document drafts its lots from it, such as a
+/// return from the receipts and returns of an order line.
+pub async fn net_by_source(
+    conn: &mut PgConnection,
+    source_line_ids: &[Uuid],
+) -> Result<BTreeMap<String, Decimal>> {
+    let rows: Vec<(String, Decimal)> = sqlx::query_as(
+        "SELECT l.code, sum(el.qty)
+         FROM stock_entry e
+         JOIN stock_entry_lot el ON el.entry_id = e.id
+         JOIN stock_lot l ON l.id = el.lot_id
+         WHERE e.source_line_id = ANY ($1) AND e.reverses_id IS NULL
+           AND NOT EXISTS (SELECT 1 FROM stock_entry r WHERE r.reverses_id = e.id)
+         GROUP BY l.code ORDER BY l.code",
+    )
+    .bind(source_line_ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// Up to `qty` taken from the lots of `available` that are above zero, in
+/// the order of their codes, as a document line names them.
+pub fn take(available: &BTreeMap<String, Decimal>, mut qty: Decimal) -> Vec<LineLot> {
+    let mut out = vec![];
+    for (code, left) in available {
+        if qty <= Decimal::ZERO {
+            break;
+        }
+        if *left <= Decimal::ZERO {
+            continue;
+        }
+        let part = (*left).min(qty);
+        qty -= part;
+        out.push(LineLot {
+            lot: code.clone(),
+            qty: part.normalize(),
+            expiry_date: None,
+            manufactured_date: None,
+            attributes: None,
+        });
+    }
+    out
+}
+
 /// A lot an entry moves: the lot and how much of it, above zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LotQty {

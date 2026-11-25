@@ -25,7 +25,7 @@ use erpcraft_kernel::{
     schemars,
 };
 use erpcraft_openitems::{Kind, NewOpenItem};
-use erpcraft_stock::{Cost, StockLine};
+use erpcraft_stock::{Cost, LineLot, StockLine, lots};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -106,6 +106,8 @@ struct ReturnLineInput {
     id: Option<Uuid>,
     order_line_id: Uuid,
     qty: Decimal,
+    #[serde(default)]
+    lots: Vec<LineLot>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -175,6 +177,7 @@ impl DocumentHandler for SalesReturn {
                         .money()
                         .readonly()
                         .help("Set when posted: the cost the goods left stock for."),
+                    lots::field(),
                 ],
             }],
             states: states(StateMeta::editable("draft", "Draft")),
@@ -204,6 +207,9 @@ impl DocumentHandler for SalesReturn {
 
     async fn save_body(&self, ctx: &mut Ctx<'_>, doc: &Document, body: &Value) -> Result<()> {
         let body: ReturnBody = erpcraft_kernel::input::parse(body.clone(), "sales return body")?;
+        for (index, line) in body.lines.iter().enumerate() {
+            lots::check("lines", index + 1, &line.lots)?;
+        }
         for (index, line) in body.lines.iter().enumerate() {
             if line.qty <= Decimal::ZERO {
                 return Err(Error::line(
@@ -274,6 +280,12 @@ impl DocumentHandler for SalesReturn {
             .execute(&mut *ctx.conn)
             .await?;
         }
+        let named: Vec<(Uuid, &[LineLot])> = line_ids
+            .iter()
+            .zip(&body.lines)
+            .map(|(id, line)| (*id, line.lots.as_slice()))
+            .collect();
+        lots::save(&mut *ctx.conn, doc.id, &named).await?;
         Ok(())
     }
 
@@ -295,7 +307,10 @@ impl DocumentHandler for SalesReturn {
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
         let order = return_order(conn, doc.id).await?;
-        Ok(json!({ "sales_order_id": order, "lines": return_lines(conn, doc.id).await? }))
+        let mut body =
+            json!({ "sales_order_id": order, "lines": return_lines(conn, doc.id).await? });
+        lots::attach(conn, doc.id, &mut body, "lines").await?;
+        Ok(body)
     }
 }
 
@@ -341,6 +356,7 @@ impl Command for PostReturn {
         let accounts = settings(&mut *ctx.conn, doc.company_id).await?;
         let decimals = company::currency_decimals(&mut *ctx.conn, doc.company_id).await?;
 
+        let named = lots::of_document(&mut *ctx.conn, doc.id).await?;
         let mut movements = vec![];
         let mut inventory = vec![];
         for line in &lines {
@@ -374,13 +390,46 @@ impl Command for PostReturn {
                 )
                 .await?,
             );
+            // Only lots that went out on this order line come back on it.
+            let line_lots = named.get(&line.id).map_or(&[][..], Vec::as_slice);
+            let sources = stock_lines_of(&mut *ctx.conn, ordered.id).await?;
+            let out = lots::net_by_source(&mut *ctx.conn, &sources).await?;
+            for lot in line_lots {
+                let went = -out.get(&lot.lot).copied().unwrap_or_default();
+                if lot.qty > went {
+                    return Err(Error::line(
+                        "lines",
+                        line.line_no as usize,
+                        Some("lots"),
+                        format!(
+                            "{} of lot {} went out on order line {} and has not come back, not {}",
+                            trim(went.max(Decimal::ZERO)),
+                            lot.lot,
+                            ordered.line_no,
+                            trim(lot.qty)
+                        ),
+                    ));
+                }
+            }
+            let lots = lots::resolve(
+                &mut *ctx.conn,
+                doc.company_id,
+                item_id,
+                line.qty,
+                line_lots,
+                lots::At {
+                    collection: "lines",
+                    line_no: line.line_no as usize,
+                },
+            )
+            .await?;
             movements.push(StockLine {
                 item_id,
                 warehouse_id,
                 qty: line.qty,
                 cost: Some(Cost::Total(cost)),
                 source_line_id: Some(line.id),
-                lots: vec![],
+                lots,
             });
         }
 
@@ -539,6 +588,18 @@ fn today_or(date: Option<NaiveDate>) -> NaiveDate {
     date.unwrap_or_else(|| erpcraft_kernel::Utc::now().date_naive())
 }
 
+/// The delivery and return lines of an order line: the document lines whose
+/// stock entries moved its goods.
+async fn stock_lines_of(conn: &mut PgConnection, order_line_id: Uuid) -> Result<Vec<Uuid>> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM sales_delivery_line WHERE order_line_id = $1
+         UNION ALL SELECT id FROM sales_return_line WHERE order_line_id = $1",
+    )
+    .bind(order_line_id)
+    .fetch_all(&mut *conn)
+    .await?)
+}
+
 pub(crate) struct DraftReturn;
 
 #[async_trait]
@@ -568,12 +629,22 @@ impl Command for DraftReturn {
                 order.status
             )));
         }
-        let rows: Vec<Value> = order_lines(&mut *ctx.conn, order.id)
+        let mut rows: Vec<Value> = vec![];
+        for line in order_lines(&mut *ctx.conn, order.id)
             .await?
             .iter()
             .filter(|l| l.qty_delivered > Decimal::ZERO)
-            .map(|l| json!({ "order_line_id": l.id, "qty": l.qty_delivered }))
-            .collect();
+        {
+            // The lots that went out on the line and have not come back.
+            let sources = stock_lines_of(&mut *ctx.conn, line.id).await?;
+            let out: BTreeMap<String, Decimal> = lots::net_by_source(&mut *ctx.conn, &sources)
+                .await?
+                .into_iter()
+                .map(|(lot, qty)| (lot, -qty))
+                .collect();
+            rows.push(json!({ "order_line_id": line.id, "qty": line.qty_delivered,
+                              "lots": lots::take(&out, line.qty_delivered) }));
+        }
         if rows.is_empty() {
             return Err(Error::validation(
                 "nothing has been delivered on this order that has not come back",
