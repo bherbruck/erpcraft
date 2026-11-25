@@ -124,6 +124,11 @@ impl Module for PurchasingModule {
                 name: "list_indexes",
                 sql: include_str!("../migrations/0014_list_indexes.sql"),
             },
+            Migration {
+                version: 15,
+                name: "units",
+                sql: include_str!("../migrations/0015_units.sql"),
+            },
         ]
     }
 
@@ -299,6 +304,10 @@ struct OrderLine {
     account_id: Option<Uuid>,
     description: Option<String>,
     qty: Decimal,
+    /// The unit of the quantity and price; the factor is how many stock
+    /// units one of it is.
+    uom: Option<String>,
+    factor: Decimal,
     unit_price: Decimal,
     discount_percent: Option<Decimal>,
     discount_amount: Option<Decimal>,
@@ -324,6 +333,12 @@ struct OrderLine {
 }
 
 impl OrderLine {
+    /// `qty` of this line's unit in stock units, exactly.
+    fn in_stock_units(&self, qty: Decimal, collection_line: i32) -> Result<Decimal> {
+        erpcraft_stock::units::to_stock_or(qty, self.factor, self.uom.as_deref().unwrap_or(""))
+            .map_err(|e| e.with_line("lines", collection_line as usize))
+    }
+
     /// The item and warehouse of a stock line; refused for a line that is
     /// not stock, which nothing is received or returned of.
     fn stock(&self, collection_line: i32) -> Result<(Uuid, Uuid)> {
@@ -366,7 +381,8 @@ impl OrderLine {
 async fn order_lines(conn: &mut PgConnection, order_id: Uuid) -> Result<Vec<OrderLine>> {
     let lines = sqlx::query_as(
         "SELECT l.id, l.line_no, l.item_id, l.warehouse_id, l.charge_id, l.account_id,
-                l.description, l.qty, l.unit_price, l.discount_percent, l.discount_amount,
+                l.description, l.qty, l.uom, l.factor, l.unit_price, l.discount_percent,
+                l.discount_amount,
                 CASE WHEN l.item_id IS NULL THEN l.qty
                      ELSE COALESCE(p.qty_received - p.qty_returned, 0) END AS qty_received,
                 COALESCE(p.received_value - p.returned_value, 0) AS received_value,
@@ -718,6 +734,9 @@ struct OrderLineInput {
     account_id: Option<Uuid>,
     description: Option<String>,
     qty: Decimal,
+    /// The unit of the quantity and price: one of the item's purchase
+    /// units, or its stock unit when omitted.
+    uom: Option<String>,
     /// Left out on an item line: what the vendor's price lists propose,
     /// else the last price paid to it.
     unit_price: Option<Decimal>,
@@ -786,6 +805,15 @@ impl DocumentHandler for PurchaseOrder {
                         .quantity()
                         .unit_of("item_id", "uom")
                         .required(),
+                    FieldMeta::new("uom", "Unit", FieldType::Text).help(
+                        "One of the item's purchase units (item_uom), or its stock unit when \
+                         left out; the quantity and the price are per this unit. A line that is \
+                         not stock may name any unit.",
+                    ),
+                    FieldMeta::new("factor", "Stock units in one", FieldType::Decimal)
+                        .quantity()
+                        .readonly()
+                        .help("How many of the item's stock unit one of the line's unit is."),
                     FieldMeta::new("unit_price", "Unit price", FieldType::Decimal)
                         .unit_price()
                         .currency_of_document("currency")
@@ -865,6 +893,33 @@ impl DocumentHandler for PurchaseOrder {
         // discount unless it gives one.
         let base = company::base_currency(&mut *ctx.conn, doc.company_id).await?;
         let order_currency = body.currency.clone().unwrap_or_else(|| base.clone());
+        // Each stock line's unit, and how many stock units one of it is.
+        let mut units: Vec<(Option<String>, Decimal)> = vec![];
+        for (index, line) in body.lines.iter().enumerate() {
+            units.push(match line.item_id {
+                Some(item) => {
+                    let (uom, factor) = erpcraft_stock::units::unit(
+                        &mut *ctx.conn,
+                        item,
+                        line.uom.as_deref(),
+                        erpcraft_stock::units::Purpose::Purchase,
+                    )
+                    .await
+                    .map_err(|e| e.with_line("lines", index + 1))?;
+                    erpcraft_stock::units::to_stock_or(line.qty, factor, &uom)
+                        .map_err(|e| e.with_line("lines", index + 1))?;
+                    (Some(uom), factor)
+                }
+                None => (
+                    line.uom
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|u| !u.is_empty())
+                        .map(str::to_owned),
+                    Decimal::ONE,
+                ),
+            });
+        }
         let mut proposals = vec![];
         for (index, line) in body.lines.iter_mut().enumerate() {
             let proposal = match line.item_id {
@@ -876,12 +931,14 @@ impl DocumentHandler for PurchaseOrder {
                             side: erpcraft_pricing::Side::Purchase,
                             party_id: body.vendor_id,
                             item_id: item,
-                            qty: line.qty,
+                            // Lists are per stock unit, breaks too.
+                            qty: line.qty * units[index].1,
                             currency: order_currency.clone(),
                             date: doc.doc_date,
                         },
                     )
                     .await?
+                    .map(|p| p.per(units[index].1))
                 }
                 None => None,
             };
@@ -993,15 +1050,16 @@ impl DocumentHandler for PurchaseOrder {
             sqlx::query(
                 "INSERT INTO purchase_order_line (id, document_id, line_no, item_id, warehouse_id,
                     qty, unit_price, charge_id, account_id, description, discount_percent,
-                    discount_amount)
+                    discount_amount, uom, factor)
                  SELECT r.id, $1, r.line_no, r.item_id, r.warehouse_id, r.qty, r.unit_price,
                     r.charge_id, r.account_id, NULLIF(trim(r.description), ''),
-                    r.discount_percent, r.discount_amount
+                    r.discount_percent, r.discount_amount, r.uom, r.factor
                  FROM unnest($2::uuid[], $3::int4[], $4::uuid[], $5::uuid[], $6::numeric[],
                              $7::numeric[], $8::uuid[], $9::uuid[], $10::text[], $11::numeric[],
-                             $12::numeric[])
+                             $12::numeric[], $13::text[], $14::numeric[])
                     AS r (id, line_no, item_id, warehouse_id, qty, unit_price, charge_id,
-                          account_id, description, discount_percent, discount_amount)",
+                          account_id, description, discount_percent, discount_amount, uom,
+                          factor)",
             )
             .bind(doc.id)
             .bind(&line_ids)
@@ -1055,6 +1113,8 @@ impl DocumentHandler for PurchaseOrder {
                     .map(|line| line.discount_amount)
                     .collect::<Vec<_>>(),
             )
+            .bind(units.iter().map(|(uom, _)| uom.clone()).collect::<Vec<_>>())
+            .bind(units.iter().map(|(_, factor)| *factor).collect::<Vec<_>>())
             .execute(&mut *ctx.conn)
             .await?;
         }
@@ -1389,15 +1449,15 @@ fn currency_field() -> FieldMeta {
 
 /// The payment terms an order or invoice is on.
 /// What open purchase orders of a company still have to bring in, per
-/// item and warehouse: each stock line's quantity less what was received
-/// and kept (received less returned).
+/// item and warehouse, in stock units: each stock line's quantity less what
+/// was received and kept (received less returned), times its factor.
 pub async fn open_supply(
     conn: &mut PgConnection,
     company_id: Uuid,
 ) -> Result<Vec<(Uuid, Uuid, Decimal)>> {
     Ok(sqlx::query_as(
         "SELECT l.item_id, l.warehouse_id,
-                sum(GREATEST(l.qty - COALESCE(p.qty_received - p.qty_returned, 0), 0))
+                sum(GREATEST(l.qty - COALESCE(p.qty_received - p.qty_returned, 0), 0) * l.factor)
          FROM purchase_order_line l
          JOIN document d ON d.id = l.document_id
          LEFT JOIN purchase_order_progress p ON p.line_id = l.id
@@ -1946,14 +2006,19 @@ impl Command for PostReceipt {
                     line.qty * ordered.net(base_decimals) / ordered.qty,
                     base_decimals,
                 ))
+            } else if ordered.factor != Decimal::ONE {
+                // The price is per the line's unit, the movement in stock
+                // units: the value is what the line comes to.
+                Cost::Total(round_money(line.qty * ordered.unit_price, base_decimals))
             } else {
                 Cost::Unit(ordered.unit_price)
             };
+            let stock_qty = ordered.in_stock_units(line.qty, line.line_no)?;
             let lots = lots::resolve(
                 &mut *ctx.conn,
                 doc.company_id,
                 item_id,
-                line.qty,
+                stock_qty,
                 named.get(&line.id).map_or(&[][..], Vec::as_slice),
                 lots::At {
                     collection: "lines",
@@ -1964,7 +2029,7 @@ impl Command for PostReceipt {
             movements.push(StockLine {
                 item_id,
                 warehouse_id,
-                qty: line.qty,
+                qty: stock_qty,
                 cost: Some(cost),
                 source_line_id: Some(line.id),
                 lots,
@@ -2796,7 +2861,8 @@ async fn landed_cost(
     };
     #[allow(clippy::type_complexity)]
     let received: Vec<(Decimal, Decimal, Uuid, Uuid, Option<Decimal>, String)> = sqlx::query_as(
-        "SELECT rl.qty, COALESCE(rl.value, 0), ol.item_id, ol.warehouse_id, it.weight, it.code
+        "SELECT rl.qty * ol.factor, COALESCE(rl.value, 0), ol.item_id, ol.warehouse_id, it.weight,
+                it.code
          FROM purchase_receipt_line rl
          JOIN document d ON d.id = rl.document_id
          JOIN purchase_order_line ol ON ol.id = rl.order_line_id

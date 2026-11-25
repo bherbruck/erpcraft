@@ -26,7 +26,7 @@
       <td class="num">{{ line.line_no }}</td>
       <td>{% if line.order_line_id %}{{ line.order_line_id | ref }}{% elif line.charge_id %}{{ line.description or (line.charge_id | ref) }}{% else %}{{ line.description or (line.account_id | ref) }}{% endif %}</td>
       <td class="num">{{ line.qty | decimal }}</td>
-      <td>{% if ordered and ordered.item_id %}{{ refs[ordered.item_id].record.uom }}{% endif %}</td>
+      <td>{% if ordered and ordered.uom %}{{ ordered.uom }}{% elif ordered and ordered.item_id %}{{ refs[ordered.item_id].record.uom }}{% endif %}</td>
       <td class="num">{{ line.unit_price | price }}</td>
       <td class="num">{% if line.discount_percent %}{{ line.discount_percent | decimal }} %{% endif %}{% if line.discount_amount %} {{ line.discount_amount | money }}{% endif %}</td>
       <td class="short">{{ line.tax_code_id | ref("short") }}</td>

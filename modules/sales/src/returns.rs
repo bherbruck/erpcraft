@@ -392,6 +392,7 @@ impl Command for PostReturn {
             );
             // Only lots that went out on this order line come back on it.
             let line_lots = named.get(&line.id).map_or(&[][..], Vec::as_slice);
+            let stock_qty = ordered.in_stock_units(line.qty, line.line_no)?;
             let sources = stock_lines_of(&mut *ctx.conn, ordered.id).await?;
             let out = lots::net_by_source(&mut *ctx.conn, &sources).await?;
             for lot in line_lots {
@@ -415,7 +416,7 @@ impl Command for PostReturn {
                 &mut *ctx.conn,
                 doc.company_id,
                 item_id,
-                line.qty,
+                stock_qty,
                 line_lots,
                 lots::At {
                     collection: "lines",
@@ -426,7 +427,7 @@ impl Command for PostReturn {
             movements.push(StockLine {
                 item_id,
                 warehouse_id,
-                qty: line.qty,
+                qty: stock_qty,
                 cost: Some(Cost::Total(cost)),
                 source_line_id: Some(line.id),
                 lots,
@@ -643,7 +644,7 @@ impl Command for DraftReturn {
                 .map(|(lot, qty)| (lot, -qty))
                 .collect();
             rows.push(json!({ "order_line_id": line.id, "qty": line.qty_delivered,
-                              "lots": lots::take(&out, line.qty_delivered) }));
+                              "lots": lots::take(&out, line.qty_delivered * line.factor) }));
         }
         if rows.is_empty() {
             return Err(Error::validation(

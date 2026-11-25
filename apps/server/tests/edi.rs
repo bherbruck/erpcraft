@@ -1902,3 +1902,30 @@ async fn the_audit_log_keeps_a_hash_of_the_file_not_the_file() {
     assert_eq!(input["content_base64"]["bytes"], 11, "{input}");
     t.stop().await;
 }
+
+#[tokio::test]
+async fn a_partner_unit_that_is_another_unit_of_the_item_converts_by_its_factor() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    // Hammers are kept each and sold by the dozen too; the partner's DZ is
+    // our dz.
+    t.create(
+        "item_uom",
+        json!({ "item_id": f.hammer, "uom": "dz", "factor": "12", "sales": true }),
+    )
+    .await;
+    t.create(
+        "edi_uom_xref",
+        json!({ "company_id": f.c.id, "partner_uom": "DZ", "uom": "dz" }),
+    )
+    .await;
+    let dozens = renumbered(&PO850.replace("PO1*1*48*EA*12.5*", "PO1*1*4*DZ*150*"), 700);
+    let got = received(&t, &dozens).await;
+    let p = proposal(&t, &t.admin, &got["messages"][0]).await;
+    assert!(findings(&p, "unit_unknown").is_empty(), "{p}");
+    let line = &p["lines"][0];
+    // Four dozen at 150.00 a dozen: 48 each at 12.50.
+    assert_eq!(dec(&line["qty"]), 48.0, "{p}");
+    assert_eq!(dec(&line["unit_price"]), 12.5, "{p}");
+    t.stop().await;
+}

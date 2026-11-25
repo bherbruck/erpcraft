@@ -218,7 +218,9 @@ impl Side {
     }
 }
 
-/// What a line's price is proposed from.
+/// What a line's price is proposed from. Prices are per the item's stock
+/// unit, and `qty` is in it; a line in another unit scales the proposal by
+/// its factor ([`Proposal::per`]).
 #[derive(Debug, Clone)]
 pub struct Query {
     pub company_id: Uuid,
@@ -241,6 +243,20 @@ pub struct Proposal {
     pub source: &'static str,
     /// The list line the price came from, else the discount's.
     pub price_list_line_id: Option<Uuid>,
+}
+
+impl Proposal {
+    /// The proposal for a line in a unit of `factor` stock units: the
+    /// price per stock unit times the factor, rounded to the six places of
+    /// a unit price.
+    pub fn per(mut self, factor: Decimal) -> Self {
+        if factor != Decimal::ONE {
+            self.unit_price = self
+                .unit_price
+                .map(|p| (p * factor).round_dp(6).normalize());
+        }
+        self
+    }
 }
 
 /// The price and discount the lists propose for a line, and on a purchase
@@ -304,13 +320,14 @@ pub async fn propose(conn: &mut PgConnection, q: &Query) -> Result<Option<Propos
 }
 
 /// The unit price and discount of the latest posted vendor invoice line of
-/// the vendor for the item, in the currency.
+/// the vendor for the item, in the currency: per stock unit, whatever unit
+/// its order line was in.
 async fn last_paid(
     conn: &mut PgConnection,
     q: &Query,
 ) -> Result<Option<(Decimal, Option<Decimal>)>> {
     Ok(sqlx::query_as(
-        "SELECT l.unit_price, l.discount_percent
+        "SELECT round(l.unit_price / ol.factor, 6), l.discount_percent
          FROM vendor_invoice_line l
          JOIN vendor_invoice v ON v.document_id = l.document_id
          JOIN document d ON d.id = v.document_id

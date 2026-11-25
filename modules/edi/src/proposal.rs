@@ -306,6 +306,18 @@ async fn our_uom(ctx: &mut Ctx<'_>, partner: &Partner, code: &str) -> Result<Opt
     .await?)
 }
 
+/// How many stock units one of `uom` is, for an item sold in that unit
+/// (`item_uom`).
+async fn sales_factor(ctx: &mut Ctx<'_>, item_id: Uuid, uom: &str) -> Result<Option<Decimal>> {
+    Ok(
+        sqlx::query_scalar("SELECT factor FROM item_uom WHERE item_id = $1 AND uom = $2 AND sales")
+            .bind(item_id)
+            .bind(uom)
+            .fetch_optional(&mut *ctx.conn)
+            .await?,
+    )
+}
+
 /// Whether a quantity or price fits a sales order line, `numeric(20, 6)`.
 fn fits(value: Decimal) -> bool {
     value.abs() < Decimal::from(100_000_000_000_000i64) && value.normalize().scale() <= 6
@@ -588,8 +600,15 @@ pub async fn build(
             Some(xref.units_per)
         } else {
             let ours = our_uom(ctx, partner, &line.uom).await?;
-            (ours.as_deref() == Some(uom.as_str()) || line.uom.eq_ignore_ascii_case(&uom))
-                .then_some(Decimal::ONE)
+            if ours.as_deref() == Some(uom.as_str()) || line.uom.eq_ignore_ascii_case(&uom) {
+                Some(Decimal::ONE)
+            } else {
+                // Another unit of the item that it is sold in: its factor.
+                match ours {
+                    Some(ours) => sales_factor(ctx, xref.item_id, &ours).await?,
+                    None => None,
+                }
+            }
         };
         let Some(units_per) = units_per else {
             findings.push(Finding::blocking(

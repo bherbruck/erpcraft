@@ -372,7 +372,7 @@ async fn drafted(
 ) -> Result<Vec<(Uuid, Uuid, Decimal)>> {
     Ok(sqlx::query_as(
         "SELECT item_id, warehouse_id, sum(qty) FROM (
-             SELECT l.item_id, l.warehouse_id, l.qty
+             SELECT l.item_id, l.warehouse_id, l.qty * l.factor AS qty
              FROM purchase_order_line l JOIN document d ON d.id = l.document_id
              WHERE d.company_id = $1 AND d.status = 'draft' AND l.item_id IS NOT NULL
                AND l.warehouse_id IS NOT NULL
@@ -559,7 +559,8 @@ async fn plan(
             Some(price) => Some(price),
             None if source == "buy" => {
                 sqlx::query_scalar(
-                    "SELECT l.unit_price FROM purchase_order_line l
+                    // Per stock unit, whatever unit it was bought in.
+                    "SELECT round(l.unit_price / l.factor, 6) FROM purchase_order_line l
                      JOIN document d ON d.id = l.document_id
                      JOIN purchase_order o ON o.document_id = l.document_id
                      WHERE d.company_id = $1 AND l.item_id = $2 AND o.currency IS NULL

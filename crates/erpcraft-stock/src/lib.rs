@@ -38,6 +38,7 @@ use uuid::Uuid;
 pub mod counts;
 mod locations;
 pub mod lots;
+pub mod units;
 
 pub use locations::{Locations, line_scopes, locations};
 pub use lots::{LineLot, LotQty, Tracking};
@@ -105,6 +106,11 @@ impl Module for StockModule {
                 version: 11,
                 name: "counts",
                 sql: include_str!("../migrations/0011_counts.sql"),
+            },
+            Migration {
+                version: 12,
+                name: "units",
+                sql: include_str!("../migrations/0012_units.sql"),
             },
         ]
     }
@@ -213,6 +219,34 @@ impl Module for StockModule {
                 .search(&["code"])
                 .display(&["code"])
                 .company_field("company_id"),
+            EntityMeta::new("item_uom", "Unit of measure")
+                .field(
+                    FieldMeta::new("item_id", "Item", FieldType::link("item"))
+                        .required()
+                        .immutable(),
+                )
+                .field(
+                    FieldMeta::new("uom", "Unit", FieldType::Text)
+                        .required()
+                        .immutable()
+                        .help("A unit the item is bought or sold in, other than its stock unit."),
+                )
+                .field(
+                    FieldMeta::new("factor", "Stock units in one", FieldType::Decimal)
+                        .quantity()
+                        .required()
+                        .help(
+                            "How many of the item's stock unit one of this unit is: 1000 for a \
+                             tonne of an item kept in kilograms. Lines keep the factor they \
+                             were saved with.",
+                        ),
+                )
+                .field(FieldMeta::new("purchase", "Bought in it", FieldType::Bool))
+                .field(FieldMeta::new("sales", "Sold in it", FieldType::Bool))
+                .field(created())
+                .order_by(&["item_id", "uom"])
+                .search(&["uom"])
+                .display(&["uom"]),
             EntityMeta::new("item_abc", "ABC class")
                 .field(company())
                 .field(

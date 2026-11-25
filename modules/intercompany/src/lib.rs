@@ -505,6 +505,11 @@ fn order_mirror(source: &Source, rule: &Rule) -> Result<(&'static str, Value, Ve
         .enumerate()
     {
         let mut out = priced(line);
+        // Bought in the unit it was sold in: items, and their units, are
+        // shared by the two companies.
+        if !line["uom"].is_null() {
+            out.insert("uom".into(), line["uom"].clone());
+        }
         if !line["item_id"].is_null() {
             let warehouse = rule.warehouse_id.ok_or_else(|| {
                 Error::validation(

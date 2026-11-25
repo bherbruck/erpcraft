@@ -123,6 +123,11 @@ impl Module for SalesModule {
                 name: "order_reference",
                 sql: include_str!("../migrations/0014_order_reference.sql"),
             },
+            Migration {
+                version: 15,
+                name: "units",
+                sql: include_str!("../migrations/0015_units.sql"),
+            },
         ]
     }
 
@@ -292,6 +297,10 @@ struct OrderLine {
     account_id: Option<Uuid>,
     description: Option<String>,
     qty: Decimal,
+    /// The unit of the quantity and price; the factor is how many stock
+    /// units one of it is.
+    uom: Option<String>,
+    factor: Decimal,
     unit_price: Decimal,
     discount_percent: Option<Decimal>,
     discount_amount: Option<Decimal>,
@@ -310,6 +319,12 @@ struct OrderLine {
 }
 
 impl OrderLine {
+    /// `qty` of this line's unit in stock units, exactly.
+    pub(crate) fn in_stock_units(&self, qty: Decimal, collection_line: i32) -> Result<Decimal> {
+        erpcraft_stock::units::to_stock_or(qty, self.factor, self.uom.as_deref().unwrap_or(""))
+            .map_err(|e| e.with_line("lines", collection_line as usize))
+    }
+
     /// Everything ordered has gone out, and everything that went out has
     /// been invoiced. Where the company's policy let more go out than was
     /// ordered, the extra goods must be invoiced too before the line is
@@ -338,7 +353,8 @@ impl OrderLine {
 async fn order_lines(conn: &mut PgConnection, order_id: Uuid) -> Result<Vec<OrderLine>> {
     let lines = sqlx::query_as(
         "SELECT l.id, l.line_no, l.item_id, l.warehouse_id, l.charge_id, l.account_id,
-                l.description, l.qty, l.unit_price, l.discount_percent, l.discount_amount,
+                l.description, l.qty, l.uom, l.factor, l.unit_price, l.discount_percent,
+                l.discount_amount,
                 CASE WHEN l.item_id IS NULL THEN l.qty
                      ELSE COALESCE(p.qty_delivered - p.qty_returned, 0) END AS qty_delivered,
                 COALESCE(p.qty_invoiced - p.qty_credited, 0) AS qty_invoiced,
@@ -455,7 +471,9 @@ async fn reserve_lines<'l>(
                 line_id: l.id,
                 item_id: l.item_id?,
                 warehouse_id: l.warehouse_id?,
-                qty: l.qty - l.qty_delivered,
+                // Reserved in stock units; a line's own unit converts
+                // exactly, as it did when the order was saved.
+                qty: (l.qty - l.qty_delivered) * l.factor,
             })
         })
         .collect();
@@ -788,7 +806,7 @@ pub async fn open_demand(
 ) -> Result<Vec<(Uuid, Uuid, Decimal)>> {
     Ok(sqlx::query_as(
         "SELECT l.item_id, l.warehouse_id,
-                sum(GREATEST(l.qty - COALESCE(p.qty_delivered - p.qty_returned, 0), 0))
+                sum(GREATEST(l.qty - COALESCE(p.qty_delivered - p.qty_returned, 0), 0) * l.factor)
          FROM sales_order_line l
          JOIN document d ON d.id = l.document_id
          LEFT JOIN sales_order_progress p ON p.line_id = l.id
@@ -929,6 +947,9 @@ struct OrderLineInput {
     account_id: Option<Uuid>,
     description: Option<String>,
     qty: Decimal,
+    /// The unit of the quantity and price: one of the item's sales units,
+    /// or its stock unit when omitted.
+    uom: Option<String>,
     /// Left out on an item line: what the price lists propose.
     unit_price: Option<Decimal>,
     discount_percent: Option<Decimal>,
@@ -1027,6 +1048,15 @@ impl DocumentHandler for SalesOrder {
                         .quantity()
                         .unit_of("item_id", "uom")
                         .required(),
+                    FieldMeta::new("uom", "Unit", FieldType::Text).help(
+                        "One of the item's sales units (item_uom), or its stock unit when left \
+                         out; the quantity and the price are per this unit. A line that is not \
+                         stock may name any unit.",
+                    ),
+                    FieldMeta::new("factor", "Stock units in one", FieldType::Decimal)
+                        .quantity()
+                        .readonly()
+                        .help("How many of the item's stock unit one of the line's unit is."),
                     FieldMeta::new("unit_price", "Unit price", FieldType::Decimal)
                         .unit_price()
                         .currency_of_document("currency")
@@ -1108,6 +1138,33 @@ impl DocumentHandler for SalesOrder {
         // a price takes it, and its discount unless it gives one.
         let base = company::base_currency(&mut *ctx.conn, doc.company_id).await?;
         let order_currency = body.currency.clone().unwrap_or_else(|| base.clone());
+        // Each stock line's unit, and how many stock units one of it is.
+        let mut units: Vec<(Option<String>, Decimal)> = vec![];
+        for (index, line) in body.lines.iter().enumerate() {
+            units.push(match line.item_id {
+                Some(item) => {
+                    let (uom, factor) = erpcraft_stock::units::unit(
+                        &mut *ctx.conn,
+                        item,
+                        line.uom.as_deref(),
+                        erpcraft_stock::units::Purpose::Sales,
+                    )
+                    .await
+                    .map_err(|e| e.with_line("lines", index + 1))?;
+                    erpcraft_stock::units::to_stock_or(line.qty, factor, &uom)
+                        .map_err(|e| e.with_line("lines", index + 1))?;
+                    (Some(uom), factor)
+                }
+                None => (
+                    line.uom
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|u| !u.is_empty())
+                        .map(str::to_owned),
+                    Decimal::ONE,
+                ),
+            });
+        }
         let mut proposals = vec![];
         for (index, line) in body.lines.iter_mut().enumerate() {
             let proposal = match line.item_id {
@@ -1119,12 +1176,14 @@ impl DocumentHandler for SalesOrder {
                             side: erpcraft_pricing::Side::Sales,
                             party_id: body.customer_id,
                             item_id: item,
-                            qty: line.qty,
+                            // Lists are per stock unit, breaks too.
+                            qty: line.qty * units[index].1,
                             currency: order_currency.clone(),
                             date: doc.doc_date,
                         },
                     )
                     .await?
+                    .map(|p| p.per(units[index].1))
                 }
                 None => None,
             };
@@ -1240,15 +1299,16 @@ impl DocumentHandler for SalesOrder {
             sqlx::query(
                 "INSERT INTO sales_order_line (id, document_id, line_no, item_id, warehouse_id, qty,
                     unit_price, charge_id, account_id, description, discount_percent,
-                    discount_amount)
+                    discount_amount, uom, factor)
                  SELECT r.id, $1, r.line_no, r.item_id, r.warehouse_id, r.qty, r.unit_price,
                     r.charge_id, r.account_id, NULLIF(trim(r.description), ''),
-                    r.discount_percent, r.discount_amount
+                    r.discount_percent, r.discount_amount, r.uom, r.factor
                  FROM unnest($2::uuid[], $3::int4[], $4::uuid[], $5::uuid[], $6::numeric[],
                              $7::numeric[], $8::uuid[], $9::uuid[], $10::text[], $11::numeric[],
-                             $12::numeric[])
+                             $12::numeric[], $13::text[], $14::numeric[])
                     AS r (id, line_no, item_id, warehouse_id, qty, unit_price, charge_id,
-                          account_id, description, discount_percent, discount_amount)",
+                          account_id, description, discount_percent, discount_amount, uom,
+                          factor)",
             )
             .bind(doc.id)
             .bind(&line_ids)
@@ -1262,6 +1322,8 @@ impl DocumentHandler for SalesOrder {
             .bind(body.lines.iter().map(|line| line.description.clone()).collect::<Vec<_>>())
             .bind(body.lines.iter().map(|line| line.discount_percent).collect::<Vec<_>>())
             .bind(body.lines.iter().map(|line| line.discount_amount).collect::<Vec<_>>())
+            .bind(units.iter().map(|(uom, _)| uom.clone()).collect::<Vec<_>>())
+            .bind(units.iter().map(|(_, factor)| *factor).collect::<Vec<_>>())
             .execute(&mut *ctx.conn)
             .await?;
         }
@@ -1886,11 +1948,12 @@ impl Command for PostDelivery {
                     why,
                 ));
             }
+            let stock_qty = ordered.in_stock_units(line.qty, line.line_no)?;
             let lots = lots::resolve(
                 &mut *ctx.conn,
                 doc.company_id,
                 item_id,
-                -line.qty,
+                -stock_qty,
                 named.get(&line.id).map_or(&[][..], Vec::as_slice),
                 lots::At {
                     collection: "lines",
@@ -1902,7 +1965,7 @@ impl Command for PostDelivery {
             movements.push(StockLine {
                 item_id,
                 warehouse_id,
-                qty: -line.qty,
+                qty: -stock_qty,
                 cost: None,
                 source_line_id: Some(line.id),
                 lots,
@@ -1915,9 +1978,11 @@ impl Command for PostDelivery {
             .await?;
         let mut taking: BTreeMap<(Uuid, Uuid), Decimal> = BTreeMap::new();
         for (line, movement) in lines.iter().zip(&movements) {
+            // In stock units, as stock and reservations are.
+            let qty = -movement.qty;
             let key = (movement.item_id, movement.warehouse_id);
             let taken = taking.entry(key).or_default();
-            *taken += line.qty;
+            *taken += qty;
             let (on_hand, _) =
                 erpcraft_stock::on_hand(&mut *ctx.conn, movement.item_id, movement.warehouse_id)
                     .await?;
@@ -1928,15 +1993,15 @@ impl Command for PostDelivery {
                 order.id,
             )
             .await?;
-            let free = (on_hand - others - (*taken - line.qty)).max(Decimal::ZERO);
-            if line.qty <= free {
+            let free = (on_hand - others - (*taken - qty)).max(Decimal::ZERO);
+            if qty <= free {
                 continue;
             }
             let code: String = sqlx::query_scalar("SELECT code FROM item WHERE id = $1")
                 .bind(movement.item_id)
                 .fetch_one(&mut *ctx.conn)
                 .await?;
-            let facts = policy::reserved_elsewhere(line.qty, free, &code);
+            let facts = policy::reserved_elsewhere(qty, free, &code);
             if let Decision::Refused(refusal) = elsewhere.evaluate(facts.clone())? {
                 return Err(Error::line(
                     "lines",

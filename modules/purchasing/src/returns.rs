@@ -402,11 +402,12 @@ impl Command for PostReturn {
                 )
                 .await?,
             );
+            let stock_qty = ordered.in_stock_units(line.qty, line.line_no)?;
             let lots = lots::resolve(
                 &mut *ctx.conn,
                 doc.company_id,
                 item_id,
-                -line.qty,
+                -stock_qty,
                 named.get(&line.id).map_or(&[][..], Vec::as_slice),
                 lots::At {
                     collection: "lines",
@@ -417,7 +418,7 @@ impl Command for PostReturn {
             movements.push(StockLine {
                 item_id,
                 warehouse_id,
-                qty: -line.qty,
+                qty: -stock_qty,
                 cost: None,
                 source_line_id: Some(line.id),
                 lots,
@@ -633,7 +634,7 @@ impl Command for DraftReturn {
             let sources = stock_lines_of(&mut *ctx.conn, line.id).await?;
             let moved = lots::net_by_source(&mut *ctx.conn, &sources).await?;
             rows.push(json!({ "order_line_id": line.id, "qty": line.qty_received,
-                              "lots": lots::take(&moved, line.qty_received) }));
+                              "lots": lots::take(&moved, line.qty_received * line.factor) }));
         }
         if rows.is_empty() {
             return Err(Error::validation(
@@ -1829,6 +1830,8 @@ mod tests {
             account_id: None,
             description: None,
             qty: Decimal::from(10),
+            uom: None,
+            factor: Decimal::ONE,
             unit_price: Decimal::ZERO,
             discount_percent: None,
             discount_amount: None,

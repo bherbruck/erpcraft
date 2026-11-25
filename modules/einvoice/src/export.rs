@@ -344,7 +344,7 @@ pub async fn build(
         let what: Option<(String, Option<String>, Option<String>)> = if credit {
             sqlx::query_as(
                 "SELECT COALESCE(i.description, o.description, it.name, ch.name, a.name, ''),
-                        it.code, it.uom
+                        it.code, COALESCE(o.uom, it.uom)
                  FROM sales_credit_note_line c
                  JOIN sales_invoice_line i ON i.id = c.invoice_line_id
                  LEFT JOIN sales_order_line o ON o.id = i.order_line_id
@@ -356,7 +356,7 @@ pub async fn build(
         } else {
             sqlx::query_as(
                 "SELECT COALESCE(i.description, o.description, it.name, ch.name, a.name, ''),
-                        it.code, it.uom
+                        it.code, COALESCE(o.uom, it.uom)
                  FROM sales_invoice_line i
                  LEFT JOIN sales_order_line o ON o.id = i.order_line_id
                  LEFT JOIN item it ON it.id = o.item_id

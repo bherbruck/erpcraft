@@ -20,7 +20,7 @@
       <td class="num">{{ line.line_no }}</td>
       <td>{{ line.order_line_id | ref }}</td>
       <td class="num">{{ line.qty | decimal }}</td>
-      <td>{{ refs[ordered.item_id].record.uom }}</td>
+      <td>{{ ordered.uom or refs[ordered.item_id].record.uom }}</td>
       <td class="short">{{ line.lots | lots }}</td>
     </tr>
   {%- endfor %}

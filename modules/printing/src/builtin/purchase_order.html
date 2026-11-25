@@ -20,7 +20,7 @@
       <td>{% if line.item_id %}{{ line.item_id | ref }}{% elif line.charge_id %}{{ line.description or (line.charge_id | ref) }}{% else %}{{ line.description or (line.account_id | ref) }}{% endif %}</td>
       <td>{{ line.warehouse_id | ref }}</td>
       <td class="num">{{ line.qty | decimal }}</td>
-      <td>{% if line.item_id %}{{ refs[line.item_id].record.uom }}{% endif %}</td>
+      <td>{% if line.uom %}{{ line.uom }}{% elif line.item_id %}{{ refs[line.item_id].record.uom }}{% endif %}</td>
       <td class="num">{{ line.unit_price | price }}</td>
       <td class="num">{% if line.discount_percent %}{{ line.discount_percent | decimal }} %{% endif %}{% if line.discount_amount %} {{ line.discount_amount | money }}{% endif %}</td>
       <td class="num">{% if line.net_amount is defined and line.net_amount is not none %}{{ line.net_amount | money }}{% else %}{{ line.qty | mul(line.unit_price) | money }}{% endif %}</td>
