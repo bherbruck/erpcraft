@@ -886,6 +886,7 @@ async fn policy_points_are_described_for_interfaces_and_agents() {
             "bank_statement.amount_difference",
             CUSTOMER_INACTIVE,
             "document.send",
+            "dunning.waive",
             "edi.auto_approve",
             "edi.auto_draft",
             "edi.send",

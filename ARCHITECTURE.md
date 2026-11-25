@@ -56,6 +56,8 @@ modules/
   einvoice          electronic invoices after EN 16931: XRechnung (UBL, CII), ZUGFeRD / Factur-X XML
   planning          stock availability; reorder rules, suggestions, drafted purchase and production orders
   edi               X12 and EDIFACT read and written; partners, the interchange log, 850s received and drafted, 855, 856 and 810 sent; see Electronic data interchange
+  payment_runs      vendors paid in a batch; SEPA and NACHA files, remittance advice
+  collections       customer statements; dunning levels, runs and letters
 apps/
   server            the `erpcraft` binary
 ```
@@ -475,6 +477,62 @@ The module `payment_runs` (`modules/payment_runs`) pays what is due to vendors i
   - Canadian **CPA-005 is deferred**: it is a fixed-width standard whose originator fields and record layouts differ from bank to bank (each publishes its own variant), so a file one bank takes another refuses; Canadian banks increasingly take ISO 20022 pain.001 for EFT, which the SEPA writer is the start of. It will come with a bank's variant to test against.
 - **Remittance advice.** `payment_run.send_remittances` sends each payment of a posted run to its vendor with `document.send` (mail module): the payment's PDF lists the invoices it pays. Vendors without an email address on record are listed, not sent. `document.parties` names a payment's party, so the address is the vendor's contact. Each message is `document.send`'s own: it takes the right `payment:send` of whoever sends the advice, and the company's `document.send` policy decides as for any document (a posted payment to the vendor's own address on record is allowed by default).
 - An EDI 820 remittance can be built from a posted run later (EDI phase 7): run, payments, allocations and the invoices' vendor references are all readable.
+
+### Collections: statements and dunning
+
+The module `collections` (`modules/collections`, migration 1) is where a company chases what customers owe. It reads the open items ledger and posts only through the general ledger, the tax ledger and the open items ledger. Like a payment run, it does its work in documents that a person reviews, and it sends them with `document.send`.
+
+**Customer statements.** A `customer_statement` (`CS-`) is a document about one customer and one currency (the accounting currency unless given). It covers a period: `from_date` to the statement's date.
+- Saving a draft works the statement out from the ledgers, and `customer_statement.issue` works it out again and locks it, so an issued statement says what it said when it was sent.
+- The statement holds:
+  - the opening balance: what was open the day before `from_date`, from items dated before then less the settlements posted before then;
+  - the activity in the period, each with its document's type and number: items opened (invoices and credits) and settlements (payments, credits applied, items called off by a reversal), with a running balance;
+  - the closing balance, which equals the opening balance plus the activity;
+  - the items still open on the statement's date, with the days each is past due;
+  - the ageing of those items into current, 1-30, 31-60, 61-90 and over 90 days past due, by each item's due date (else its date; an item due in parts is aged by its last part).
+- Amounts are in the statement's currency. Working one out takes `open_item:read` in the company.
+- An issued statement prints through the printing module's generic template (or one of the company's for `customer_statement`). It is sent with `document.send` to the customer's address on record, which the default policy allows for a locked document. `customer_statement.issue_all` drafts and issues a statement for every customer with something open or some activity in a period, so a month's statements are one command.
+
+**Dunning levels** (`dunning_level`, per company):
+- a `level` from 1, its `name`, and the `days_overdue` from which an item reaches it;
+- a `fee` per letter, posted to `fee_account_id`. With `fee_taxable` the fee is taxed with the code the company's tax rules propose for the customer and its address: the customer's rule, its certificate, or the place's code (see [Tax by destination](#tax-by-destination)), else the default rule;
+- an annual `interest_rate`, charged on what is overdue for each day since the item fell due (or since interest was last charged on it), on a 365-day year, to `interest_account_id`. Interest is not taxed;
+- `pay_within_days`, the due date of what the letter charges;
+- the letter: `subject`, `text` (printed on the letter and sent as the message), and `print_template_id`, a template for `dunning_letter`.
+
+A fee or interest needs its account, which must be one a plain line may post to.
+
+**Holds and payment plans.**
+- `dunning_hold` stops a customer, or one open item, from being dunned, with a reason, until it is made inactive.
+- `payment_plan` records that a customer pays what it owes by agreement from `starts_on` to `ends_on`: such a customer is skipped while its plan is active.
+- A hold or a plan made after a run was proposed still stops it: posting refuses a run that would dun a held or planned customer or item, until the line or letter is skipped.
+
+**A dunning run** (`dunning_run`, `DUN-`), per company, dated the day it duns.
+- `dunning_run.propose` fills a draft with each overdue receivable item of a customer and the level it reaches:
+  - the highest level whose `days_overdue` it has reached, if that is above the level the item last had;
+  - so an item climbs as it gets older, and is not dunned again at a level it has had.
+- A customer is left out when it is held, on a plan, or owes nothing or less once its credits are counted. An item is left out when it is held or on another run that is not posted or cancelled.
+- The run has two collections:
+  - `lines`, one per item: the level, `proposed_interest` and the `interest` to charge;
+  - `letters`, one per customer: its level (the highest of its lines), `proposed_fee` and the `fee`.
+- A person reviews it: lowers or clears a fee or an interest, or sets `skip` on a line or a letter.
+
+**Posting a run** (`dunning_run.post`, the right `dunning_run:post`):
+- **Waiving.** The policy `dunning.waive` is asked for each letter whose fee or interest is below what was proposed. Facts: `fee_waived`, `interest_waived`, `level`, `customer`. By default it refuses, so whoever may waive is configured, for example `allow when user.department == 'credit'`, or approval through the approval machinery.
+- **Holds** and plans are checked again.
+- **The letters.** Each customer letter that is not skipped becomes a `dunning_letter` (`DL-`, linked to the run), posted on the run's date:
+  - the fee (and its tax) and the interest go to their accounts, against the receivable account of the company's sales settings;
+  - they open one receivable item for the customer, due `pay_within_days` after the run;
+  - the letter keeps the customer's parties first, so its tax entries know the place.
+- **Level history.** Each dunned item gets a row in `dunning_history`: the item, the letter, the level, the date, and the interest with the days it covers. An item's level and the day interest was last charged to are read from it; the generic list of `dunning_history` shows an item's history.
+- **All or nothing.** A letter that charges nothing is a reminder with no posting.
+- **Sending.** `dunning_run.send` sends each letter of a posted run with `document.send`, with the template, subject and text of its level, to the customer's email on record. A customer without one is listed as skipped. Each message takes `dunning_letter:send` of the sender and the company's `document.send` policy.
+
+Limits:
+- Fees and interest are in the accounting currency; interest is worked out on what an item is carried at in it.
+- An item at the last level is not dunned again. A letter lists the items that reached a new level, not every overdue item of the customer.
+- A posted letter is not reversed by this module: a fee or interest given back is a customer credit (`sales_credit`), applied to the letter's item.
+- Statements of several currencies are one statement per currency.
 
 ### Fixed assets
 

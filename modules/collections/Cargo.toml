@@ -1,0 +1,19 @@
+[package]
+name = "erpcraft-collections"
+description = "erpcraft collections: customer statements and dunning"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+erpcraft-gl.workspace = true
+erpcraft-kernel.workspace = true
+erpcraft-openitems.workspace = true
+erpcraft-party.workspace = true
+erpcraft-tax.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
