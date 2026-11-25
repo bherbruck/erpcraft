@@ -41,6 +41,7 @@ pub fn modules(pool: PgPool) -> KernelBuilder {
         .module(erpcraft_mail::MailModule::from_env())
         .module(erpcraft_payment_runs::PaymentRunsModule)
         .module(erpcraft_collections::CollectionsModule)
+        .module(erpcraft_budgets::BudgetsModule)
         .module(erpcraft_edi::EdiModule)
 }
 

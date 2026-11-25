@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+mod cash_flow;
 mod dimensions;
 mod reports;
 mod rules;
@@ -95,6 +96,11 @@ impl Module for GlModule {
                 name: "period_split",
                 sql: include_str!("../migrations/0011_period_split.sql"),
             },
+            Migration {
+                version: 12,
+                name: "cash_flow",
+                sql: include_str!("../migrations/0012_cash_flow.sql"),
+            },
         ]
     }
 
@@ -137,6 +143,23 @@ impl Module for GlModule {
                     .help(
                         "For a bank account that holds another currency than the company's: \
                          payments through it are in this currency.",
+                    ),
+                )
+                .field(
+                    FieldMeta::new(
+                        "cash_flow",
+                        "Cash flow",
+                        FieldType::labelled(&[
+                            ("cash", "Cash and cash equivalents"),
+                            ("operating", "Operating"),
+                            ("investing", "Investing"),
+                            ("financing", "Financing"),
+                        ]),
+                    )
+                    .help(
+                        "Where the account's changes show in the cash flow statement. Empty: \
+                         a bank or cash account is cash, the cost of a class of fixed assets \
+                         investing, other assets and liabilities operating, equity financing.",
                     ),
                 )
                 .field(FieldMeta::new("active", "Active", FieldType::Bool))
@@ -300,6 +323,7 @@ impl Module for GlModule {
             command(reports::BalanceSheet),
             command(reports::IncomeStatement),
             command(reports::AccountLedger),
+            command(cash_flow::CashFlow),
             command(SetPeriodStatus {
                 name: "fiscal_period.close",
                 description: "Close a fiscal period. Nothing can be posted into a closed period.",

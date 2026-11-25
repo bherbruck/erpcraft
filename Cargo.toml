@@ -38,6 +38,7 @@ erpcraft-intercompany = { path = "modules/intercompany" }
 erpcraft-payment-runs = { path = "modules/payment_runs" }
 erpcraft-collections = { path = "modules/collections" }
 erpcraft-pricing = { path = "crates/erpcraft-pricing" }
+erpcraft-budgets = { path = "modules/budgets" }
 erpcraft-mail = { path = "modules/mail" }
 erpcraft-edi = { path = "modules/edi" }
 

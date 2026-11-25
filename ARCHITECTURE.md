@@ -59,6 +59,7 @@ modules/
   edi               X12 and EDIFACT read and written; partners, the interchange log, 850s received and drafted, 855, 856 and 810 sent; see Electronic data interchange
   payment_runs      vendors paid in a batch; SEPA and NACHA files, remittance advice
   collections       customer statements; dunning levels, runs and letters
+  budgets           budgets by account, month and dimension; budget against actual
 apps/
   server            the `erpcraft` binary
 ```
@@ -824,6 +825,74 @@ Companies in one database can sell to each other. Each company keeps its own boo
 - **Once, and visibly.** `intercompany_document` keeps one row per source document: the mirror drafted, or why it was refused (the buyer's policy, a missing right, goods without an order), so a refusal is not retried every hour but shown, and `intercompany.mirror` can be run again by hand once it is fixed. Lines are matched in `intercompany_line`. The two documents are linked (kind `intercompany`): the kernel lets a link join two companies' documents only for that kind, and each reader sees the other side only if they may read it.
 - **Balances.** `intercompany.balances` (report "Intercompany balances"), as of a day: for each rule and currency, what the seller has open on the buyer's customer and what the buyer has open on the seller's vendor, in that currency, with the difference, and each side's value in its own accounting currency; and the documents on one side whose mirror is not posted yet, which usually explain the difference. It takes the right to read open items in both companies, and leaves out a pair the reader cannot see whole.
 - **Not built:** credit notes, returns, deliveries and receipts are not mirrored; a buying company that is the seller of another rule is fine, but chains (A to B to C) are mirrored one step at a time; consolidation and elimination (see Contracts for later).
+
+### Budgets
+
+The module `budgets` (`modules/budgets`, migration 1) keeps what a company plans to earn and spend, month by month, beside what the general ledger says it did.
+
+**A budget** (`budget`, per company) has:
+- a `code` and `name`;
+- the year it covers, `starts_on` (the first of a month) to `ends_on` (the last day of a month), at most 24 months, usually the fiscal year;
+- a `version`: `original`, `forecast`, or any other name, one of each per company and start;
+- optionally the `dimension_id` it is kept by, such as a site or a cost center.
+
+Its lines (`budget_line`) are an account, a month (the first day of it), a value of the budget's dimension or none, and an `amount`:
+- the amount is in the account's natural direction, a cost as a positive expense and a sale as positive income, in the accounting currency;
+- there is one line per account, month and value;
+- an account may be of any type, though a budget is usually of income and expense accounts.
+
+`locked` stops changes to the budget and its lines; an approved original stays as it was approved, and changes go into a forecast.
+
+**Filling a budget.**
+- `budget.import` (`id`, `csv`, `replace`) reads lines in either of two layouts:
+  - long: `account`, `month` (`YYYY-MM`), `amount`, and optionally `dimension_value` (its code);
+  - wide: `account`, optionally `dimension_value`, and a column per month headed `YYYY-MM`.
+  Each account and value is named by its code. A month outside the budget, an unknown code, a group account or a value of another dimension is refused, naming the line. `replace` removes the budget's lines first; otherwise the lines given replace those of the same account, month and value.
+- `budget.copy_actuals` (`id`, `percent`, optionally `account_types`, by default income and expense, and `from`, by default a year before the budget's start) fills the budget with what the ledger posted in the same months a year earlier, per account (and per value of the budget's dimension), changed by `percent` (+5 for five percent more) and rounded to the currency's cents. It replaces the lines of those accounts. The entries of a year-end close do not count.
+
+**Budget against actual.** `budget.report` (`id`, optionally `from`, `to`, `by_month`, `dimension_value_id`) gives, per account (and per dimension value, and month with `by_month`):
+- the budget, the actual (the ledger's entries in the range, in the account's natural direction, closing entries left out), the variance (actual minus budget) and the variance as a percent of the budget (none when the budget is 0);
+- whether the variance is favourable: more income, or less cost, than planned;
+- totals for income, expense and the result (income minus expense) per month and for the range.
+
+The actual of a dimension value is what the entries carrying it posted, and entries without a value are their own row, as in the other reports. It takes `budget:read` and `gl_entry:read` in the company.
+
+Limits:
+- Budgets are in the accounting currency.
+- There is no budget check on purchases: a budget reports, it does not stop anything.
+- Lines are per month; a week or a quarter is entered as its months.
+
+### Cash flow statement
+
+`gl.cash_flow` (`company_id`, `from`, `to`, optionally `by_month` and `compare`) is the statement of cash flows by the indirect method, worked out from the general ledger.
+
+**Which flow an account is part of.** An account's `cash_flow` (gl migration 12) is `cash`, `operating`, `investing` or `financing`. When it is not set:
+- a bank or cash account is `cash`;
+- the account of an `asset_cost` account rule (the cost of a class of fixed assets) is `investing`;
+- other assets and liabilities are `operating`;
+- equity is `financing`.
+
+Income and expense accounts have none: they are the net income. The classification is the company's to correct, for example a loan as `financing`.
+
+**The statement.** For each period:
+- **operating:** the net income (income minus expense, closing entries left out), then for each operating account the change in its balance with the sign that cash moves (an increase in receivables lowers cash, an increase in payables or in accumulated depreciation raises it);
+- **investing:** the change of each investing account, the same way;
+- **financing:** the change of each financing account, the same way;
+- the total of each section;
+- the net change in cash;
+- the cash at the start (the balance of the cash accounts the day before) and at the end.
+
+Every posting balances. So the net income plus the changes of every account that is not cash is the change in cash, whatever the classification, and `reconciles` says that the start plus the net change is the end. The entries of a year-end close are left out throughout, since they only move the result into equity.
+
+**Periods.**
+- `by_month` gives a column per month of the range.
+- `compare` adds the same range a year earlier, as columns of its own.
+- Each row has an amount per column. Each column has its `from` and `to`, its totals, its cash at start and end, and `reconciles`.
+
+Limits:
+- The direct method (receipts and payments by kind) is not built.
+- Cash equivalents are what is classified `cash`.
+- Exchange differences on cash in foreign currency are part of operating changes, not shown on their own.
 
 ### Consolidation
 

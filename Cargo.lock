@@ -901,6 +901,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "erpcraft-budgets"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "csv",
+ "erpcraft-kernel",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
 name = "erpcraft-collections"
 version = "0.1.0"
 dependencies = [
@@ -1251,6 +1264,7 @@ dependencies = [
  "erpcraft-assets",
  "erpcraft-auth",
  "erpcraft-banking",
+ "erpcraft-budgets",
  "erpcraft-collections",
  "erpcraft-db",
  "erpcraft-edi",

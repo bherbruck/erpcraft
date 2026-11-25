@@ -35,6 +35,7 @@ erpcraft-planning.workspace = true
 erpcraft-intercompany.workspace = true
 erpcraft-payment-runs.workspace = true
 erpcraft-collections.workspace = true
+erpcraft-budgets.workspace = true
 erpcraft-mail.workspace = true
 erpcraft-edi.workspace = true
 erpcraft-stock.workspace = true
