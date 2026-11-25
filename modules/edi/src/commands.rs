@@ -84,6 +84,8 @@ impl Command for Receive {
         .label("Receive")
         .resource("edi_interchange")
         .target(false)
+        // The file is stored once, in edi_interchange; the audit log keeps its hash.
+        .redact(&["content", "content_base64"])
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: ReceiveInput) -> Result<ReceiveOutput> {

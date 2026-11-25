@@ -122,6 +122,8 @@ pub struct CommandSpec {
     /// Input or output holds secrets: neither is written to the audit log,
     /// the outbox or the idempotency table.
     pub sensitive: bool,
+    /// See [`CommandSpec::redact`].
+    pub redact: &'static [&'static str],
     /// See [`CommandSpec::label`].
     pub label: Option<&'static str>,
     /// See [`CommandSpec::resource`].
@@ -147,6 +149,7 @@ impl CommandSpec {
             permission: None,
             read_only: false,
             sensitive: false,
+            redact: &[],
             label: None,
             resource: None,
             target: None,
@@ -171,6 +174,16 @@ impl CommandSpec {
 
     pub const fn sensitive(mut self) -> Self {
         self.sensitive = true;
+        self
+    }
+
+    /// Top-level input fields too large to keep, such as a file's content:
+    /// the audit log and the outbox hold `{sha256, bytes}` of each instead
+    /// of its value. Unlike [`CommandSpec::sensitive`], the rest of the
+    /// input is kept, and the idempotency key still compares the whole
+    /// input, so different contents are different requests.
+    pub const fn redact(mut self, fields: &'static [&'static str]) -> Self {
+        self.redact = fields;
         self
     }
 
@@ -279,6 +292,9 @@ pub struct CommandMeta {
     pub read_only: bool,
     #[serde(skip)]
     pub sensitive: bool,
+    /// See [`CommandSpec::redact`].
+    #[serde(skip)]
+    pub redact: &'static [&'static str],
     /// JSON Schema of the input.
     pub input_schema: Value,
     /// JSON Schema of the output.
@@ -393,6 +409,7 @@ impl<C: Command> DynCommand for Erased<C> {
             permission: spec.permission.map(Into::into),
             read_only: spec.read_only,
             sensitive: spec.sensitive,
+            redact: spec.redact,
             input_schema: titled(schema(schemars::schema_for!(C::Input))),
             // As the output is written, not as it would be read: a decimal
             // is always a string on the way out.
@@ -488,7 +505,7 @@ pub async fn execute(
     // A refused or failed attempt to change something is part of the
     // record. A preview attempts nothing.
     if let (Err(error), false) = (&result, preview) {
-        let recorded_input = (!meta.sensitive).then_some(&input);
+        let recorded_input = recorded(meta, &input);
         let message = if meta.sensitive {
             unrevealing(error).to_owned()
         } else {
@@ -498,7 +515,7 @@ pub async fn execute(
             kernel.pool(),
             actor.user_id,
             name,
-            recorded_input,
+            recorded_input.as_ref(),
             error.code(),
             &message,
             &touched,
@@ -527,6 +544,36 @@ fn unrevealing(error: &Error) -> &'static str {
         Error::Unauthorized => "not authenticated",
         Error::Internal(_) => "internal error",
     }
+}
+
+/// The input as the audit log and the outbox keep it: nothing for a
+/// sensitive command, and `{sha256, bytes}` in place of each field it
+/// redacts (see [`CommandSpec::redact`]).
+pub(crate) fn recorded(meta: &CommandMeta, input: &Value) -> Option<Value> {
+    if meta.sensitive {
+        return None;
+    }
+    let Value::Object(map) = input else {
+        return Some(input.clone());
+    };
+    let kept = map.iter().map(|(key, value)| {
+        let value = match value {
+            Value::Null => Value::Null,
+            _ if meta.redact.contains(&key.as_str()) => {
+                let text = match value {
+                    Value::String(s) => std::borrow::Cow::Borrowed(s.as_str()),
+                    other => std::borrow::Cow::Owned(other.to_string()),
+                };
+                json!({
+                    "sha256": format!("{:x}", Sha256::digest(text.as_bytes())),
+                    "bytes": text.len(),
+                })
+            }
+            _ => value.clone(),
+        };
+        (key.clone(), value)
+    });
+    Some(Value::Object(kept.collect()))
 }
 
 /// Write the audit record of a failed command. The command's transaction
@@ -720,22 +767,23 @@ async fn run_action(
         return Ok(output);
     }
 
-    let recorded_input = (!meta.sensitive).then_some(input);
+    let recorded_input = recorded(meta, input);
     let audit_id = new_id();
     sqlx::query("INSERT INTO audit_log (id, user_id, command, input) VALUES ($1, $2, $3, $4)")
         .bind(audit_id)
         .bind(actor.user_id)
         .bind(name)
-        .bind(recorded_input)
+        .bind(&recorded_input)
         .execute(&mut *tx)
         .await?;
     record_subjects(&mut tx, audit_id, touched).await?;
 
     if changed {
-        let payload = if meta.sensitive {
-            json!({"command": name, "user_id": actor.user_id})
-        } else {
-            json!({"command": name, "user_id": actor.user_id, "input": input, "output": output})
+        let payload = match &recorded_input {
+            None => json!({"command": name, "user_id": actor.user_id}),
+            Some(input) => {
+                json!({"command": name, "user_id": actor.user_id, "input": input, "output": output})
+            }
         };
         sqlx::query("INSERT INTO outbox_event (id, topic, payload) VALUES ($1, $2, $3)")
             .bind(new_id())

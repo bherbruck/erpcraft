@@ -1823,3 +1823,72 @@ async fn one_order_number_is_drafted_once_even_at_once() {
     assert_eq!(t.count("SELECT count(*) FROM edi_document").await, 1);
     t.stop().await;
 }
+
+/// edi.receive redacts the file: the audit log and the outbox keep its
+/// SHA-256 and size, never the bytes, while an idempotency key still tells
+/// one file from another.
+#[tokio::test]
+async fn the_audit_log_keeps_a_hash_of_the_file_not_the_file() {
+    use sha2::{Digest, Sha256};
+    let t = TestApp::start().await;
+    let _f = setup(&t).await;
+    let first = renumbered(PO850, 9101);
+    let send = |content: String, key: &'static str| {
+        let t = &t;
+        async move {
+            t.send(
+                "POST",
+                "/api/commands/edi.receive",
+                Some(&t.admin),
+                Some(json!({ "content": content })),
+                &[("idempotency-key", key)],
+            )
+            .await
+        }
+    };
+    let (status, body) = send(first.clone(), "edi-file-1").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (input,): (Value,) = sqlx::query_as(
+        "SELECT input FROM audit_log WHERE command = 'edi.receive' AND outcome = 'ok'",
+    )
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        input,
+        json!({ "content": {
+            "sha256": format!("{:x}", Sha256::digest(first.as_bytes())),
+            "bytes": first.len(),
+        } })
+    );
+    let leaked = |sql: &'static str| {
+        let t = &t;
+        async move {
+            let rows: Vec<(String,)> = sqlx::query_as(sql).fetch_all(&t.pool).await.unwrap();
+            rows.iter().any(|(text,)| text.contains("ISA*"))
+        }
+    };
+    assert!(!leaked("SELECT input::text FROM audit_log WHERE input IS NOT NULL").await);
+    assert!(!leaked("SELECT payload::text FROM outbox_event").await);
+    // The same key with the same file returns the first result; with
+    // another file it is refused, though both audit as a hash.
+    let (status, again) = send(first.clone(), "edi-file-1").await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["id"], body["id"]);
+    let (status, other) = send(renumbered(PO850, 9102), "edi-file-1").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{other}");
+    // A refused file is redacted too.
+    let (status, _) = t
+        .command(&t.admin, "edi.receive", json!({ "content_base64": "not base64!" }))
+        .await;
+    assert!(status.is_client_error());
+    let (input,): (Value,) = sqlx::query_as(
+        "SELECT input FROM audit_log WHERE command = 'edi.receive' AND outcome = 'error'
+         ORDER BY at DESC LIMIT 1",
+    )
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(input["content_base64"]["bytes"], 11, "{input}");
+    t.stop().await;
+}

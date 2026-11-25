@@ -79,6 +79,7 @@ The executor gives every command:
 - an idempotency key (optional): the same key and input return the first result, the same key with different input is refused;
 - a preview mode: run, return the outcome, roll back. A preview reserves nothing; the real run validates again;
 - an audit record of who ran what with which input, and which records it touched. A command that fails or is refused is recorded too, with the reason. For a command marked sensitive (it handles secrets) neither the input nor anything made from it is recorded: a failure keeps only the error code and a fixed sentence for that code ("the input was refused"), because any error message may quote what was sent, such as a secret pasted into the wrong field. The caller still gets the full message;
+  A command may instead redact named input fields too large to keep, such as a file's content (`CommandSpec::redact`; `edi.receive` redacts `content` and `content_base64`): the audit log and the outbox hold `{"sha256", "bytes"}` of each in place of its value, and the rest of the input as given. An approval request keeps the whole input, as it must to run it. The idempotency key still compares the whole input, so a different file under the same key is refused;
 - an outbox event, written in the same transaction, for delivery after commit.
 
 Queries are commands marked read-only. A module publishes its reads (`gl.trial_balance`) the same way as its writes, so other modules and reporting tools do not need to know its tables.

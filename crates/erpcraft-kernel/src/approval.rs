@@ -380,7 +380,10 @@ pub(crate) async fn request(
     .bind(audit_id)
     .bind(actor.user_id)
     .bind(command)
-    .bind(input)
+    .bind(crate::command::recorded(
+        &kernel.registry().command(command)?.meta,
+        input,
+    ))
     .bind(format!("sent for approval ({})", draft.point))
     .execute(&mut *tx)
     .await?;
@@ -927,7 +930,7 @@ async fn run_approved(ctx: &mut Ctx<'_>, request: &ApprovalRequest) -> Result<()
             .bind(audit_id)
             .bind(request.requested_by)
             .bind(&request.command)
-            .bind((!entry.meta.sensitive).then_some(&request.input))
+            .bind(crate::command::recorded(&entry.meta, &request.input))
             .execute(&mut *ctx.conn)
             .await?;
             let mut subjects = touched.clone();
@@ -936,13 +939,12 @@ async fn run_approved(ctx: &mut Ctx<'_>, request: &ApprovalRequest) -> Result<()
             for (resource, id) in &touched {
                 ctx.touch(resource, *id);
             }
-            let payload = if entry.meta.sensitive {
-                json!({ "command": request.command, "user_id": request.requested_by,
-                        "approval_request_id": request.id, "approved_by": decided_by })
-            } else {
-                json!({ "command": request.command, "user_id": request.requested_by,
-                        "input": request.input, "output": output,
-                        "approval_request_id": request.id, "approved_by": decided_by })
+            let payload = match crate::command::recorded(&entry.meta, &request.input) {
+                None => json!({ "command": request.command, "user_id": request.requested_by,
+                        "approval_request_id": request.id, "approved_by": decided_by }),
+                Some(input) => json!({ "command": request.command, "user_id": request.requested_by,
+                        "input": input, "output": output,
+                        "approval_request_id": request.id, "approved_by": decided_by }),
             };
             sqlx::query("INSERT INTO outbox_event (id, topic, payload) VALUES ($1, $2, $3)")
                 .bind(new_id())
