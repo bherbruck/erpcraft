@@ -535,3 +535,117 @@ async fn dunning_runs_climb_the_levels_and_post_fees_and_interest() {
     assert!(sent["sent"][0]["message_id"].is_string(), "{sent}");
     t.stop().await;
 }
+
+/// Review 8: a run posts what is true when it is posted. A second draft
+/// of the same items is refused once the first posted; a partial payment
+/// lowers the interest; waived interest is not charged again; a fee above
+/// the level's is refused; a letter's own charges bear no interest.
+#[tokio::test]
+async fn a_run_posts_what_is_true_when_it_is_posted() {
+    let t = start().await;
+    let shop = shop(&t).await;
+    let income = &shop.accounts["4900"];
+    for (level, days, fee) in [(1, 7, "10.00"), (2, 30, "25.00")] {
+        t.create(
+            "dunning_level",
+            json!({ "company_id": shop.company, "level": level, "name": format!("L{level}"),
+                    "days_overdue": days, "fee": fee, "fee_account_id": income,
+                    "interest_rate": "12", "interest_account_id": income }),
+        )
+        .await;
+    }
+    // A fee with more places than the currency has is refused.
+    let (status, _) = t
+        .post(
+            &t.admin,
+            "/api/entities/dunning_level",
+            json!({ "company_id": shop.company, "level": 3, "name": "L3", "days_overdue": 60,
+                    "fee": "1.005", "fee_account_id": income }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    t.create(
+        "policy_rule",
+        json!({ "company_id": shop.company, "point": "dunning.waive", "effect": "allow",
+                "condition": null }),
+    )
+    .await;
+    let acme = shop.customer(&t, "ACME", None).await;
+    let invoice = shop.invoice(&t, &acme, "2026-01-10", "1000.00").await;
+    let item = shop.item_of(&t, &acme, &invoice).await;
+
+    let empty = json!({ "lines": [], "letters": [] });
+    let first = shop
+        .draft(&t, "dunning_run", "2026-01-20", empty.clone())
+        .await;
+    let first = run(&t, "dunning_run.propose", json!({ "id": id(&first) })).await;
+    let second = shop
+        .draft(&t, "dunning_run", "2026-01-20", empty.clone())
+        .await;
+    // The first holds the item: the second proposes nothing.
+    let second = run(&t, "dunning_run.propose", json!({ "id": id(&second) })).await;
+    assert_eq!(second["body"]["lines"], json!([]), "{second}");
+    // A fee above the level's is refused; the interest is waived.
+    let mut body = first["body"].clone();
+    body["letters"][0]["fee"] = json!("11.00");
+    let (status, _) = t
+        .patch(
+            &t.admin,
+            &format!("/api/documents/dunning_run/{}", id(&first)),
+            json!({ "version": first["version"], "body": body }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let mut body = first["body"].clone();
+    body["lines"][0]["interest"] = json!("0");
+    let (status, changed) = t
+        .patch(
+            &t.admin,
+            &format!("/api/documents/dunning_run/{}", id(&first)),
+            json!({ "version": first["version"], "body": body }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{changed}");
+    // A draft of the same item made by hand is refused once the first
+    // posts.
+    let (_, by_hand) = t
+        .post(
+            &t.admin,
+            "/api/documents/dunning_run",
+            json!({ "company_id": shop.company, "doc_date": "2026-01-20",
+                    "body": { "lines": [{ "open_item_id": item }], "letters": [] } }),
+        )
+        .await;
+    run(&t, "dunning_run.post", json!({ "id": id(&first) })).await;
+    let (status, body) = t
+        .command(&t.admin, "dunning_run.post", json!({ "id": id(&by_hand) }))
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    run(&t, "dunning_run.cancel", json!({ "id": id(&by_hand) })).await;
+
+    // Half paid; at level 2 the interest runs from the day after the
+    // waived interest ran to, on what is still owed.
+    shop.pay(&t, "2026-01-25", &item, "500.00").await;
+    let draft = shop
+        .draft(&t, "dunning_run", "2026-02-15", empty.clone())
+        .await;
+    let proposed = run(&t, "dunning_run.propose", json!({ "id": id(&draft) })).await;
+    let lines = proposed["body"]["lines"].as_array().unwrap();
+    let line = lines
+        .iter()
+        .find(|l| l["open_item_id"] == json!(item))
+        .unwrap();
+    assert_eq!(line["interest_from"], "2026-01-21", "{proposed}");
+    // 500 at 12 % for 26 days.
+    assert!(close(dec(&line["interest"]), 4.27), "{proposed}");
+    // The first letter's fee is an item of its own: reminded, no interest.
+    let fee_line = lines
+        .iter()
+        .find(|l| l["open_item_id"] != json!(item))
+        .unwrap();
+    assert!(
+        close(dec(&fee_line["proposed_interest"]), 0.0),
+        "{proposed}"
+    );
+    t.stop().await;
+}

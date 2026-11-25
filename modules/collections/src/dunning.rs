@@ -8,8 +8,8 @@ use erpcraft_gl::GlLine;
 use erpcraft_kernel::document::{self, Document, DocumentChange, DocumentHandler, DocumentView};
 use erpcraft_kernel::{
     CollectionMeta, Command, CommandSpec, Ctx, Decimal, DocTypeMeta, Error, FieldMeta, FieldType,
-    JsonSchema, PgConnection, Result, StateMeta, async_trait, company, new_id, round_money,
-    schemars,
+    JsonSchema, PgConnection, PrimaryWhenSpec, Result, StateMeta, async_trait, company, new_id,
+    round_money, schemars,
 };
 use erpcraft_openitems::{Kind, NewOpenItem};
 use serde::{Deserialize, Serialize};
@@ -47,6 +47,114 @@ async fn levels(conn: &mut PgConnection, company_id: Uuid) -> Result<Vec<Level>>
     .bind(company_id)
     .fetch_all(&mut *conn)
     .await?)
+}
+
+/// What an item has had: the highest level it reached, the day interest
+/// was last charged to, and whether it is what a dunning letter charged.
+#[derive(Debug, Clone, Default)]
+struct Standing {
+    last: i32,
+    interest_to: Option<NaiveDate>,
+    from_letter: bool,
+}
+
+async fn standing(conn: &mut PgConnection, ids: &[Uuid]) -> Result<BTreeMap<Uuid, Standing>> {
+    let history: Vec<(Uuid, i32, Option<NaiveDate>)> = sqlx::query_as(
+        "SELECT open_item_id, max(level), max(interest_to) FROM dunning_history
+         WHERE open_item_id = ANY ($1) GROUP BY open_item_id",
+    )
+    .bind(ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    let letters: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT i.id FROM open_item i JOIN posting p ON p.id = i.posting_id
+         JOIN document d ON d.id = p.document_id
+         WHERE i.id = ANY ($1) AND d.doc_type = 'dunning_letter'",
+    )
+    .bind(ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut out: BTreeMap<Uuid, Standing> = BTreeMap::new();
+    for (id, last, interest_to) in history {
+        let s = out.entry(id).or_default();
+        s.last = last;
+        s.interest_to = interest_to;
+    }
+    for id in letters {
+        out.entry(id).or_default().from_letter = true;
+    }
+    Ok(out)
+}
+
+/// The level an item reaches on a day, and the interest its level charges.
+#[derive(Debug, Clone)]
+struct Reached {
+    level: i32,
+    days: i64,
+    /// The first day interest is charged for, when there is one.
+    from: Option<NaiveDate>,
+    proposed: Decimal,
+}
+
+/// The level an item reaches on `day` above the one it last had, with the
+/// interest its level charges on what is open of it: from the day after it
+/// fell due, or after interest was last charged to. A letter's own fee and
+/// interest are reminded but bear no interest (no interest on interest).
+/// The reason when it reaches none.
+fn reach(
+    item: &erpcraft_openitems::OpenItem,
+    levels: &[Level],
+    standing: &BTreeMap<Uuid, Standing>,
+    day: NaiveDate,
+    decimals: u32,
+) -> std::result::Result<Reached, String> {
+    if item.kind != "receivable" || item.party_type != "customer" {
+        return Err("a dunning run duns what customers owe".into());
+    }
+    if item.txn_open <= Decimal::ZERO {
+        return Err("the item owes nothing: it is settled or a credit".into());
+    }
+    let had = standing.get(&item.id).cloned().unwrap_or_default();
+    let due = item.due_date.unwrap_or(item.doc_date);
+    let days = (day - due).num_days();
+    let Some(level) = levels
+        .iter()
+        .rev()
+        .find(|l| i64::from(l.days_overdue) <= days && days > 0)
+    else {
+        return Err(format!(
+            "the item is {} days overdue: it reaches no dunning level",
+            days.max(0)
+        ));
+    };
+    if level.level <= had.last {
+        return Err(format!(
+            "the item has had level {} and reaches no higher one yet",
+            had.last
+        ));
+    }
+    let from = had
+        .interest_to
+        .map(|d| d + Days::new(1))
+        .unwrap_or(due + Days::new(1))
+        .max(due + Days::new(1));
+    let interest_days = (day - from).num_days() + 1;
+    let charges = level.interest_rate > Decimal::ZERO && interest_days > 0 && !had.from_letter;
+    let proposed = if charges {
+        round_money(
+            item.open * level.interest_rate / Decimal::ONE_HUNDRED * Decimal::from(interest_days)
+                / Decimal::from(365),
+            decimals,
+        )
+    } else {
+        Decimal::ZERO
+    };
+    Ok(Reached {
+        level: level.level,
+        days,
+        from: charges.then_some(from),
+        proposed,
+    })
 }
 
 // ------------------------------------------------------------ the run
@@ -251,15 +359,7 @@ impl DocumentHandler for Run {
         let decimals = company::currency_decimals(&mut *conn, doc.company_id).await?;
         let ids: Vec<Uuid> = body.lines.iter().map(|l| l.open_item_id).collect();
         let items = erpcraft_openitems::lock(&mut *conn, doc.company_id, &ids).await?;
-        // The level each item last had, and the day interest was last
-        // charged to.
-        let history: Vec<(Uuid, i32, Option<NaiveDate>)> = sqlx::query_as(
-            "SELECT open_item_id, max(level), max(interest_to) FROM dunning_history
-             WHERE open_item_id = ANY ($1) GROUP BY open_item_id",
-        )
-        .bind(&ids)
-        .fetch_all(&mut *conn)
-        .await?;
+        let standing = standing(&mut *conn, &ids).await?;
         let mut rows = vec![];
         for (index, line) in body.lines.iter().enumerate() {
             let n = index + 1;
@@ -270,77 +370,35 @@ impl DocumentHandler for Run {
                     "the item must be an open item of the company".into(),
                 ));
             };
-            if item.kind != "receivable" || item.party_type != "customer" {
-                return Err(fail(
-                    "open_item_id",
-                    "a dunning run duns what customers owe".into(),
-                ));
-            }
-            if item.txn_open <= Decimal::ZERO {
-                return Err(fail(
-                    "open_item_id",
-                    "the item owes nothing: it is settled or a credit".into(),
-                ));
-            }
-            let due = item.due_date.unwrap_or(item.doc_date);
-            let days = (doc.doc_date - due).num_days();
-            let (last, interest_to) = history
-                .iter()
-                .find(|h| h.0 == item.id)
-                .map(|h| (h.1, h.2))
-                .unwrap_or((0, None));
-            let Some(level) = levels
-                .iter()
-                .rev()
-                .find(|l| i64::from(l.days_overdue) <= days && l.days_overdue >= 0 && days > 0)
-            else {
-                return Err(fail(
-                    "open_item_id",
-                    format!(
-                        "the item is {} days overdue: it reaches no dunning level",
-                        days.max(0)
-                    ),
-                ));
-            };
-            if level.level <= last {
-                return Err(fail(
-                    "open_item_id",
-                    format!("the item has had level {last} and reaches no higher one yet"),
-                ));
-            }
-            let from = interest_to
-                .map(|d| d + Days::new(1))
-                .unwrap_or(due + Days::new(1))
-                .max(due + Days::new(1));
-            let interest_days = (doc.doc_date - from).num_days() + 1;
-            let proposed = if level.interest_rate > Decimal::ZERO && interest_days > 0 {
-                round_money(
-                    item.open * level.interest_rate / Decimal::ONE_HUNDRED
-                        * Decimal::from(interest_days)
-                        / Decimal::from(365),
-                    decimals,
-                )
-            } else {
-                Decimal::ZERO
-            };
-            let interest = line.interest.unwrap_or(proposed);
+            let reached = reach(item, &levels, &standing, doc.doc_date, decimals)
+                .map_err(|why| fail("open_item_id", why))?;
+            let interest = line.interest.unwrap_or(reached.proposed);
             if interest.is_sign_negative() || interest.normalize().scale() > decimals {
                 return Err(fail(
                     "interest",
                     format!("interest is not below zero, with at most {decimals} decimal places"),
                 ));
             }
+            if interest > reached.proposed {
+                return Err(fail(
+                    "interest",
+                    format!(
+                        "the level charges {} interest on this item; more is not charged",
+                        reached.proposed
+                    ),
+                ));
+            }
             rows.push((
                 line,
                 item.party_id,
                 item.due_date,
-                days,
+                reached.days,
                 item.currency.clone(),
                 item.txn_open,
                 item.open,
-                level.level,
-                (interest_days > 0).then_some(from),
-                proposed,
+                reached.level,
+                reached.from,
+                reached.proposed,
                 interest,
             ));
         }
@@ -393,11 +451,17 @@ impl DocumentHandler for Run {
         // A letter per customer of the lines, at the highest level of its
         // lines, with that level's fee unless the body gives one.
         let mut customers: Vec<(Uuid, i32)> = vec![];
+        // Skipped lines do not raise a letter's level, unless every line of
+        // the customer is skipped.
         for row in &rows {
-            match customers.iter_mut().find(|c| c.0 == row.1) {
-                Some(c) => c.1 = c.1.max(row.7),
-                None => customers.push((row.1, row.7)),
+            if !customers.iter().any(|c| c.0 == row.1) {
+                customers.push((row.1, 0));
             }
+        }
+        for customer in &mut customers {
+            let of = rows.iter().filter(|r| r.1 == customer.0);
+            let sent = of.clone().filter(|r| !r.0.skip).map(|r| r.7).max();
+            customer.1 = sent.or_else(|| of.map(|r| r.7).max()).unwrap_or(1);
         }
         for (index, letter) in body.letters.iter().enumerate() {
             if !customers.iter().any(|c| c.0 == letter.customer_id) {
@@ -442,6 +506,16 @@ impl DocumentHandler for Run {
                 .map(|l| l.fee)
                 .unwrap_or_default();
             let given = body.letters.iter().find(|l| l.customer_id == *customer);
+            if let Some(fee) = given.and_then(|l| l.fee)
+                && fee > proposed
+            {
+                return Err(Error::line(
+                    "letters",
+                    n + 1,
+                    Some("fee"),
+                    format!("level {level} charges a fee of {proposed}; more is not charged"),
+                ));
+            }
             sqlx::query(
                 "INSERT INTO dunning_run_letter (id, document_id, line_no, customer_id, level,
                      proposed_fee, fee, skip)
@@ -722,6 +796,7 @@ impl Command for Propose {
         )
         .permission("dunning_run:update")
         .from_states(&["draft"])
+        .primary_when(PrimaryWhenSpec::states(&["draft"]).empty("lines"))
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: IdInput) -> Result<DocumentView> {
@@ -867,6 +942,7 @@ impl Command for Post {
         )
         .permission("dunning_run:post")
         .from_states(&["draft"])
+        .primary_when(PrimaryWhenSpec::states(&["draft"]).not_empty("lines"))
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: IdInput) -> Result<DocumentView> {
@@ -882,8 +958,67 @@ impl Command for Post {
             )));
         }
         let levels = levels(&mut *ctx.conn, doc.company_id).await?;
-        let lines = run_lines(&mut *ctx.conn, doc.id).await?;
+        let decimals = company::currency_decimals(&mut *ctx.conn, doc.company_id).await?;
+        let mut lines = run_lines(&mut *ctx.conn, doc.id).await?;
         let letters = run_letters(&mut *ctx.conn, doc.id).await?;
+        // What was worked out when the draft was saved may be stale: the
+        // items are read again under their locks, so a payment or another
+        // run since then is seen. An item paid meanwhile is left out; one
+        // that owes less is charged interest on what it owes now, at most
+        // what was approved; one another run dunned is refused.
+        let ids: Vec<Uuid> = lines
+            .iter()
+            .filter(|l| !l.skip)
+            .map(|l| l.open_item_id)
+            .collect();
+        let items = erpcraft_openitems::lock(&mut *ctx.conn, doc.company_id, &ids).await?;
+        let standing = standing(&mut *ctx.conn, &ids).await?;
+        for line in lines.iter_mut().filter(|l| !l.skip) {
+            let Some(item) = items.iter().find(|i| i.id == line.open_item_id) else {
+                line.skip = true;
+                continue;
+            };
+            let had = standing.get(&item.id).map_or(0, |s| s.last);
+            if had >= line.level {
+                return Err(Error::state(format!(
+                    "an item on this run was dunned at level {had} by another run since this one \
+                     was proposed: propose it again"
+                )));
+            }
+            match reach(item, &levels, &standing, doc.doc_date, decimals) {
+                Ok(reached) if reached.level == line.level => {
+                    line.open = item.txn_open;
+                    line.carried = item.open;
+                    line.proposed_interest = reached.proposed;
+                    line.interest = line.interest.min(reached.proposed);
+                    line.interest_from = reached.from;
+                }
+                Ok(_) => {
+                    return Err(Error::state(
+                        "the levels changed since this run was proposed: propose it again",
+                    ));
+                }
+                // Paid, or credited, meanwhile.
+                Err(_) => line.skip = true,
+            }
+        }
+        // The run keeps what it posted.
+        for line in &lines {
+            sqlx::query(
+                "UPDATE dunning_run_line SET skip = $2, open = $3, carried = $4,
+                     proposed_interest = $5, interest = $6, interest_from = $7
+                 WHERE id = $1",
+            )
+            .bind(line.id)
+            .bind(line.skip)
+            .bind(line.open)
+            .bind(line.carried)
+            .bind(line.proposed_interest)
+            .bind(line.interest)
+            .bind(line.interest_from)
+            .execute(&mut *ctx.conn)
+            .await?;
+        }
         let mut by_customer: BTreeMap<Uuid, Vec<&Line>> = BTreeMap::new();
         for line in lines.iter().filter(|l| !l.skip) {
             by_customer.entry(line.customer_id).or_default().push(line);
@@ -928,15 +1063,32 @@ impl Command for Post {
                     )));
                 }
             }
-            let level = run_letter.level;
+            // The letter's level is that of what is still dunned on it.
+            let level = items
+                .iter()
+                .map(|l| l.level)
+                .max()
+                .unwrap_or(run_letter.level);
             let level_of = levels
                 .iter()
                 .find(|l| l.level == level)
                 .ok_or_else(|| Error::validation(format!("dunning level {level} is gone")))?;
+            let mut run_letter = run_letter.clone();
+            if level != run_letter.level {
+                run_letter.level = level;
+                run_letter.proposed_fee = level_of.fee;
+                run_letter.fee = run_letter.fee.min(level_of.fee);
+            }
+            let run_letter = &run_letter;
             let interest: Decimal = items.iter().map(|l| l.interest).sum();
-            let proposed_interest: Decimal = items.iter().map(|l| l.proposed_interest).sum();
             let fee_waived = (run_letter.proposed_fee - run_letter.fee).max(Decimal::ZERO);
-            let interest_waived = (proposed_interest - interest).max(Decimal::ZERO);
+            // Per line, so that more on one line does not hide less on
+            // another (more than proposed is refused when the draft is
+            // saved).
+            let interest_waived: Decimal = items
+                .iter()
+                .map(|l| (l.proposed_interest - l.interest).max(Decimal::ZERO))
+                .sum();
             if !fee_waived.is_zero() || !interest_waived.is_zero() {
                 ctx.decide(
                     WAIVE,
@@ -953,11 +1105,18 @@ impl Command for Post {
             let letter =
                 write_letter(ctx, &doc, run_letter, level_of, items, interest, receivable).await?;
             document::link(ctx, doc.id, letter, "dunning_letter").await?;
-            sqlx::query("UPDATE dunning_run_letter SET letter_id = $2 WHERE id = $1")
-                .bind(run_letter.id)
-                .bind(letter)
-                .execute(&mut *ctx.conn)
-                .await?;
+            sqlx::query(
+                "UPDATE dunning_run_letter SET letter_id = $2, level = $3, proposed_fee = $4,
+                     fee = $5
+                 WHERE id = $1",
+            )
+            .bind(run_letter.id)
+            .bind(letter)
+            .bind(run_letter.level)
+            .bind(run_letter.proposed_fee)
+            .bind(run_letter.fee)
+            .execute(&mut *ctx.conn)
+            .await?;
         }
         document::transition(ctx, &mut doc, "posted").await?;
         document::view(ctx, doc).await
@@ -1169,8 +1328,10 @@ async fn write_letter(
         .bind(item.level)
         .bind(run.doc_date)
         .bind(item.interest)
-        .bind(item.interest_from.filter(|_| !item.interest.is_zero()))
-        .bind((!item.interest.is_zero()).then_some(run.doc_date))
+        // Interest is charged to the run's date even when it was waived,
+        // so that it is not charged again for the same days.
+        .bind(item.interest_from)
+        .bind(item.interest_from.map(|_| run.doc_date))
         .execute(&mut *ctx.conn)
         .await
         .map_err(|e| match Error::from(e) {
@@ -1218,6 +1379,7 @@ impl Command for Send {
         )
         .permission("dunning_run:read")
         .from_states(&["posted"])
+        .primary_when(PrimaryWhenSpec::states(&["posted"]))
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: IdInput) -> Result<SentOutput> {

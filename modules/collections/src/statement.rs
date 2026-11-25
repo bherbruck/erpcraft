@@ -6,7 +6,7 @@ use chrono::NaiveDate;
 use erpcraft_kernel::document::{self, Document, DocumentHandler, DocumentView};
 use erpcraft_kernel::{
     CollectionMeta, Command, CommandSpec, Ctx, Decimal, DocTypeMeta, Error, FieldMeta, FieldType,
-    JsonSchema, PgConnection, Result, StateMeta, async_trait, company, schemars,
+    JsonSchema, PgConnection, PrimaryWhenSpec, Result, StateMeta, async_trait, company, schemars,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -293,7 +293,8 @@ async fn work_out(
             "SELECT COALESCE(sum(COALESCE(i.txn_amount, i.amount)
                      - COALESCE((SELECT sum(COALESCE(s.txn_amount, s.amount))
                                  FROM settlement s JOIN posting p ON p.id = s.posting_id
-                                 WHERE s.open_item_id = i.id AND p.posting_date < {day}), 0)), 0)
+                                 WHERE s.open_item_id = i.id
+                                   AND GREATEST(p.posting_date, i.doc_date) < {day}), 0)), 0)
              FROM ({items}) i WHERE i.doc_date < {day}"
         )
     };
@@ -314,13 +315,14 @@ async fn work_out(
              LEFT JOIN document d ON d.id = p.document_id
              WHERE i.doc_date BETWEEN $5 AND $6
              UNION ALL
-             SELECT p.posting_date, CASE WHEN bool_or(s.cancels) THEN 'cancelled' ELSE 'settlement' END,
+             SELECT GREATEST(p.posting_date, i.doc_date),
+                    CASE WHEN bool_or(s.cancels) THEN 'cancelled' ELSE 'settlement' END,
                     d.doc_type, d.id, d.number, -sum(COALESCE(s.txn_amount, s.amount)), 1
              FROM ({items}) i JOIN settlement s ON s.open_item_id = i.id
              JOIN posting p ON p.id = s.posting_id
              LEFT JOIN document d ON d.id = p.document_id
-             WHERE p.posting_date BETWEEN $5 AND $6
-             GROUP BY p.id, p.posting_date, d.doc_type, d.id, d.number
+             WHERE GREATEST(p.posting_date, i.doc_date) BETWEEN $5 AND $6
+             GROUP BY p.id, GREATEST(p.posting_date, i.doc_date), d.doc_type, d.id, d.number
          ) m WHERE change <> 0
          ORDER BY entry_date, sort, number NULLS LAST"
     ))
@@ -339,7 +341,8 @@ async fn work_out(
                     COALESCE(i.txn_amount, i.amount)
                     - COALESCE((SELECT sum(COALESCE(s.txn_amount, s.amount))
                                 FROM settlement s JOIN posting sp ON sp.id = s.posting_id
-                                WHERE s.open_item_id = i.id AND sp.posting_date <= $5), 0) AS open
+                                WHERE s.open_item_id = i.id
+                                  AND GREATEST(sp.posting_date, i.doc_date) <= $5), 0) AS open
              FROM ({items}) i JOIN posting p ON p.id = i.posting_id
              LEFT JOIN document d ON d.id = p.document_id
              WHERE i.doc_date <= $5
@@ -370,7 +373,7 @@ async fn work_out(
     }
     let closing = opening + movements.iter().map(|m| m.change).sum::<Decimal>();
     if closing != closing_open {
-        return Err(Error::internal(format!(
+        return Err(Error::state(format!(
             "the statement does not add up: {opening} and the period's activity come to \
              {closing}, the open items to {closing_open}"
         )));
@@ -483,6 +486,7 @@ impl Command for Issue {
         )
         .permission("customer_statement:post")
         .from_states(&["draft"])
+        .primary_when(PrimaryWhenSpec::states(&["draft"]))
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: IdInput) -> Result<DocumentView> {
@@ -526,7 +530,13 @@ pub(crate) struct IssueAllInput {
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct IssueAllOutput {
     /// The statements issued, one per customer.
-    statements: Vec<Uuid>,
+    statements: Vec<Issued>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct Issued {
+    customer_id: Uuid,
+    statement_id: Uuid,
 }
 
 /// A statement for every customer with something to say.
@@ -596,7 +606,10 @@ impl Command for IssueAll {
             }
             let doc = document::lock(ctx, STATEMENT, draft.header.id, "post").await?;
             issue(ctx, doc).await?;
-            statements.push(draft.header.id);
+            statements.push(Issued {
+                customer_id: customer,
+                statement_id: draft.header.id,
+            });
         }
         Ok(IssueAllOutput { statements })
     }

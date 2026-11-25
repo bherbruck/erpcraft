@@ -37,11 +37,18 @@ impl Module for CollectionsModule {
     }
 
     fn migrations(&self) -> Vec<Migration> {
-        vec![Migration {
-            version: 1,
-            name: "collections",
-            sql: include_str!("../migrations/0001_collections.sql"),
-        }]
+        vec![
+            Migration {
+                version: 1,
+                name: "collections",
+                sql: include_str!("../migrations/0001_collections.sql"),
+            },
+            Migration {
+                version: 2,
+                name: "fee_decimals",
+                sql: include_str!("../migrations/0002_fee_decimals.sql"),
+            },
+        ]
     }
 
     fn entities(&self) -> Vec<EntityMeta> {

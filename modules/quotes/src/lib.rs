@@ -8,8 +8,8 @@ use chrono::NaiveDate;
 use erpcraft_kernel::document::{self, Document, DocumentHandler, DocumentView};
 use erpcraft_kernel::{
     CollectionMeta, Command, CommandSpec, Ctx, Decimal, DocTypeMeta, DynCommand, Error, FieldMeta,
-    FieldType, JsonSchema, Migration, Module, PgConnection, PolicyPoint, Result, StateMeta, Utc,
-    async_trait, command, company, schemars,
+    FieldType, JsonSchema, Migration, Module, PgConnection, PolicyPoint, PrimaryWhenSpec, Result,
+    StateMeta, Utc, async_trait, command, company, schemars,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -454,6 +454,7 @@ impl Command for Issue {
         )
         .permission("sales_quote:post")
         .from_states(&["draft"])
+        .primary_when(PrimaryWhenSpec::states(&["draft"]))
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: IdInput) -> Result<DocumentView> {
@@ -528,6 +529,7 @@ impl Command for Accept {
         )
         .permission("sales_quote:post")
         .from_states(&["issued"])
+        .primary_when(PrimaryWhenSpec::states(&["issued"]))
         .creates("sales_order")
     }
 
