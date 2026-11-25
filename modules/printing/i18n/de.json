@@ -1,4 +1,5 @@
 {
+  "'{doc_type}' is not a document type": "'{doc_type}' ist keine Belegart",
   "Built-in template": "Mitgelieferte Vorlage",
   "HTML with MiniJinja tags. See the built-in templates for the data.": "HTML mit MiniJinja-Tags. Die Daten zeigen die mitgelieferten Vorlagen.",
   "Logo": "Logo",
@@ -11,5 +12,18 @@
   "Remove logo": "Logo entfernen",
   "Set logo": "Logo setzen",
   "The document type the template prints, such as sales_invoice.": "Die Belegart, die die Vorlage druckt, etwa sales_invoice.",
-  "Used when no template is asked for. One per document type and company, and one for all companies.": "Wird verwendet, wenn keine Vorlage verlangt wird. Eine je Belegart und Mandant und eine für alle Mandanten."
+  "Used when no template is asked for. One per document type and company, and one for all companies.": "Wird verwendet, wenn keine Vorlage verlangt wird. Eine je Belegart und Mandant und eine für alle Mandanten.",
+  "a logo is a PNG or a JPEG image": "ein Logo ist ein PNG- oder JPEG-Bild",
+  "a logo is at most 512 KiB": "ein Logo hat höchstens 512 KiB",
+  "a logo is at most {MAX_PIXELS} pixels across and down, not {w} by {h}": "ein Logo hat höchstens {MAX_PIXELS} Pixel Breite und Höhe, nicht {w} mal {h}",
+  "cannot be used: {problem}": "kann nicht verwendet werden: {problem}",
+  "is empty": "ist leer",
+  "is not an active print template for this document": "ist keine aktive Druckvorlage für diesen Beleg",
+  "previewing a print template takes print_template:create or print_template:update for all companies": "die Vorschau einer Druckvorlage braucht print_template:create oder print_template:update für alle Mandanten",
+  "the PDF cannot be made: {e}": "das PDF kann nicht erstellt werden: {e}",
+  "the PDF took longer than {} seconds to lay out": "das Setzen des PDF dauerte länger als {} Sekunden",
+  "the image cannot be read": "das Bild kann nicht gelesen werden",
+  "the image is not valid base64": "das Bild ist kein gültiges Base64",
+  "the page with its logo is larger than {} MiB": "die Seite mit ihrem Logo ist größer als {} MiB",
+  "the print template cannot be rendered: {problem}": "die Druckvorlage kann nicht gerendert werden: {problem}"
 }

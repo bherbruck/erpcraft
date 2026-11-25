@@ -28,5 +28,10 @@
   "The list's company; filled in from the list.": "Der Mandant der Liste; wird aus der Liste übernommen.",
   "Who": "Wer",
   "Whom": "Für wen",
-  "the price differs from the price list": "der Preis weicht von der Preisliste ab"
+  "a price list line is for an item or a group of items": "eine Preislistenzeile gilt für einen Artikel oder eine Artikelgruppe",
+  "a price list line is of its list's company": "eine Preislistenzeile gehört zum Mandanten ihrer Liste",
+  "the % of a price group member does not exist": "der Datensatz (%) eines Mitglieds der Preisgruppe existiert nicht",
+  "the price differs from the price list": "der Preis weicht von der Preisliste ab",
+  "the price group does not exist": "die Preisgruppe existiert nicht",
+  "the price list is for a % that does not exist": "die Preisliste gilt für einen Datensatz (%), der nicht existiert"
 }

@@ -1,4 +1,5 @@
 {
+  " ": " ",
   "A company of the group, wholly owned.": "Ein Mandant des Konzerns, im vollständigen Besitz.",
   "A user of the buying company: the drafts are made as them, with their rights and the buying company's policies.": "Ein Benutzer des kaufenden Mandanten: die Entwürfe werden in seinem Namen erstellt, mit seinen Rechten und den Geschäftsregeln des kaufenden Mandanten.",
   "Average rate": "Durchschnittskurs",
@@ -57,5 +58,25 @@
   "The seller's customer that stands for the buying company.": "Der Debitor des Verkäufers, der für den kaufenden Mandanten steht.",
   "Translated": "Umgerechnet",
   "Updated": "Aktualisiert",
-  "Why not": "Warum nicht"
+  "Why not": "Warum nicht",
+  "`from` cannot be after `to`": "`from` darf nicht nach `to` liegen",
+  "a {} {} is not mirrored: only an approved order or a posted invoice is": "ein {} {} wird nicht gespiegelt: nur ein freigegebener Auftrag oder eine gebuchte Rechnung",
+  "an intercompany rule makes drafts in the buying company: it takes the right to change intercompany rules there too": "eine Konzernregel erstellt Entwürfe beim kaufenden Mandanten: sie braucht auch dort das Recht, Konzernregeln zu ändern",
+  "consolidation_group not found": "Konsolidierungskreis nicht gefunden",
+  "document not found": "Beleg nicht gefunden",
+  "line {n} is goods, and the sales order was not mirrored into a purchase order: goods are invoiced against an order": "Zeile {n} ist Ware, und der Kundenauftrag wurde nicht in eine Bestellung gespiegelt: Ware wird gegen eine Bestellung berechnet",
+  "line {n} is on an account, and the intercompany rule names no account of the buying company for it": "Zeile {n} ist auf ein Konto gebucht, und die Konzernregel nennt dafür kein Konto des kaufenden Mandanten",
+  "no active intercompany rule covers the document's customer": "keine aktive Konzernregel gilt für den Debitor des Belegs",
+  "no exchange rate from {from} to {to} is on record for {day}: record one, or state it in `rates`": "für {day} ist kein Wechselkurs von {from} nach {to} hinterlegt: einen erfassen oder in `rates` angeben",
+  "only a sales order or a sales invoice is mirrored": "nur ein Kundenauftrag oder eine Ausgangsrechnung wird gespiegelt",
+  "sales_order not found": "Kundenauftrag nicht gefunden",
+  "the % does not exist": "der Datensatz (%) existiert nicht",
+  "the account of an intercompany rule must be the buying company's": "das Konto einer Konzernregel muss dem kaufenden Mandanten gehören",
+  "the customer of an intercompany rule must stand for the buying company": "der Debitor einer Konzernregel muss für den kaufenden Mandanten stehen",
+  "the group has no member companies": "der Konsolidierungskreis hat keine Mitglieder",
+  "the intercompany rule does not mirror sales invoices": "die Konzernregel spiegelt keine Ausgangsrechnungen",
+  "the intercompany rule does not mirror sales orders": "die Konzernregel spiegelt keine Kundenaufträge",
+  "the order has goods, and the intercompany rule names no receiving warehouse of the buying company": "der Auftrag enthält Ware, und die Konzernregel nennt kein Empfangslager des kaufenden Mandanten",
+  "the vendor of an intercompany rule must stand for the selling company": "der Kreditor einer Konzernregel muss für den verkaufenden Mandanten stehen",
+  "the warehouse of an intercompany rule must be the buying company's": "das Lager einer Konzernregel muss dem kaufenden Mandanten gehören"
 }

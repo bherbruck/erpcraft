@@ -26,5 +26,7 @@
   "Suggestions": "Vorschläge",
   "The least the company wants once every open order is done. Below it, planning suggests ordering or making more.": "Das Mindeste, das der Mandant nach Erledigung aller offenen Aufträge haben will. Darunter schlägt die Disposition Bestellen oder Fertigen vor.",
   "What a drafted purchase order asks, in the accounting currency; the last price paid when left out.": "Was eine entworfene Bestellung verlangt, in Buchungswährung; ohne Angabe der zuletzt bezahlte Preis.",
-  "Whom it is bought from: drafted purchase orders go to it.": "Bei wem gekauft wird: entworfene Bestellungen gehen an ihn."
+  "Whom it is bought from: drafted purchase orders go to it.": "Bei wem gekauft wird: entworfene Bestellungen gehen an ihn.",
+  "item {} has no active bill of materials any more; nothing was drafted, run planning again": "Artikel {} hat keine aktive Stückliste mehr; nichts wurde entworfen, Disposition erneut ausführen",
+  "the warehouse of a reorder rule must belong to its company": "das Lager einer Nachbestellregel muss zu ihrem Mandanten gehören"
 }

@@ -14,5 +14,16 @@
   "Valid until": "Gültig bis",
   "Why it was won or lost.": "Warum es gewonnen oder verloren wurde.",
   "Won": "Gewonnen",
-  "the quote has expired": "das Angebot ist abgelaufen"
+  "a quote is valid at least until its own date": "ein Angebot gilt mindestens bis zu seinem eigenen Datum",
+  "a quote needs at least one line": "ein Angebot braucht mindestens eine Zeile",
+  "a stock line names both its item and its warehouse": "eine Lagerzeile nennt Artikel und Lager",
+  "a {} quote cannot be accepted": "ein Angebot im Status {} kann nicht angenommen werden",
+  "a {} quote cannot be issued": "ein Angebot im Status {} kann nicht ausgestellt werden",
+  "a {} quote cannot be lost": "ein Angebot im Status {} kann nicht verloren gegeben werden",
+  "every stock line needs a warehouse of the quote's company": "jede Lagerzeile braucht ein Lager des Mandanten des Angebots",
+  "give a unit price: no price list has one for this line": "einen Einzelpreis angeben: keine Preisliste hat einen für diese Zeile",
+  "say why the quote was lost": "angeben, warum das Angebot verloren ging",
+  "the customer does not exist": "der Debitor existiert nicht",
+  "the quote has expired": "das Angebot ist abgelaufen",
+  "the quote names no customer yet": "das Angebot nennt noch keinen Debitor"
 }

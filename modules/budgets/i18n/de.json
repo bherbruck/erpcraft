@@ -20,5 +20,21 @@
   "The first day of the month.": "Der erste Tag des Monats.",
   "The last day of a month; at most 24 months after the start.": "Der letzte Tag eines Monats; höchstens 24 Monate nach dem Beginn.",
   "Variance percent": "Abweichung in Prozent",
-  "original (the default), forecast, or another name: one of each per start.": "original (Standard), forecast oder ein anderer Name: je Beginn einmal."
+  "`from` cannot be after `to`": "`from` darf nicht nach `to` liegen",
+  "a budget is kept by a dimension of its company": "ein Budget wird nach einer Dimension seines Mandanten geführt",
+  "a budget line is for an account of its company that can be posted to": "eine Budgetzeile gilt für ein bebuchbares Konto ihres Mandanten",
+  "a budget line is of its budget's company": "eine Budgetzeile gehört zum Mandanten ihres Budgets",
+  "a budget line's dimension value is of the budget's dimension": "der Dimensionswert einer Budgetzeile gehört zur Dimension des Budgets",
+  "budget % has lines: its company, dates and dimension stay": "Budget % hat Zeilen: Mandant, Daten und Dimension bleiben",
+  "budget % is locked": "Budget % ist gesperrt",
+  "budget not found": "Budget nicht gefunden",
+  "budget {} is locked": "Budget {} ist gesperrt",
+  "line {line}: {why}": "Zeile {line}: {why}",
+  "month % is outside budget %": "Monat % liegt außerhalb von Budget %",
+  "no such month": "diesen Monat gibt es nicht",
+  "original (the default), forecast, or another name: one of each per start.": "original (Standard), forecast oder ein anderer Name: je Beginn einmal.",
+  "the CSV has neither month and amount columns nor a column per month": "die CSV hat weder Monats- und Betragsspalten noch eine Spalte je Monat",
+  "the CSV has no account column": "die CSV hat keine Kontospalte",
+  "the header: {e}": "die Kopfzeile: {e}",
+  "{t} is not an account type": "{t} ist keine Kontoart"
 }

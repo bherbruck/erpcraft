@@ -28,6 +28,143 @@ pub type Locale = String;
 pub struct Catalogues {
     /// Locale, then module, then English text to translation.
     by_locale: BTreeMap<Locale, BTreeMap<String, BTreeMap<String, String>>>,
+    /// Per locale, every module's messages together, for error messages,
+    /// which come without the module that raised them. Made when first
+    /// asked for.
+    messages: std::sync::OnceLock<BTreeMap<Locale, Messages>>,
+}
+
+/// The messages of a locale: those written out in full, and those with
+/// placeholders as templates.
+#[derive(Debug, Default, Clone)]
+struct Messages {
+    exact: BTreeMap<String, String>,
+    templates: Vec<Template>,
+}
+
+/// A message with placeholders: `{name}`, `{}` or `{:?}` as Rust writes
+/// them, `%` as a trigger does. It matches a message made from it and
+/// gives the translation with the same values in the translation's
+/// placeholders.
+#[derive(Debug, Clone)]
+struct Template {
+    pattern: regex::Regex,
+    slots: Vec<String>,
+    translation: Vec<Piece>,
+    /// How much of the message is fixed text: the more, the more
+    /// specific, and the earlier it is tried.
+    weight: usize,
+}
+
+#[derive(Debug, Clone)]
+enum Piece {
+    Text(String),
+    Slot(String),
+}
+
+/// The pieces of a message with placeholders, each placeholder named: by
+/// its name, `#n` for the n-th unnamed one, `%n` for the n-th `%`.
+fn pieces(text: &str) -> Vec<Piece> {
+    let mut out = vec![];
+    let mut literal = String::new();
+    let (mut unnamed, mut percent) = (0, 0);
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' if chars.peek() == Some(&'{') => {
+                chars.next();
+                literal.push('{');
+            }
+            '}' if chars.peek() == Some(&'}') => {
+                chars.next();
+                literal.push('}');
+            }
+            '{' => {
+                let mut inside = String::new();
+                for d in chars.by_ref() {
+                    if d == '}' {
+                        break;
+                    }
+                    inside.push(d);
+                }
+                let name = inside
+                    .split(':')
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned();
+                let name = if name.is_empty() || name.chars().all(|c| c.is_ascii_digit()) {
+                    unnamed += 1;
+                    format!("#{unnamed}")
+                } else {
+                    name
+                };
+                out.push(Piece::Text(std::mem::take(&mut literal)));
+                out.push(Piece::Slot(name));
+            }
+            '%' => {
+                percent += 1;
+                out.push(Piece::Text(std::mem::take(&mut literal)));
+                out.push(Piece::Slot(format!("%{percent}")));
+            }
+            c => literal.push(c),
+        }
+    }
+    out.push(Piece::Text(literal));
+    out
+}
+
+impl Template {
+    fn new(english: &str, translation: &str) -> Option<Template> {
+        let parts = pieces(english);
+        let slots: Vec<String> = parts
+            .iter()
+            .filter_map(|p| match p {
+                Piece::Slot(s) => Some(s.clone()),
+                Piece::Text(_) => None,
+            })
+            .collect();
+        if slots.is_empty() {
+            return None;
+        }
+        let mut pattern = String::from("(?s)^");
+        let mut weight = 0;
+        for part in &parts {
+            match part {
+                Piece::Text(t) => {
+                    weight += t.len();
+                    pattern.push_str(&regex::escape(t));
+                }
+                Piece::Slot(_) => pattern.push_str("(.+?)"),
+            }
+        }
+        pattern.push('$');
+        Some(Template {
+            pattern: regex::Regex::new(&pattern).ok()?,
+            slots,
+            translation: pieces(translation),
+            weight,
+        })
+    }
+
+    fn apply(&self, message: &str) -> Option<String> {
+        let found = self.pattern.captures(message)?;
+        let value = |name: &str| {
+            self.slots
+                .iter()
+                .position(|s| s == name)
+                .and_then(|i| found.get(i + 1))
+                .map(|m| m.as_str().to_owned())
+        };
+        let mut out = String::new();
+        for piece in &self.translation {
+            match piece {
+                Piece::Text(t) => out.push_str(t),
+                Piece::Slot(name) => out.push_str(&value(name).unwrap_or_default()),
+            }
+        }
+        Some(out)
+    }
 }
 
 /// The module whose catalogue comes after a module's own.
@@ -97,6 +234,92 @@ impl Catalogues {
             .and_then(|c| c.get(text))
             .or_else(|| catalogues.get(SHARED).and_then(|c| c.get(text)))
             .map(String::as_str)
+    }
+
+    /// Every module's messages of a locale, made once.
+    fn messages(&self, locale: &str) -> Option<&Messages> {
+        self.messages
+            .get_or_init(|| {
+                self.by_locale
+                    .iter()
+                    .map(|(locale, modules)| {
+                        let mut messages = Messages::default();
+                        // The kernel's first, so that a module's own wins.
+                        let order = modules
+                            .iter()
+                            .filter(|(m, _)| m.as_str() == SHARED)
+                            .chain(modules.iter().filter(|(m, _)| m.as_str() != SHARED));
+                        for (_, catalogue) in order {
+                            for (english, translation) in catalogue {
+                                messages.exact.insert(english.clone(), translation.clone());
+                            }
+                        }
+                        messages.templates = messages
+                            .exact
+                            .iter()
+                            .filter_map(|(e, t)| Template::new(e, t))
+                            .collect();
+                        messages.templates.sort_by_key(|t| std::cmp::Reverse(t.weight));
+                        (locale.clone(), messages)
+                    })
+                    .collect()
+            })
+            .get(locale)
+    }
+
+    /// The translation of an error message, whichever module made it: the
+    /// message as it is in a catalogue, else one made from a message with
+    /// placeholders, which keep their values. A message of a line
+    /// (`line 3: ...`) or a field (`field 'qty' ...`) keeps its line or
+    /// field. `None` when there is none.
+    pub fn translate_message(&self, locale: &str, message: &str) -> Option<String> {
+        let messages = self.messages(locale)?;
+        if let Some(t) = messages.exact.get(message) {
+            return Some(t.clone());
+        }
+        if let Some(rest) = message.strip_prefix("line ")
+            && let Some((n, rest)) = rest.split_once(": ")
+            && n.chars().all(|c| c.is_ascii_digit())
+        {
+            let line = self
+                .lookup(locale, SHARED, "line {}: ")
+                .map(|t| t.replace("{}", n))
+                .unwrap_or_else(|| format!("line {n}: "));
+            return Some(format!(
+                "{line}{}",
+                self.translate_message(locale, rest)
+                    .unwrap_or(rest.to_owned())
+            ));
+        }
+        if let Some(rest) = message.strip_prefix("field '")
+            && let Some((name, rest)) = rest.split_once("' ")
+        {
+            let field = self
+                .lookup(locale, SHARED, "field '{}' ")
+                .map(|t| t.replace("{}", name))
+                .unwrap_or_else(|| format!("field '{name}' "));
+            return Some(format!(
+                "{field}{}",
+                self.translate_message(locale, rest)
+                    .unwrap_or(rest.to_owned())
+            ));
+        }
+        // A record that is not found names its kind as the code does
+        // (`sales_order not found`): the kind as its label says it.
+        if let Some(what) = message.strip_suffix(" not found")
+            && !what.contains(' ')
+        {
+            let mut label = what.replace('_', " ");
+            if let Some(first) = label.get(..1) {
+                label = first.to_uppercase() + &label[1..];
+            }
+            let noun = messages.exact.get(&label).cloned().unwrap_or(label);
+            return messages
+                .exact
+                .get("{} not found")
+                .map(|t| t.replace("{}", &noun));
+        }
+        messages.templates.iter().find_map(|t| t.apply(message))
     }
 
     /// Translate a description (as `meta.describe` gives it) in place.
@@ -202,4 +425,84 @@ fn type_name(text: &str) -> bool {
             .chars()
             .zip(text.chars().skip(1))
             .any(|(a, b)| a.is_lowercase() && b.is_uppercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn catalogues() -> Catalogues {
+        let mut c = Catalogues::default();
+        c.add(
+            SHARED,
+            "de",
+            r#"{
+                "line {}: ": "Zeile {}: ",
+                "field '{}' ": "Feld '{}' ",
+                "{} not found": "{} nicht gefunden",
+                "Sales order": "Kundenauftrag",
+                "the quantity must be more than zero": "die Menge muss größer als null sein"
+            }"#,
+        )
+        .unwrap();
+        c.add(
+            "stock",
+            "de",
+            r#"{
+                "only {} {uom} of item {item_code} are on hand in warehouse {warehouse_code}": "nur {} {uom} von Artikel {item_code} sind in Lager {warehouse_code} vorhanden",
+                "account {code} is inactive": "Konto {code} ist inaktiv",
+                "only % % of item % are on hand in warehouse %": "nur % % von Artikel % sind in Lager % vorhanden"
+            }"#,
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn messages_with_values_are_translated_keeping_them() {
+        let c = catalogues();
+        let t = |m: &str| c.translate_message("de", m);
+        assert_eq!(
+            t("only 3 kg of item WIDGET are on hand in warehouse MAIN").as_deref(),
+            Some("nur 3 kg von Artikel WIDGET sind in Lager MAIN vorhanden")
+        );
+        assert_eq!(
+            t("account 4000 is inactive").as_deref(),
+            Some("Konto 4000 ist inaktiv")
+        );
+        // A trigger's placeholders.
+        assert_eq!(
+            t("only 2 each of item W are on hand in warehouse M").as_deref(),
+            Some("nur 2 each von Artikel W sind in Lager M vorhanden")
+        );
+        // A line's or field's message keeps its line or field.
+        assert_eq!(
+            t("line 3: the quantity must be more than zero").as_deref(),
+            Some("Zeile 3: die Menge muss größer als null sein")
+        );
+        assert_eq!(
+            t("field 'qty' line 2: the quantity must be more than zero").as_deref(),
+            Some("Feld 'qty' Zeile 2: die Menge muss größer als null sein")
+        );
+        // A record not found, by the label of its kind.
+        assert_eq!(
+            t("sales_order not found").as_deref(),
+            Some("Kundenauftrag nicht gefunden")
+        );
+        // Nothing to say: no translation.
+        assert_eq!(t("something nobody wrote"), None);
+        assert_eq!(c.translate_message("fr", "account 4000 is inactive"), None);
+    }
+
+    #[test]
+    fn the_language_asked_for_is_negotiated() {
+        let c = catalogues();
+        assert_eq!(
+            c.negotiate("de-DE,de;q=0.9,en;q=0.8").as_deref(),
+            Some("de")
+        );
+        assert_eq!(c.negotiate("en-US,de;q=0.5"), None);
+        assert_eq!(c.negotiate("fr;q=1, de;q=0.4").as_deref(), Some("de"));
+        assert_eq!(c.negotiate("fr"), None);
+    }
 }

@@ -5,5 +5,13 @@
   "Electronic addresses": "Elektronische Adressen",
   "Party details": "Partnerdaten",
   "Set party details": "Partnerdaten setzen",
-  "Tax ids": "Steuernummern"
+  "Tax ids": "Steuernummern",
+  "a party's record stays with its party": "ein Datensatz eines Geschäftspartners bleibt bei diesem",
+  "must be company, customer or vendor": "muss company, customer oder vendor sein",
+  "party_id must be a %": "party_id muss ein %-Datensatz sein",
+  "the account paid into must be a bank account of the company": "das Zahlungskonto muss ein Bankkonto des Mandanten sein",
+  "the address named is no longer on record for the {kind}": "die genannte Adresse ist für den Datensatz ({kind}) nicht mehr hinterlegt",
+  "the same address is given twice": "dieselbe Adresse ist zweimal angegeben",
+  "this is not an address of the {kind}": "dies ist keine Adresse des Datensatzes ({kind})",
+  "this is not an address of this party; leave the id out for a new one": "dies ist keine Adresse dieses Geschäftspartners; für eine neue die ID weglassen"
 }

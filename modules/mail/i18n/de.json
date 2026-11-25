@@ -13,5 +13,16 @@
   "Send by email": "Per E-Mail senden",
   "To party only": "Nur an den Geschäftspartner",
   "Username": "Benutzername",
-  "a draft is not sent, and a document goes only to the addresses its party has on record unless the company allows otherwise": "ein Entwurf wird nicht versendet, und ein Beleg geht nur an die hinterlegten Adressen seines Geschäftspartners, sofern der Mandant nichts anderes erlaubt"
+  "a document goes to at most 20 addresses": "ein Beleg geht an höchstens 20 Adressen",
+  "a draft is not sent, and a document goes only to the addresses its party has on record unless the company allows otherwise": "ein Entwurf wird nicht versendet, und ein Beleg geht nur an die hinterlegten Adressen seines Geschäftspartners, sofern der Mandant nichts anderes erlaubt",
+  "a password is sent only over starttls or tls; without encryption, leave the password empty": "ein Passwort wird nur über starttls oder tls gesendet; ohne Verschlüsselung das Passwort leer lassen",
+  "e-invoices are not installed here ({name} is missing): send a PDF instead": "E-Rechnungen sind hier nicht installiert ({name} fehlt): stattdessen ein PDF senden",
+  "give the server's name": "den Namen des Servers angeben",
+  "only a sales invoice or credit note is sent as an e-invoice": "nur eine Ausgangsrechnung oder Gutschrift wird als E-Rechnung gesendet",
+  "security is starttls, tls or none": "die Verschlüsselung ist starttls, tls oder none",
+  "the e-invoice does not hold; see einvoice.export for what it lacks": "die E-Rechnung ist nicht gültig; was fehlt, zeigt einvoice.export",
+  "the party has no email address on record: give the addresses to send to": "für den Geschäftspartner ist keine E-Mail-Adresse hinterlegt: die Empfängeradressen angeben",
+  "this company has no email settings: set its SMTP server with smtp_settings.set": "dieser Mandant hat keine E-Mail-Einstellungen: den SMTP-Server mit smtp_settings.set setzen",
+  "{other} is not pdf, zugferd, xrechnung_ubl or xrechnung_cii": "{other} ist nicht pdf, zugferd, xrechnung_ubl oder xrechnung_cii",
+  "{} is not an email address": "{} ist keine E-Mail-Adresse"
 }

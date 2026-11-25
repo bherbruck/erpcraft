@@ -9,6 +9,7 @@ rust-version = "1.88"
 license = "Apache-2.0"
 
 [workspace.dependencies]
+regex = "1"
 erpcraft-core = { path = "crates/erpcraft-core" }
 erpcraft-db = { path = "crates/erpcraft-db" }
 erpcraft-kernel = { path = "crates/erpcraft-kernel" }

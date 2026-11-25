@@ -1046,6 +1046,7 @@ dependencies = [
  "erpcraft-core",
  "erpcraft-db",
  "erpcraft-rules",
+ "regex",
  "schemars",
  "serde",
  "serde_json",

@@ -67,7 +67,65 @@ pub fn routes(kernel: Kernel) -> Router {
                 .patch(document_update)
                 .delete(document_delete),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            kernel.clone(),
+            translate_errors,
+        ))
         .with_state(kernel)
+}
+
+/// An error's message in the caller's language: `?locale=` or the
+/// Accept-Language header, as for `/api/meta`. The code, field and line
+/// stay as they are, so a client still tells errors apart by them; only
+/// the text is translated, where a catalogue has it.
+async fn translate_errors(
+    State(kernel): State<Kernel>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let asked = request
+        .uri()
+        .query()
+        .and_then(|q| {
+            q.split('&')
+                .find_map(|pair| pair.strip_prefix("locale="))
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            request
+                .headers()
+                .get(axum::http::header::ACCEPT_LANGUAGE)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        });
+    let response = next.run(request).await;
+    let catalogues = kernel.registry().catalogues();
+    let Some(locale) = asked.as_deref().and_then(|a| catalogues.negotiate(a)) else {
+        return response;
+    };
+    if response.status().is_success() {
+        return response;
+    }
+    let (mut parts, body) = response.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "").into_response();
+    };
+    let mut value: Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(_) => return Response::from_parts(parts, axum::body::Body::from(bytes)),
+    };
+    if let Some(Value::String(message)) = value.pointer_mut("/error/message")
+        && let Some(translated) = catalogues.translate_message(&locale, message)
+    {
+        *message = translated;
+    }
+    parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+    parts.headers.insert(
+        axum::http::header::CONTENT_LANGUAGE,
+        axum::http::HeaderValue::from_str(&locale)
+            .unwrap_or(axum::http::HeaderValue::from_static("de")),
+    );
+    Response::from_parts(parts, axum::body::Body::from(value.to_string()))
 }
 
 /// The answer to a path that is not a route.

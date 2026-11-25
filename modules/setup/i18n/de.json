@@ -1,4 +1,6 @@
 {
+  "'{}' is not a setup template; there are: {}": "'{}' ist keine Einrichtungsvorlage; es gibt: {}",
+  ", ": ", ",
   "Bank account code": "Kontonummer des Bankkontos",
   "Bank account name": "Bezeichnung des Bankkontos",
   "Base currency": "Buchungswährung",
@@ -8,5 +10,12 @@
   "Setup": "Einrichtung",
   "Setup templates": "Einrichtungsvorlagen",
   "Start month": "Erster Monat",
-  "Years": "Jahre"
+  "Years": "Jahre",
+  "is not a year": "ist kein Jahr",
+  "must be 1 to 12": "muss 1 bis 12 sein",
+  "must be 1 to {MAX_YEARS}": "muss 1 bis {MAX_YEARS} sein",
+  "the payment terms {} exist and are not the template's; change one of them first": "die Zahlungsbedingung {} existiert und ist nicht die der Vorlage; zuerst eine von beiden ändern",
+  "the tax code {} exists and is not the template's tax{detail}; change one of them first": "der Steuerschlüssel {} existiert und ist nicht die Steuer der Vorlage{detail}; zuerst einen von beiden ändern",
+  "the tax code {} exists with another VAT category than the template's {wanted}; change one of them first": "der Steuerschlüssel {} existiert mit einer anderen USt-Kategorie als {wanted} der Vorlage; zuerst einen von beiden ändern",
+  "{code} is another account of the template's chart": "{code} ist ein anderes Konto des Kontenrahmens der Vorlage"
 }

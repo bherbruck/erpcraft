@@ -16,5 +16,9 @@
   "Recurring invoices": "Abo-Rechnungen",
   "The others are counted from it.": "Die weiteren werden ab ihr gezählt.",
   "The template's company; filled in from it.": "Der Mandant der Vorlage; wird aus ihr übernommen.",
+  "a recurring invoice line is of its template's company": "eine Zeile einer Abo-Rechnung gehört zum Mandanten ihrer Vorlage",
+  "a recurring invoice that has made invoices keeps its start": "eine Abo-Rechnung, die schon Rechnungen erstellt hat, behält ihren Beginn",
+  "recurring invoice {} has no lines": "Abo-Rechnung {} hat keine Zeilen",
+  "the schedule runs past the calendar": "der Zeitplan läuft über den Kalender hinaus",
   "this invoice is left for a person to post": "diese Rechnung bleibt zum Buchen durch eine Person liegen"
 }

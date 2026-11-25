@@ -9,5 +9,18 @@
   "URL": "URL",
   "Url": "URL",
   "Webhook": "Webhook",
-  "Webhooks": "Webhooks"
+  "Webhooks": "Webhooks",
+  "a secret has at least {MIN_SECRET} characters; leave it out to have one generated": "ein Geheimnis hat mindestens {MIN_SECRET} Zeichen; weglassen, um eines erzeugen zu lassen",
+  "a webhook needs a name": "ein Webhook braucht einen Namen",
+  "a webhook with this name already exists": "ein Webhook mit diesem Namen existiert bereits",
+  "company_id must be a company": "company_id muss ein Mandant sein",
+  "the URL cannot carry a user name or password; the receiver checks the signature instead": "die URL darf keinen Benutzernamen oder kein Passwort enthalten; der Empfänger prüft stattdessen die Signatur",
+  "the URL does not lead to a public address; a webhook must point to a host on the public internet": "die URL führt nicht zu einer öffentlichen Adresse; ein Webhook muss auf einen Host im öffentlichen Internet zeigen",
+  "the URL is not valid: {e}": "die URL ist ungültig: {e}",
+  "the URL must use https": "die URL muss https verwenden",
+  "the URL must use https; plain http is accepted only for localhost": "die URL muss https verwenden; einfaches http wird nur für localhost angenommen",
+  "the URL needs a host": "die URL braucht einen Host",
+  "topic {n} is not a topic: give a command name such as 'journal_entry.post', or a prefix ending in '*' such as 'purchase_order.*'": "Thema {n} ist kein Thema: einen Befehlsnamen wie 'journal_entry.post' angeben oder ein Präfix mit '*' am Ende wie 'purchase_order.*'",
+  "topic {n} is not the name of a command, so no event has that topic": "Thema {n} ist nicht der Name eines Befehls, daher hat kein Ereignis dieses Thema",
+  "webhook not found": "Webhook nicht gefunden"
 }
