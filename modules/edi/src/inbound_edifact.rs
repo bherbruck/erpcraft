@@ -141,6 +141,17 @@ pub async fn receive(
                     verdict,
                 )
             }
+            "REMADV" => {
+                let (remit, verdict) = crate::edifact::remadv::read(m, &d);
+                Read::Business(
+                    Business {
+                        number: remit.trace,
+                        purpose: remit.handling,
+                        notes: remit.notes,
+                    },
+                    verdict,
+                )
+            }
             "CONTRL" => Read::Contrl(Contrl::read(m)),
             _ => Read::Other(Verdict {
                 codes: vec![NOT_SUPPORTED],

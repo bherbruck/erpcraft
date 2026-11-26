@@ -29,6 +29,7 @@ pub mod invrpt;
 pub mod ordchg;
 pub mod orders;
 pub mod ordrsp;
+pub mod remadv;
 mod write;
 
 pub use write::{Envelope, Outgoing, SyntaxId, write};

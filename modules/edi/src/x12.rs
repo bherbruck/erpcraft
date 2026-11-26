@@ -30,6 +30,7 @@ pub mod inventory846;
 pub mod invoice810;
 pub mod po850;
 pub mod poack855;
+pub mod remit820;
 pub mod ta1;
 
 /// Interchanges in one file. A mailbox pickup may hold several.

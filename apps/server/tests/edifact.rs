@@ -560,3 +560,80 @@ UNZ+1+EU0420'"
     assert_eq!(changed["id"], order["id"]);
     t.stop().await;
 }
+
+#[tokio::test]
+async fn a_remadv_pays_two_invoices_and_reports_its_deduction() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let customer: String = sqlx::query_scalar("SELECT id::text FROM customer WHERE code = 'LH'")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    let mut numbers = vec![];
+    for amount in ["100", "200"] {
+        let (status, draft) = t
+            .post(
+                &t.admin,
+                "/api/documents/sales_invoice",
+                json!({ "company_id": f.c.id, "doc_date": "2026-11-10", "body": {
+                    "customer_id": customer,
+                    "lines": [{ "account_id": f.c.revenue, "description": "Werkzeug",
+                                "qty": "1", "unit_price": amount }] } }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{draft}");
+        let posted = run(&t, "sales_invoice.post", json!({ "id": draft["id"] })).await;
+        numbers.push(posted["number"].as_str().unwrap().to_owned());
+    }
+    // 119,00 and 238,00 with VAT; 10,00 deducted from the second.
+    let remadv = format!(
+        "UNA:+,? '\
+UNB+UNOC:3+{BUYER}:14+{SELLER}:14+261120:1000+EU0430'\
+UNH+1+REMADV:D:96A:UN'\
+BGM+481+PAY-5501+9'\
+DTM+137:20261120:102'\
+MOA+9:347'\
+DOC+380+{}'\
+MOA+12:119'\
+MOA+77:119'\
+DOC+380+{}'\
+MOA+12:228'\
+MOA+77:238'\
+AJT+CB+CLAIM-12'\
+MOA+5:-10'\
+UNS+S'\
+UNT+14+1'\
+UNZ+1+EU0430'",
+        numbers[0], numbers[1]
+    );
+    let got = receive(&t, remadv.as_bytes()).await;
+    let message = &got["messages"][0];
+    assert_eq!(message["message"], "REMADV");
+    assert_eq!(message["state"], "proposed", "{got}");
+    let p = run(
+        &t,
+        "edi.remittance_proposal",
+        json!({ "message_id": message["id"] }),
+    )
+    .await;
+    assert_eq!(p["would_draft"], true, "{p}");
+    assert_eq!(p["currency"], "EUR");
+    let deductions = p["deductions"].as_array().unwrap();
+    assert_eq!(deductions.len(), 1, "{p}");
+    assert_eq!(dec(&deductions[0]["amount"]), 10.0);
+    let payment = run(
+        &t,
+        "edi.draft_remittance",
+        json!({ "message_id": message["id"], "bank_account_id": f.c.cash,
+                "accept_notes": true }),
+    )
+    .await;
+    let paid: Vec<f64> = payment["body"]["allocations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| dec(&a["amount"]))
+        .collect();
+    assert_eq!(paid, [119.0, 228.0], "{payment}");
+    t.stop().await;
+}

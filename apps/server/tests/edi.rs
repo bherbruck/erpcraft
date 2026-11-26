@@ -2523,3 +2523,130 @@ async fn an_860_changes_a_draft_and_only_reaches_a_person_once_approved() {
     assert_eq!(dec(&still["body"]["lines"][1]["qty"]), 660.0);
     t.stop().await;
 }
+
+/// The customer's 820, written here: a payment of `amount` on `date` with
+/// its documents.
+fn partner_820(control: u32, date: &str, amount: &str, documents: &str) -> String {
+    let isa = format!(
+        "ISA*00*          *00*          *ZZ*NORTHFIELDMERC *ZZ*CEDARHOLLOW    *261120*0900*U*00401*{control:09}*0*P*>~"
+    );
+    let body = format!(
+        "BPR*C*{amount}*C*ACH{}{date}~TRN*1*ACH{control}~N1*PR*NORTHFIELD MERCANTILE INC~\
+         N1*PE*CEDAR HOLLOW TOOLWORKS LLC~{documents}",
+        // BPR05 to BPR15 empty; BPR16 the date.
+        "*".repeat(12)
+    );
+    let segments = body.matches('~').count() + 2;
+    format!(
+        "{isa}GS*RA*NORTHFIELDMERC*CEDARHOLLOW*20261120*0900*{control}*X*004010~ST*820*0001~{body}SE*{segments}*0001~GE*1*{control}~IEA*1*{control:09}~"
+    )
+}
+
+#[tokio::test]
+async fn an_820_pays_three_invoices_and_its_deduction_reaches_a_person() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let mut numbers = vec![];
+    for amount in ["100.00", "200.00", "300.00"] {
+        let (status, draft) = t
+            .post(
+                &t.admin,
+                "/api/documents/sales_invoice",
+                json!({ "company_id": f.c.id, "doc_date": "2026-11-10", "body": {
+                    "customer_id": f.customer,
+                    "lines": [{ "account_id": f.c.revenue, "description": "Tools",
+                                "qty": "1", "unit_price": amount }] } }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{draft}");
+        let posted = run(&t, "sales_invoice.post", json!({ "id": id(&draft) })).await;
+        numbers.push(posted["number"].as_str().unwrap().to_owned());
+    }
+    let documents = format!(
+        "RMR*IV*{}**100*100~RMR*IV*{}**200*200~RMR*IV*{}**275*300~ADX*-25*CB*CM*CLAIM-77~",
+        numbers[0], numbers[1], numbers[2]
+    );
+    let got = received(&t, &partner_820(960, "20261120", "575", &documents)).await;
+    let message = &got["messages"][0];
+    assert_eq!(message["message"], "820");
+    assert_eq!(message["state"], "proposed", "{got}");
+    assert_eq!(message["business_key"], "ACH960");
+
+    let p = run(
+        &t,
+        "edi.remittance_proposal",
+        json!({ "message_id": message["id"] }),
+    )
+    .await;
+    assert_eq!(p["would_draft"], true, "{p}");
+    assert_eq!(p["lines"].as_array().unwrap().len(), 3);
+    assert!(
+        p["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|l| l["open_item_id"].is_string())
+    );
+    let deductions = p["deductions"].as_array().unwrap();
+    assert_eq!(deductions.len(), 1, "{p}");
+    assert_eq!(dec(&deductions[0]["amount"]), 25.0);
+    assert_eq!(deductions[0]["reason"], "CB");
+    assert_eq!(deductions[0]["allowed"], false);
+    assert_eq!(findings(&p, "deduction").len(), 1, "{p}");
+
+    // A deduction reaches a person: not drafted until it is read.
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "edi.draft_remittance",
+            json!({ "message_id": message["id"], "bank_account_id": f.c.cash }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let payment = run(
+        &t,
+        "edi.draft_remittance",
+        json!({ "message_id": message["id"], "bank_account_id": f.c.cash,
+                "accept_notes": true }),
+    )
+    .await;
+    assert_eq!(payment["doc_type"], "payment");
+    assert_eq!(payment["doc_date"], "2026-11-20");
+    let allocations = payment["body"]["allocations"].as_array().unwrap();
+    let paid: Vec<f64> = allocations.iter().map(|a| dec(&a["amount"])).collect();
+    assert_eq!(paid, [100.0, 200.0, 275.0], "{payment}");
+    let posted = run(&t, "payment.post", json!({ "id": payment["id"] })).await;
+    assert_eq!(posted["status"], "posted", "{posted}");
+    // The third invoice keeps the 25 deducted open; nothing booked it.
+    let open: String = sqlx::query_scalar(
+        "SELECT (i.amount - i.settled)::text FROM open_item i
+         JOIN posting p ON p.id = i.posting_id JOIN document d ON d.id = p.document_id
+         WHERE d.number = $1",
+    )
+    .bind(&numbers[2])
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(open.parse::<f64>().unwrap(), 25.0);
+
+    // A payment dated before an invoice it names cannot settle it.
+    let got = received(
+        &t,
+        &partner_820(
+            961,
+            "20261105",
+            "25",
+            &format!("RMR*IV*{}**25*300~", numbers[2]),
+        ),
+    )
+    .await;
+    let p = run(
+        &t,
+        "edi.remittance_proposal",
+        json!({ "message_id": got["messages"][0]["id"] }),
+    )
+    .await;
+    assert_eq!(p["would_draft"], false, "{p}");
+    assert_eq!(findings(&p, "paid_before_invoice").len(), 1, "{p}");
+    t.stop().await;
+}

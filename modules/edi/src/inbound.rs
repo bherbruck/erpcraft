@@ -101,6 +101,17 @@ pub fn read_file(bytes: &[u8]) -> std::result::Result<Vec<ReadInterchange>, EdiE
                                     verdict,
                                 )
                             }
+                            "820" => {
+                                let (remit, verdict) = crate::x12::remit820::read(set);
+                                SetRead::Business(
+                                    Business {
+                                        number: remit.trace,
+                                        purpose: remit.handling,
+                                        notes: remit.notes,
+                                    },
+                                    verdict,
+                                )
+                            }
                             "997" | "999" => {
                                 SetRead::Ack(FunctionalAck::read(set).map_err(|e| e.message))
                             }
