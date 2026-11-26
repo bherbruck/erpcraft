@@ -566,6 +566,8 @@ async fn context(
                 value
             }).collect::<Vec<_>>(),
             "summary": meta.summary,
+            // The states with their labels, in the page's language.
+            "states": meta.states,
         },
         "company": {
             "id": company_id, "code": code, "name": name,

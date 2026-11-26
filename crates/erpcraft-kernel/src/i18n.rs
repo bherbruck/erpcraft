@@ -54,6 +54,8 @@ struct Template {
     /// How much of the message is fixed text: the more, the more
     /// specific, and the earlier it is tried.
     weight: usize,
+    /// The fixed text the message begins with, if it begins with any.
+    lead: String,
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +104,11 @@ fn pieces(text: &str) -> Vec<Piece> {
                 out.push(Piece::Text(std::mem::take(&mut literal)));
                 out.push(Piece::Slot(name));
             }
+            // `%%` in a trigger's message is one `%`, no value.
+            '%' if chars.peek() == Some(&'%') => {
+                chars.next();
+                literal.push('%');
+            }
             '%' => {
                 percent += 1;
                 out.push(Piece::Text(std::mem::take(&mut literal)));
@@ -139,22 +146,48 @@ impl Template {
             }
         }
         pattern.push('$');
+        let lead = match parts.first() {
+            Some(Piece::Text(t)) => t.clone(),
+            _ => String::new(),
+        };
         Some(Template {
             pattern: regex::Regex::new(&pattern).ok()?,
             slots,
             translation: pieces(translation),
             weight,
+            lead,
         })
     }
 
-    fn apply(&self, message: &str) -> Option<String> {
+    /// Whether the template only wraps another message, as `line {}: {}`
+    /// and `field '{}' {}` do: fixed text at most around a line or field
+    /// and the message itself last.
+    fn wraps(&self) -> bool {
+        self.pattern.as_str().ends_with("(.+?)$") && self.weight <= self.lead.len() + 2
+    }
+
+    /// The translation of `message` if it is made from this template, with
+    /// each value as `inner` translates it: a value that is a sentence of
+    /// its own (`invalid input: line 2: unknown field 'x'`) is translated
+    /// too, a name or a number stays as it is.
+    fn apply_with(
+        &self,
+        message: &str,
+        inner: &dyn Fn(&str) -> Option<String>,
+    ) -> Option<String> {
         let found = self.pattern.captures(message)?;
         let value = |name: &str| {
             self.slots
                 .iter()
                 .position(|s| s == name)
                 .and_then(|i| found.get(i + 1))
-                .map(|m| m.as_str().to_owned())
+                .map(|m| {
+                    let text = m.as_str();
+                    (text.contains(' ') && text.len() < message.len())
+                        .then(|| inner(text))
+                        .flatten()
+                        .unwrap_or_else(|| text.to_owned())
+                })
         };
         let mut out = String::new();
         for piece in &self.translation {
@@ -210,7 +243,8 @@ impl Catalogues {
                     .find_map(|p| p.trim().strip_prefix("q="))
                     .and_then(|q| q.parse::<f32>().ok())
                     .unwrap_or(1.0);
-                (!tag.is_empty()).then_some((quality, tag))
+                // q=0 is "not acceptable" (RFC 9110, 12.4.2).
+                (!tag.is_empty() && quality > 0.0).then_some((quality, tag))
             })
             .collect();
         ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -279,6 +313,24 @@ impl Catalogues {
         if let Some(t) = messages.exact.get(message) {
             return Some(t.clone());
         }
+        let inner = |text: &str| self.translate_message(locale, text);
+        // A message of a line or a field that has a translation of its own,
+        // as a whole (`line {}: these goods have been invoiced; ...`),
+        // takes it. A template that begins with a placeholder would take
+        // the prefix as its value and leave it English, so only those that
+        // begin with the same words are tried here; and not the wrappers
+        // (`line {line}: {msg}`), which are what the prefix is for.
+        for prefix in ["line ", "field '"] {
+            if message.starts_with(prefix)
+                && let Some(t) = messages.templates.iter().find_map(|t| {
+                    (t.lead.starts_with(prefix) && !t.wraps())
+                        .then(|| t.apply_with(message, &inner))
+                        .flatten()
+                })
+            {
+                return Some(t);
+            }
+        }
         if let Some(rest) = message.strip_prefix("line ")
             && let Some((n, rest)) = rest.split_once(": ")
             && n.chars().all(|c| c.is_ascii_digit())
@@ -321,7 +373,10 @@ impl Catalogues {
                 .get("{} not found")
                 .map(|t| t.replace("{}", &noun));
         }
-        messages.templates.iter().find_map(|t| t.apply(message))
+        messages
+            .templates
+            .iter()
+            .find_map(|t| t.apply_with(message, &inner))
     }
 
     /// Translate a description (as `meta.describe` gives it) in place.

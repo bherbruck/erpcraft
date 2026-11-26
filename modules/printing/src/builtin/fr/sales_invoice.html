@@ -75,6 +75,10 @@
   {%- endfor %}
   <tr class="grand"><th>Total TTC {{ doc.summary.currency or company.currency }}</th><td class="num">{{ doc.summary.total_gross | money }}</td></tr>
 </table>
+{%- set currency = doc.summary.currency or company.currency %}
+{%- if not canada and currency != company.currency and facts.tax %}
+<p>Montant de la TVA en {{ company.currency }} :{% for t in facts.tax %} {{ t.rate | decimal }} % sur {{ t.accounting_base | money }} {{ company.currency }} : {{ t.accounting_amount | money }} {{ company.currency }}{% if not loop.last %};{% endif %}{% endfor %}.</p>
+{%- endif %}
 {%- for t in facts.tax %}
 {%- if t.reverse_charge %}
 <p>Autoliquidation : la taxe est due par le preneur.{% if t.exemption_reason %} {{ t.exemption_reason }}{% endif %}</p>

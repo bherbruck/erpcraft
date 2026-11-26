@@ -21,7 +21,7 @@
       <tr><th>Date</th><td>{{ doc.doc_date | date }}</td></tr>
       <tr><th>Currency</th><td>{{ doc.summary.currency or company.currency }}</td></tr>
       {%- if doc.status not in ["open", "posted"] %}
-      <tr><th>Status</th><td>{{ doc.status }}</td></tr>
+      <tr><th>Status</th><td>{% set shown = meta.states | selectattr("name", "equalto", doc.status) | first %}{{ shown.label if shown else doc.status }}</td></tr>
       {%- endif %}
     </table>
   </div>

@@ -39,6 +39,6 @@
 <table class="totals">
   <tr><th>Net</th><td class="num">{{ doc.summary.total_net | money }}</td></tr>
   <tr><th>Tax</th><td class="num">{{ doc.summary.total_tax | money }}</td></tr>
-  <tr class="grand"><th>Total {{ company.currency }}</th><td class="num">{{ doc.summary.total_gross | money }}</td></tr>
+  <tr class="grand"><th>Total {{ doc.summary.currency or company.currency }}</th><td class="num">{{ doc.summary.total_gross | money }}</td></tr>
 </table>
 <!--FOOT-->

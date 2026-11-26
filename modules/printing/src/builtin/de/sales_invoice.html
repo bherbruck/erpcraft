@@ -50,6 +50,10 @@
   {%- endfor %}
   <tr class="grand"><th>Gesamtbetrag {{ doc.summary.currency or company.currency }}</th><td class="num">{{ doc.summary.total_gross | money }}</td></tr>
 </table>
+{%- set currency = doc.summary.currency or company.currency %}
+{%- if currency != company.currency and facts.tax %}
+<p>Die Umsatzsteuer in {{ company.currency }} (§ 16 Abs. 6 UStG):{% for t in facts.tax %} {{ t.rate | decimal }} % auf {{ t.accounting_base | money }} {{ company.currency }}: {{ t.accounting_amount | money }} {{ company.currency }}{% if not loop.last %};{% endif %}{% endfor %}.</p>
+{%- endif %}
 {%- for t in facts.tax %}
 {%- if t.reverse_charge %}
 <p>Steuerschuldnerschaft des Leistungsempfängers (§ 13b UStG). {% if t.exemption_reason %}{{ t.exemption_reason }}{% endif %}</p>

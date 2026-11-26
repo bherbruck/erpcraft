@@ -20,7 +20,7 @@
       {%- if extra_label %}<tr><th>{{ extra_label }}</th><td>{{ extra_value }}</td></tr>{% endif %}
       <tr><th>Währung</th><td>{{ doc.summary.currency or company.currency }}</td></tr>
       {%- if doc.status not in ["open", "posted", "issued"] %}
-      <tr><th>Status</th><td>{{ "Entwurf" if doc.status == "draft" else doc.status }}</td></tr>
+      <tr><th>Status</th><td>{% set shown = meta.states | selectattr("name", "equalto", doc.status) | first %}{{ shown.label if shown else doc.status }}</td></tr>
       {%- endif %}
     </table>
   </div>

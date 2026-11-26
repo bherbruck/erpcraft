@@ -24,6 +24,6 @@
   </tbody>
 </table>
 <table class="totals">
-  <tr class="grand"><th>Total {{ company.currency }}</th><td class="num">{{ doc.summary.total_net | money }}</td></tr>
+  <tr class="grand"><th>Total {{ doc.summary.currency or company.currency }}</th><td class="num">{{ doc.summary.total_net | money }}</td></tr>
 </table>
 <!--FOOT-->
