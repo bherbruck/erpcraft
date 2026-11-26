@@ -104,7 +104,8 @@ impl Subscriber for EdiSubscriber {
                     let user: Option<Uuid> = sqlx::query_scalar(
                         "SELECT p.run_as_user_id FROM edi_message m
                          JOIN edi_partner p ON p.id = m.partner_id
-                         WHERE m.id = $1 AND m.state = 'proposed' AND p.active",
+                         WHERE m.id = $1 AND m.state = 'proposed' AND p.active
+                           AND m.message IN ('850', 'ORDERS') AND COALESCE(m.purpose, '00') = '00'",
                     )
                     .bind(message_id)
                     .fetch_optional(kernel.pool())

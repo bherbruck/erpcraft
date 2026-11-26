@@ -8,6 +8,8 @@ pub const PRICE_ZERO: &str = "edi_order.price_zero";
 pub const AUTO_APPROVE: &str = "edi.auto_approve";
 pub const SEND: &str = "edi.send";
 pub const BEFORE_ASN: &str = "edi_invoice.before_asn";
+pub const ORDER_CHANGE: &str = "edi_order.change";
+pub const DEDUCTION: &str = "edi_remittance.deduction";
 
 pub fn points() -> Vec<PolicyPoint> {
     vec![
@@ -98,5 +100,35 @@ pub fn points() -> Vec<PolicyPoint> {
             "The state of the order's ship notice: none, invalid, ready, sent, rejected, ...",
         )
         .refusal("the ship notice must be acknowledged first"),
+        PolicyPoint::new(
+            ORDER_CHANGE,
+            "Asked when a partner's order change (860 or ORDCHG, or an 850 that replaces the \
+             order) is about to be applied to the draft sales order it changes: may it be? \
+             Unless configured otherwise it may. A change to an order that is no longer a \
+             draft is never applied: it is a finding for a person, whatever this says.",
+        )
+        .text("partner_code", "The partner's code")
+        .text("order_number", "The partner's order number")
+        .text("order_status", "The sales order's status: draft")
+        .number("lines_added", "How many lines the change adds")
+        .number("lines_deleted", "How many lines it deletes")
+        .number(
+            "lines_changed",
+            "How many lines it changes in quantity or price",
+        )
+        .refusal("this order change is not applied by itself"),
+        PolicyPoint::new(
+            DEDUCTION,
+            "Asked for each amount a partner's remittance (820 or REMADV) deducts from what it \
+             pays, such as a chargeback: may it be taken as it is? Unless configured otherwise \
+             it may not, so every deduction reaches a person, who settles it with a credit \
+             note or asks for the money. Nothing is booked for a deduction either way.",
+        )
+        .text("partner_code", "The partner's code")
+        .number("amount", "The amount deducted")
+        .as_money(None)
+        .text("reason", "The partner's reason code for it")
+        .refuse_by_default()
+        .refusal("a deduction is for a person to settle"),
     ]
 }

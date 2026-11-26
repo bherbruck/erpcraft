@@ -31,6 +31,7 @@ mod inbound_edifact;
 pub mod segment;
 pub mod x12;
 
+pub mod change;
 pub mod commands;
 pub mod commands_out;
 pub mod control;
@@ -169,6 +170,8 @@ impl Module for EdiModule {
             command(guide_commands::Export),
             command(guide_commands::Import),
             command(inventory::Advise),
+            command(change::ProposeChange),
+            command(change::ApplyChange),
         ]
     }
 }

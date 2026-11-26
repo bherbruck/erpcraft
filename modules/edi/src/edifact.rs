@@ -26,6 +26,7 @@ pub mod contrl;
 pub mod desadv;
 pub mod invoic;
 pub mod invrpt;
+pub mod ordchg;
 pub mod orders;
 pub mod ordrsp;
 mod write;

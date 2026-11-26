@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::control::{self, Kind};
 use crate::edifact::contrl::{ACKNOWLEDGED, Contrl, NOT_SUPPORTED, REJECTED, Verdict};
 use crate::edifact::{self, Interchange, Outgoing, orders};
-use crate::inbound::{PERMISSION, ReceiveOutput, blocking, output, unrouted_with};
+use crate::inbound::{Business, PERMISSION, ReceiveOutput, blocking, output, unrouted_with};
 use crate::partner::{self, Partner};
 use crate::proposal::Finding;
 use crate::store;
@@ -38,6 +38,7 @@ fn describe(code: u8) -> String {
 /// One message as read.
 enum Read {
     Order(Box<PurchaseOrder>, Verdict),
+    Business(Business, Verdict),
     Contrl(Option<Contrl>),
     Other(Verdict),
 }
@@ -129,6 +130,17 @@ pub async fn receive(
                 let (order, verdict) = orders::read(m, &d);
                 Read::Order(Box::new(order), verdict)
             }
+            "ORDCHG" => {
+                let (change, verdict) = crate::edifact::ordchg::read(m, &d);
+                Read::Business(
+                    Business {
+                        number: change.order_number,
+                        purpose: change.purpose,
+                        notes: change.notes,
+                    },
+                    verdict,
+                )
+            }
             "CONTRL" => Read::Contrl(Contrl::read(m)),
             _ => Read::Other(Verdict {
                 codes: vec![NOT_SUPPORTED],
@@ -141,7 +153,8 @@ pub async fn receive(
         let position = index as i32 + 1;
         let mut findings: Vec<Finding> = vec![];
         let (verdict, order, contrl) = match read {
-            Read::Order(order, verdict) => (verdict, Some(order), None),
+            Read::Order(order, verdict) => (verdict, Some(Business::of_order(&order)), None),
+            Read::Business(business, verdict) => (verdict, Some(business), None),
             Read::Contrl(contrl) => (Verdict::default(), None, Some(contrl)),
             Read::Other(verdict) => (verdict, None, None),
         };

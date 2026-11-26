@@ -24,6 +24,7 @@ use crate::segment::{
 
 pub mod ack;
 pub mod asn856;
+pub mod change860;
 pub mod fields;
 pub mod inventory846;
 pub mod invoice810;

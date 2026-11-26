@@ -2400,3 +2400,126 @@ async fn an_inventory_advice_says_what_stock_availability_says_in_the_partners_u
     );
     t.stop().await;
 }
+
+/// The partner's 860 to its order 4500018842, written here.
+fn partner_860(control: u32, change: u32, lines: &str) -> String {
+    let isa = format!(
+        "ISA*00*          *00*          *ZZ*NORTHFIELDMERC *ZZ*CEDARHOLLOW    *261120*0900*U*00401*{control:09}*0*P*>~"
+    );
+    let body = format!("BCH*04*SA*4500018842**{change}*20261118~{lines}");
+    let lines_count = body.matches("POC*").count();
+    let body = format!("{body}CTT*{lines_count}~");
+    let segments = body.matches('~').count() + 2;
+    format!(
+        "{isa}GS*PC*NORTHFIELDMERC*CEDARHOLLOW*20261120*0900*{control}*X*004010~ST*860*0001~{body}SE*{segments}*0001~GE*1*{control}~IEA*1*{control:09}~"
+    )
+}
+
+#[tokio::test]
+async fn an_860_changes_a_draft_and_only_reaches_a_person_once_approved() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    answering(&t, &f).await;
+    let order = drafted(&t, &f, PO850).await;
+
+    // Ten cases fewer of tape, no knives, and ten hammers more on a line
+    // of their own.
+    let got = received(
+        &t,
+        &partner_860(
+            950,
+            1,
+            "POC*2*QD*110**CA*31.2**UK*10400001000202~POC*3*DI*0**EA*7.95**UP*040000100034~\
+             POC*4*AI*10**EA*12.5**UP*040000100010~",
+        ),
+    )
+    .await;
+    let message = &got["messages"][0];
+    assert_eq!(message["message"], "860");
+    assert_eq!(message["state"], "proposed", "{got}");
+    assert_eq!(message["business_key"], "4500018842");
+    assert_eq!(got["acknowledgements"].as_array().unwrap().len(), 1);
+    // Not an order: the automation does not draft it.
+    deliver_events(&t).await;
+
+    let p = run(
+        &t,
+        "edi.change_proposal",
+        json!({ "message_id": message["id"] }),
+    )
+    .await;
+    assert_eq!(p["would_apply"], true, "{p}");
+    assert_eq!(p["order"]["id"], order["id"]);
+    let changes = p["changes"].as_array().unwrap();
+    let what: Vec<(&str, &str)> = changes
+        .iter()
+        .map(|c| (c["line_id"].as_str().unwrap(), c["what"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        what,
+        [("2", "quantity"), ("3", "delete"), ("4", "add")],
+        "{p}"
+    );
+    // 110 cases of six.
+    assert_eq!(dec(&changes[0]["qty_after"]), 660.0);
+    assert_eq!(changes[2]["item_id"], json!(f.hammer));
+
+    let changed = run(
+        &t,
+        "edi.apply_change",
+        json!({ "message_id": message["id"] }),
+    )
+    .await;
+    let lines = changed["body"]["lines"].as_array().unwrap();
+    assert_eq!(lines.len(), 3, "{changed}");
+    assert_eq!(lines[1]["item_id"], json!(f.tape));
+    assert_eq!(dec(&lines[1]["qty"]), 660.0);
+    assert_eq!(lines[2]["item_id"], json!(f.hammer));
+    assert_eq!(dec(&lines[2]["qty"]), 10.0);
+    let (state,): (String,) = sqlx::query_as("SELECT state FROM edi_message WHERE id = $1::uuid")
+        .bind(message["id"].as_str().unwrap())
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "drafted");
+
+    // Approved, the 855 answers the order as it now is: line 4 by its id.
+    let approved = run(&t, "sales_order.approve", json!({ "id": order["id"] })).await;
+    deliver_events(&t).await;
+    let (_, ack) = made(&t, &approved, "855").await;
+    assert!(ack.contains("PO1*2*110*CA*31.2*"), "{ack}");
+    assert!(ack.contains("PO1*4*10*EA*12.5*"), "{ack}");
+    assert!(!ack.contains("PO1*3*"), "{ack}");
+
+    // A change to the approved order changes nothing: it is for a person.
+    let got = received(
+        &t,
+        &partner_860(951, 2, "POC*2*QI*130**CA*31.2**UK*10400001000202~"),
+    )
+    .await;
+    let message = &got["messages"][0];
+    let p = run(
+        &t,
+        "edi.change_proposal",
+        json!({ "message_id": message["id"] }),
+    )
+    .await;
+    assert_eq!(p["would_apply"], false, "{p}");
+    assert_eq!(findings(&p, "order_not_draft").len(), 1, "{p}");
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "edi.apply_change",
+            json!({ "message_id": message["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (_, still) = t
+        .get(
+            &t.admin,
+            &format!("/api/documents/sales_order/{}", id(&order)),
+        )
+        .await;
+    assert_eq!(dec(&still["body"]["lines"][1]["qty"]), 660.0);
+    t.stop().await;
+}

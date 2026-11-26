@@ -503,3 +503,60 @@ async fn an_invrpt_advises_stock_in_the_partners_units() {
     assert!(bytes.contains("CNT+2:2'"), "{bytes}");
     t.stop().await;
 }
+
+#[tokio::test]
+async fn an_ordchg_changes_the_draft_its_orders_became() {
+    let t = TestApp::start().await;
+    setup(&t).await;
+    let got = receive(&t, &orders()).await;
+    let order = run(
+        &t,
+        "edi.draft",
+        json!({ "message_id": got["messages"][0]["id"], "accept_notes": true }),
+    )
+    .await;
+    // Fifteen cartons in place of twenty, and the hammers' price lowered.
+    let change = format!(
+        "UNA:+,? '\
+UNB+UNOC:3+{BUYER}:14+{SELLER}:14+261119:1000+EU0420'\
+UNH+1+ORDCHG:D:96A:UN'\
+BGM+230+CH-1+4'\
+RFF+ON:PO-88001'\
+DTM+171:20261118:102'\
+LIN+1+3+4098765100017:EN'\
+QTY+21:48:PCE'\
+PRI+AAA:12'\
+LIN+2+3+4098765100024:EN'\
+QTY+21:15:CT'\
+UNS+S'\
+CNT+2:2'\
+UNT+12+1'\
+UNZ+1+EU0420'"
+    );
+    let got = receive(&t, change.as_bytes()).await;
+    let message = &got["messages"][0];
+    assert_eq!(message["message"], "ORDCHG");
+    assert_eq!(message["state"], "proposed", "{got}");
+    let acks = got["acknowledgements"].as_array().unwrap();
+    let contrl = content(&t, acks[0]["interchange_id"].as_str().unwrap()).await;
+    assert!(contrl.contains("UCM+1+ORDCHG:D:96A:UN+7'"), "{contrl}");
+
+    let p = run(
+        &t,
+        "edi.change_proposal",
+        json!({ "message_id": message["id"] }),
+    )
+    .await;
+    assert_eq!(p["would_apply"], true, "{p}");
+    let changed = run(
+        &t,
+        "edi.apply_change",
+        json!({ "message_id": message["id"] }),
+    )
+    .await;
+    let lines = changed["body"]["lines"].as_array().unwrap();
+    assert_eq!(dec(&lines[0]["unit_price"]), 12.0, "{changed}");
+    assert_eq!(dec(&lines[1]["qty"]), 90.0, "{changed}");
+    assert_eq!(changed["id"], order["id"]);
+    t.stop().await;
+}

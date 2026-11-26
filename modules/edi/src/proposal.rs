@@ -375,212 +375,21 @@ async fn sales_factor(ctx: &mut Ctx<'_>, item_id: Uuid, uom: &str) -> Result<Opt
     )
 }
 
-/// Whether a quantity or price fits a sales order line, `numeric(20, 6)`.
-/// The facts of [`PRICE_ZERO`] for one line.
-pub fn price_zero_facts(partner: &Partner, line: &str) -> Value {
-    json!({ "partner_code": partner.code, "line": line })
-}
-
-fn fits(value: Decimal) -> bool {
-    value.abs() < Decimal::from(100_000_000_000_000i64) && value.normalize().scale() <= 6
-}
-
-/// A unit price divided into a smaller unit, only when it divides exactly
-/// within the places a price has. Never rounded.
-pub fn divide_price(price: Decimal, units_per: Decimal) -> Option<Decimal> {
-    if units_per <= Decimal::ZERO {
-        return None;
-    }
-    let unit = price.checked_div(units_per)?;
-    let rounded = unit.round_dp(PRICE_SCALE);
-    (rounded.checked_mul(units_per)? == price).then(|| rounded.normalize())
-}
-
-pub async fn propose(ctx: &mut Ctx<'_>, message_id: Uuid, choices: &Choices) -> Result<Proposal> {
-    let row = message_row(ctx, message_id, false).await?;
-    ctx.require("edi_message:read", row.company_id)?;
-    let order = order_of(ctx, &row).await?;
-    let partner = partner::load(&mut *ctx.conn, row.partner_id).await?;
-    build(ctx, &row, &partner, order, choices).await
-}
-
-pub async fn build(
+/// Each line of an order as the sales order line it would become: its
+/// item, quantity and price in the item's own unit, with what is wrong
+/// with it in `findings`; and what the lines come to at the partner's
+/// prices, if every one has a price.
+pub(crate) async fn propose_lines(
     ctx: &mut Ctx<'_>,
-    row: &MessageRow,
     partner: &Partner,
-    order: PurchaseOrder,
+    spec: &guide::Spec,
+    order_lines: &[Line],
     choices: &Choices,
-) -> Result<Proposal> {
-    let mut findings: Vec<Finding> = Vec::new();
-    let spec = guide::spec_for(&mut *ctx.conn, partner, &row.message, "in").await?;
-
-    // What reading found stays: syntax errors and counts.
-    if let Ok(stored) = serde_json::from_value::<Vec<Finding>>(row.findings.clone()) {
-        findings.extend(stored);
-    }
-    match row.state.as_str() {
-        "proposed" => {}
-        "test" => findings.push(Finding::blocking(
-            "test",
-            None,
-            "This order is test traffic (ISA15, or a partner still in test): it is \
-             acknowledged and never becomes a document.",
-        )),
-        "drafted" => findings.push(Finding::blocking(
-            "drafted",
-            None,
-            "This order was drafted already.",
-        )),
-        "dismissed" => findings.push(Finding::blocking(
-            "dismissed",
-            None,
-            "This order was dismissed.",
-        )),
-        "rejected" => {
-            if !findings.iter().any(|f| f.severity == Severity::Blocking) {
-                findings.push(Finding::blocking(
-                    "rejected",
-                    None,
-                    "This order was rejected when it was read.",
-                ));
-            }
-        }
-        other => findings.push(Finding::blocking(
-            "state",
-            None,
-            format!("A message in the state {other} is not drafted."),
-        )),
-    }
-    if order.purpose != "00" {
-        findings.push(Finding::blocking(
-            "purpose",
-            None,
-            format!(
-                "The order's purpose is {} (BEG01), not an original order: a change, \
-                 cancellation or replacement is not drafted as a new order.",
-                order.purpose
-            ),
-        ));
-    }
-    if !spec.constraints.is_empty() {
-        let segments = segments_of(ctx, row).await?;
-        for why in guide::violations(&spec.constraints, &segments) {
-            findings.push(Finding::note(
-                "guide",
-                None,
-                format!("The order breaks the partner's guide: {why}."),
-            ));
-        }
-    }
-    for (position, tag) in &order.unhandled {
-        findings.push(Finding::note(
-            "unhandled",
-            None,
-            format!(
-                "Segment {tag} at position {position} has no field here and is not carried \
-                 into the sales order."
-            ),
-        ));
-    }
-
-    // The customer, as the caller may read it.
-    let customer_id = partner.customer()?;
-    let customer = erpcraft_party::owner(ctx, "customer", customer_id)
-        .await?
-        .map(|record| CustomerRef {
-            id: customer_id,
-            code: record["code"].as_str().unwrap_or_default().to_owned(),
-            name: record["name"].as_str().unwrap_or_default().to_owned(),
-        });
-
-    // Where the goods go, and the warehouse orders to that place ship
-    // from, if the place names one.
-    let mut location_warehouse: Option<Uuid> = None;
-    let (role, qualifier) = match &spec.options.ship_to {
-        Some(ship_to) => (ship_to.role.as_str(), ship_to.qualifier.as_deref()),
-        None => ("ST", None),
-    };
-    let sent = order
-        .parties
-        .iter()
-        .find(|p| p.role == role && qualifier.is_none_or(|q| p.id_qualifier == q));
-    let ship_to = if let Some(address) = choices.shipping_address_id {
-        erpcraft_party::check_address(
-            &mut *ctx.conn,
-            "customer",
-            customer_id,
-            address,
-            "shipping_address_id",
-        )
-        .await?;
-        ShipTo {
-            sent: sent.map(|p| json!(p)),
-            address_id: Some(address),
-            how: "chosen".into(),
-        }
-    } else if let Some(party) = sent.filter(|p| !p.id.is_empty()) {
-        let known: Option<(Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
-            "SELECT address_id, warehouse_id FROM edi_location_xref
-             WHERE partner_id = $1 AND qualifier = $2 AND code = $3",
-        )
-        .bind(partner.id)
-        .bind(&party.id_qualifier)
-        .bind(&party.id)
-        .fetch_optional(&mut *ctx.conn)
-        .await?;
-        location_warehouse = known.and_then(|f| f.1);
-        let found = known.and_then(|f| f.0);
-        if found.is_none() {
-            let why = if known.is_some() {
-                "whose location cross-reference has lost its address (removed from the \
-                 customer, or the partner names another customer now)"
-            } else {
-                "which no location cross-reference names"
-            };
-            findings.push(Finding::blocking(
-                "ship_to_unknown",
-                None,
-                format!(
-                    "The order ships to {} ({} {}), {why}: choose one of the customer's \
-                     addresses (shipping_address_id), and remember it for the next order.",
-                    party.name, party.id_qualifier, party.id
-                ),
-            ));
-        }
-        ShipTo {
-            sent: Some(json!(party)),
-            address_id: found,
-            how: if found.is_some() {
-                "location"
-            } else {
-                "unknown"
-            }
-            .into(),
-        }
-    } else {
-        ShipTo {
-            sent: sent.map(|p| json!(p)),
-            address_id: None,
-            how: "default".into(),
-        }
-    };
-
-    let warehouse_id = choices
-        .warehouse_id
-        .or(location_warehouse)
-        .or(partner.warehouse_id);
-    if warehouse_id.is_none() {
-        findings.push(Finding::blocking(
-            "warehouse",
-            None,
-            "Neither the partner nor the draft names the warehouse the goods ship from \
-             (warehouse_id).",
-        ));
-    }
-
+    findings: &mut Vec<Finding>,
+) -> Result<(Vec<ProposedLine>, Option<Decimal>)> {
     let mut lines = Vec::new();
     let mut total = Some(Decimal::ZERO);
-    for line in &order.lines {
+    for line in order_lines {
         let id = line.line_id.as_str();
         let mut proposed = ProposedLine {
             line_id: line.line_id.clone(),
@@ -810,6 +619,215 @@ pub async fn build(
         };
         lines.push(proposed);
     }
+    Ok((lines, total))
+}
+
+/// Whether a quantity or price fits a sales order line, `numeric(20, 6)`.
+/// The facts of [`PRICE_ZERO`] for one line.
+pub fn price_zero_facts(partner: &Partner, line: &str) -> Value {
+    json!({ "partner_code": partner.code, "line": line })
+}
+
+pub(crate) fn fits(value: Decimal) -> bool {
+    value.abs() < Decimal::from(100_000_000_000_000i64) && value.normalize().scale() <= 6
+}
+
+/// A unit price divided into a smaller unit, only when it divides exactly
+/// within the places a price has. Never rounded.
+pub fn divide_price(price: Decimal, units_per: Decimal) -> Option<Decimal> {
+    if units_per <= Decimal::ZERO {
+        return None;
+    }
+    let unit = price.checked_div(units_per)?;
+    let rounded = unit.round_dp(PRICE_SCALE);
+    (rounded.checked_mul(units_per)? == price).then(|| rounded.normalize())
+}
+
+pub async fn propose(ctx: &mut Ctx<'_>, message_id: Uuid, choices: &Choices) -> Result<Proposal> {
+    let row = message_row(ctx, message_id, false).await?;
+    ctx.require("edi_message:read", row.company_id)?;
+    let order = order_of(ctx, &row).await?;
+    let partner = partner::load(&mut *ctx.conn, row.partner_id).await?;
+    build(ctx, &row, &partner, order, choices).await
+}
+
+pub async fn build(
+    ctx: &mut Ctx<'_>,
+    row: &MessageRow,
+    partner: &Partner,
+    order: PurchaseOrder,
+    choices: &Choices,
+) -> Result<Proposal> {
+    let mut findings: Vec<Finding> = Vec::new();
+    let spec = guide::spec_for(&mut *ctx.conn, partner, &row.message, "in").await?;
+
+    // What reading found stays: syntax errors and counts.
+    if let Ok(stored) = serde_json::from_value::<Vec<Finding>>(row.findings.clone()) {
+        findings.extend(stored);
+    }
+    match row.state.as_str() {
+        "proposed" => {}
+        "test" => findings.push(Finding::blocking(
+            "test",
+            None,
+            "This order is test traffic (ISA15, or a partner still in test): it is \
+             acknowledged and never becomes a document.",
+        )),
+        "drafted" => findings.push(Finding::blocking(
+            "drafted",
+            None,
+            "This order was drafted already.",
+        )),
+        "dismissed" => findings.push(Finding::blocking(
+            "dismissed",
+            None,
+            "This order was dismissed.",
+        )),
+        "rejected" => {
+            if !findings.iter().any(|f| f.severity == Severity::Blocking) {
+                findings.push(Finding::blocking(
+                    "rejected",
+                    None,
+                    "This order was rejected when it was read.",
+                ));
+            }
+        }
+        other => findings.push(Finding::blocking(
+            "state",
+            None,
+            format!("A message in the state {other} is not drafted."),
+        )),
+    }
+    if order.purpose != "00" {
+        findings.push(Finding::blocking(
+            "purpose",
+            None,
+            format!(
+                "The order's purpose is {} (BEG01), not an original order: a change, \
+                 cancellation or replacement is not drafted as a new order. See what it \
+                 changes with edi.change_proposal.",
+                order.purpose
+            ),
+        ));
+    }
+    if !spec.constraints.is_empty() {
+        let segments = segments_of(ctx, row).await?;
+        for why in guide::violations(&spec.constraints, &segments) {
+            findings.push(Finding::note(
+                "guide",
+                None,
+                format!("The order breaks the partner's guide: {why}."),
+            ));
+        }
+    }
+    for (position, tag) in &order.unhandled {
+        findings.push(Finding::note(
+            "unhandled",
+            None,
+            format!(
+                "Segment {tag} at position {position} has no field here and is not carried \
+                 into the sales order."
+            ),
+        ));
+    }
+
+    // The customer, as the caller may read it.
+    let customer_id = partner.customer()?;
+    let customer = erpcraft_party::owner(ctx, "customer", customer_id)
+        .await?
+        .map(|record| CustomerRef {
+            id: customer_id,
+            code: record["code"].as_str().unwrap_or_default().to_owned(),
+            name: record["name"].as_str().unwrap_or_default().to_owned(),
+        });
+
+    // Where the goods go, and the warehouse orders to that place ship
+    // from, if the place names one.
+    let mut location_warehouse: Option<Uuid> = None;
+    let (role, qualifier) = match &spec.options.ship_to {
+        Some(ship_to) => (ship_to.role.as_str(), ship_to.qualifier.as_deref()),
+        None => ("ST", None),
+    };
+    let sent = order
+        .parties
+        .iter()
+        .find(|p| p.role == role && qualifier.is_none_or(|q| p.id_qualifier == q));
+    let ship_to = if let Some(address) = choices.shipping_address_id {
+        erpcraft_party::check_address(
+            &mut *ctx.conn,
+            "customer",
+            customer_id,
+            address,
+            "shipping_address_id",
+        )
+        .await?;
+        ShipTo {
+            sent: sent.map(|p| json!(p)),
+            address_id: Some(address),
+            how: "chosen".into(),
+        }
+    } else if let Some(party) = sent.filter(|p| !p.id.is_empty()) {
+        let known: Option<(Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
+            "SELECT address_id, warehouse_id FROM edi_location_xref
+             WHERE partner_id = $1 AND qualifier = $2 AND code = $3",
+        )
+        .bind(partner.id)
+        .bind(&party.id_qualifier)
+        .bind(&party.id)
+        .fetch_optional(&mut *ctx.conn)
+        .await?;
+        location_warehouse = known.and_then(|f| f.1);
+        let found = known.and_then(|f| f.0);
+        if found.is_none() {
+            let why = if known.is_some() {
+                "whose location cross-reference has lost its address (removed from the \
+                 customer, or the partner names another customer now)"
+            } else {
+                "which no location cross-reference names"
+            };
+            findings.push(Finding::blocking(
+                "ship_to_unknown",
+                None,
+                format!(
+                    "The order ships to {} ({} {}), {why}: choose one of the customer's \
+                     addresses (shipping_address_id), and remember it for the next order.",
+                    party.name, party.id_qualifier, party.id
+                ),
+            ));
+        }
+        ShipTo {
+            sent: Some(json!(party)),
+            address_id: found,
+            how: if found.is_some() {
+                "location"
+            } else {
+                "unknown"
+            }
+            .into(),
+        }
+    } else {
+        ShipTo {
+            sent: sent.map(|p| json!(p)),
+            address_id: None,
+            how: "default".into(),
+        }
+    };
+
+    let warehouse_id = choices
+        .warehouse_id
+        .or(location_warehouse)
+        .or(partner.warehouse_id);
+    if warehouse_id.is_none() {
+        findings.push(Finding::blocking(
+            "warehouse",
+            None,
+            "Neither the partner nor the draft names the warehouse the goods ship from \
+             (warehouse_id).",
+        ));
+    }
+
+    let (lines, total) =
+        propose_lines(ctx, partner, &spec, &order.lines, choices, &mut findings).await?;
     if order.lines.is_empty() {
         findings.push(Finding::blocking(
             "no_lines",

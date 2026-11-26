@@ -37,10 +37,32 @@ pub const PERMISSION: &str = "edi:receive";
 /// What reading found in one transaction set.
 pub enum SetRead {
     Order(Box<PurchaseOrder>, SetVerdict),
+    /// A message a person works on as a proposal that is not an order: an
+    /// 860 order change, an 820 remittance.
+    Business(Business, SetVerdict),
     /// A 997 or 999 the partner sent.
     Ack(std::result::Result<FunctionalAck, String>),
     /// A set this module does not read: refused in the acknowledgement.
     Other(SetVerdict),
+}
+
+/// What a proposal's row keeps of a message read: its business key (the
+/// order or payment number), its purpose, and what reading noted.
+#[derive(Debug, Clone, Default)]
+pub struct Business {
+    pub number: String,
+    pub purpose: String,
+    pub notes: Vec<String>,
+}
+
+impl Business {
+    pub fn of_order(order: &PurchaseOrder) -> Business {
+        Business {
+            number: order.number.clone(),
+            purpose: order.purpose.clone(),
+            notes: order.notes.clone(),
+        }
+    }
 }
 
 pub struct ReadInterchange {
@@ -67,6 +89,17 @@ pub fn read_file(bytes: &[u8]) -> std::result::Result<Vec<ReadInterchange>, EdiE
                             "850" => {
                                 let (order, verdict) = po850::read(set);
                                 SetRead::Order(Box::new(order), verdict)
+                            }
+                            "860" => {
+                                let (change, verdict) = crate::x12::change860::read(set);
+                                SetRead::Business(
+                                    Business {
+                                        number: change.order_number,
+                                        purpose: change.purpose,
+                                        notes: change.notes,
+                                    },
+                                    verdict,
+                                )
                             }
                             "997" | "999" => {
                                 SetRead::Ack(FunctionalAck::read(set).map_err(|e| e.message))
@@ -288,7 +321,12 @@ pub async fn receive(
             match read {
                 SetRead::Order(order, verdict) => {
                     verdicts.push(verdict);
-                    kinds.push(Some(order));
+                    kinds.push(Some(Business::of_order(&order)));
+                    answers.push(None);
+                }
+                SetRead::Business(business, verdict) => {
+                    verdicts.push(verdict);
+                    kinds.push(Some(business));
                     answers.push(None);
                 }
                 SetRead::Other(verdict) => {

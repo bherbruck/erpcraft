@@ -384,3 +384,71 @@ fn no_change_to_a_message_makes_reading_it_panic() {
         }
     }
 }
+
+fn change() -> erpcraft_edi::x12::change860::OrderChange {
+    use erpcraft_edi::x12::change860::{ChangeLine, OrderChange};
+    OrderChange {
+        purpose: "04".into(),
+        order_type: "SA".into(),
+        order_number: "4500018842".into(),
+        change_number: "2".into(),
+        order_date: Some(day()),
+        lines: vec![
+            ChangeLine {
+                line_id: "2".into(),
+                change: "QD".into(),
+                quantity: Some(dec("100")),
+                uom: "CA".into(),
+                unit_price: Some(dec("31.2")),
+                product_ids: ids(),
+                dates: vec![erpcraft_edi::x12::po850::DateOf {
+                    qualifier: "002".into(),
+                    date: day(),
+                }],
+            },
+            ChangeLine {
+                line_id: "3".into(),
+                change: "DI".into(),
+                ..ChangeLine::default()
+            },
+        ],
+        ..OrderChange::default()
+    }
+}
+
+#[test]
+fn an_860_and_an_846_read_back_as_written() {
+    use erpcraft_edi::x12::change860;
+    use erpcraft_edi::x12::inventory846::{self, InventoryAdvice, InventoryItem};
+    let meant = change();
+    let (_, set) = round_trip("860", "PC", meant.body());
+    let (read, verdict) = change860::read(&set);
+    assert_eq!(verdict, Default::default());
+    let mut expected = meant.clone();
+    expected.lines_stated = Some(2);
+    assert_eq!(read, expected);
+
+    let advice = InventoryAdvice {
+        purpose: "00".into(),
+        report_type: "SI".into(),
+        report_id: "20261120".into(),
+        date: Some(day()),
+        items: vec![InventoryItem {
+            product_ids: ids(),
+            qualifier: "33".into(),
+            quantity: Some(dec("713")),
+            uom: "CA".into(),
+        }],
+        ..InventoryAdvice::default()
+    };
+    let (text, set) = round_trip("846", "IB", advice.body());
+    assert!(
+        text.contains("LIN**UK*10400001000202*VN*CH-2040-C"),
+        "{text}"
+    );
+    let (read, verdict) = inventory846::read(&set);
+    assert_eq!(verdict, Default::default());
+    let mut expected = advice;
+    expected.items_stated = Some(1);
+    assert_eq!(read, expected);
+}
