@@ -129,7 +129,14 @@ impl Fixture {
         done
     }
 
-    async fn order(&self, t: &TestApp, kind: &str, currency: &str, qty: &str, price: &str) -> Value {
+    async fn order(
+        &self,
+        t: &TestApp,
+        kind: &str,
+        currency: &str,
+        qty: &str,
+        price: &str,
+    ) -> Value {
         let mut body = match kind {
             "purchase" => json!({ "vendor_id": self.vendor }),
             _ => json!({ "customer_id": self.customer }),
@@ -292,7 +299,10 @@ async fn the_exemption_note_does_not_depend_on_who_prints() {
         )
         .await;
     let settings = t
-        .get(&t.admin, &format!("/api/entities/tax_settings?company_id={}", f.c.id))
+        .get(
+            &t.admin,
+            &format!("/api/entities/tax_settings?company_id={}", f.c.id),
+        )
         .await
         .1["items"][0]
         .clone();

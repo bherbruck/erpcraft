@@ -170,11 +170,7 @@ impl Template {
     /// each value as `inner` translates it: a value that is a sentence of
     /// its own (`invalid input: line 2: unknown field 'x'`) is translated
     /// too, a name or a number stays as it is.
-    fn apply_with(
-        &self,
-        message: &str,
-        inner: &dyn Fn(&str) -> Option<String>,
-    ) -> Option<String> {
+    fn apply_with(&self, message: &str, inner: &dyn Fn(&str) -> Option<String>) -> Option<String> {
         let found = self.pattern.captures(message)?;
         let value = |name: &str| {
             self.slots
