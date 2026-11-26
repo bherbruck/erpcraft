@@ -13,6 +13,8 @@
 //! or made, and from whom. It suggests; it orders nothing by itself, but
 //! drafts purchase and production orders when asked.
 
+pub mod mrp;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -60,6 +62,11 @@ impl Module for PlanningModule {
                 version: 3,
                 name: "purchase_unit",
                 sql: include_str!("../migrations/0003_purchase_unit.sql"),
+            },
+            Migration {
+                version: 4,
+                name: "mrp",
+                sql: include_str!("../migrations/0004_mrp.sql"),
             },
         ]
     }
@@ -134,8 +141,71 @@ impl Module for PlanningModule {
                              accounting currency; the last price paid when left out.",
                         ),
                 )
+                .field(
+                    FieldMeta::new(
+                        "method",
+                        "Planned by",
+                        FieldType::labelled(&[
+                            ("reorder", "Reorder point"),
+                            ("mrp", "MRP, by date"),
+                        ]),
+                    )
+                    .help(
+                        "Reorder point: keep at least the minimum, whenever. MRP: plan by date, \
+                         so that each order is met on its day, with lead times, safety stock \
+                         and the bills' components.",
+                    ),
+                )
+                .field(
+                    FieldMeta::new("safety_stock", "Safety stock", FieldType::Decimal)
+                        .quantity()
+                        .unit_of("item_id", "uom")
+                        .help("MRP: what is kept on hand beyond every need."),
+                )
+                .field(
+                    FieldMeta::new("min_order_qty", "Minimum order", FieldType::Decimal)
+                        .quantity()
+                        .unit_of("item_id", "uom")
+                        .help("MRP: the least a planned order is for."),
+                )
+                .field(
+                    FieldMeta::new("lead_time_days", "Lead time (days)", FieldType::Int).help(
+                        "MRP: days from release to receipt. Left out, the vendor's (item_vendor) \
+                         for an item bought, the bill's for one made.",
+                    ),
+                )
                 .field(FieldMeta::new("created_at", "Created", FieldType::Timestamp).readonly())
                 .order_by(&["item_id", "warehouse_id"])
+                .company_field("company_id"),
+            EntityMeta::new("item_vendor", "Item vendor")
+                .field(
+                    FieldMeta::new("company_id", "Company", FieldType::link("company"))
+                        .required()
+                        .immutable(),
+                )
+                .field(
+                    FieldMeta::new("item_id", "Item", FieldType::link("item"))
+                        .required()
+                        .immutable(),
+                )
+                .field(
+                    FieldMeta::new("vendor_id", "Vendor", FieldType::link("vendor"))
+                        .required()
+                        .immutable(),
+                )
+                .field(
+                    FieldMeta::new("lead_time_days", "Lead time (days)", FieldType::Int)
+                        .help("Days from ordering until the goods arrive."),
+                )
+                .field(
+                    FieldMeta::new("min_order_qty", "Minimum order", FieldType::Decimal)
+                        .quantity()
+                        .unit_of("item_id", "uom")
+                        .help("The least the vendor sells, in the item's stock unit."),
+                )
+                .field(FieldMeta::new("created_at", "Created", FieldType::Timestamp).readonly())
+                .order_by(&["item_id", "vendor_id"])
+                .plural("Item vendors")
                 .company_field("company_id"),
         ]
     }

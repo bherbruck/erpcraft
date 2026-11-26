@@ -136,6 +136,11 @@ impl Module for PurchasingModule {
                 name: "units",
                 sql: include_str!("../migrations/0015_units.sql"),
             },
+            Migration {
+                version: 16,
+                name: "expected_date",
+                sql: include_str!("../migrations/0016_expected_date.sql"),
+            },
         ]
     }
 
@@ -724,6 +729,8 @@ struct OrderBody {
     /// One of the vendor's addresses, the one it sells from; its default
     /// billing address when omitted.
     billing_address_id: Option<Uuid>,
+    /// When the goods are expected; planning dates the order by it.
+    expected_date: Option<NaiveDate>,
     #[serde(default)]
     lines: Vec<OrderLineInput>,
 }
@@ -794,6 +801,10 @@ impl DocumentHandler for PurchaseOrder {
                 ),
                 terms_field("The vendor's usual terms when left out; what its invoices start with."),
                 vendor_address_field(),
+                FieldMeta::new("expected_date", "Expected", FieldType::Date).help(
+                    "When the goods are expected to arrive. Planning dates what is still to come \
+                     by it; left out, by the order's date plus the vendor's lead time.",
+                ),
             ],
             collections: vec![CollectionMeta {
                 name: "lines".into(),
@@ -1022,18 +1033,20 @@ impl DocumentHandler for PurchaseOrder {
         // The vendor's terms unless the order names others.
         sqlx::query(
             "INSERT INTO purchase_order (document_id, vendor_id, currency, payment_terms_id,
-                 billing_address_id)
+                 billing_address_id, expected_date)
              VALUES ($1, $2, $3,
-                     COALESCE($4, (SELECT payment_terms_id FROM vendor WHERE id = $2)), $5)
+                     COALESCE($4, (SELECT payment_terms_id FROM vendor WHERE id = $2)), $5, $6)
              ON CONFLICT (document_id) DO UPDATE SET vendor_id = EXCLUDED.vendor_id,
                 currency = EXCLUDED.currency, payment_terms_id = EXCLUDED.payment_terms_id,
-                billing_address_id = EXCLUDED.billing_address_id",
+                billing_address_id = EXCLUDED.billing_address_id,
+                expected_date = EXCLUDED.expected_date",
         )
         .bind(doc.id)
         .bind(body.vendor_id)
         .bind(currency)
         .bind(body.payment_terms_id)
         .bind(body.billing_address_id)
+        .bind(body.expected_date)
         .execute(&mut *ctx.conn)
         .await?;
         let line_ids = document::line_ids(
@@ -1166,17 +1179,23 @@ impl DocumentHandler for PurchaseOrder {
     }
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
-        let (vendor, currency, terms, billing): (Uuid, String, Option<Uuid>, Option<Uuid>) =
-            sqlx::query_as(
-                "SELECT o.vendor_id, COALESCE(o.currency, c.base_currency), o.payment_terms_id,
-                    o.billing_address_id
+        #[allow(clippy::type_complexity)]
+        let (vendor, currency, terms, billing, expected): (
+            Uuid,
+            String,
+            Option<Uuid>,
+            Option<Uuid>,
+            Option<NaiveDate>,
+        ) = sqlx::query_as(
+            "SELECT o.vendor_id, COALESCE(o.currency, c.base_currency), o.payment_terms_id,
+                    o.billing_address_id, o.expected_date
              FROM purchase_order o
              JOIN company c ON c.id = $2 WHERE o.document_id = $1",
-            )
-            .bind(doc.id)
-            .bind(doc.company_id)
-            .fetch_one(&mut *conn)
-            .await?;
+        )
+        .bind(doc.id)
+        .bind(doc.company_id)
+        .fetch_one(&mut *conn)
+        .await?;
         let decimals = erpcraft_gl::currency_decimals(conn, &currency).await?;
         let mut lines = order_lines(conn, doc.id).await?;
         for line in &mut lines {
@@ -1187,6 +1206,7 @@ impl DocumentHandler for PurchaseOrder {
             "currency": currency,
             "payment_terms_id": terms,
             "billing_address_id": billing,
+            "expected_date": expected,
             "lines": lines,
         }))
     }

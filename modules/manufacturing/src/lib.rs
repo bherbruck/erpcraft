@@ -78,6 +78,11 @@ impl Module for ManufacturingModule {
                 name: "units",
                 sql: include_str!("../migrations/0005_units.sql"),
             },
+            Migration {
+                version: 6,
+                name: "dates",
+                sql: include_str!("../migrations/0006_dates.sql"),
+            },
         ]
     }
 
@@ -136,6 +141,12 @@ impl Module for ManufacturingModule {
                         .quantity()
                         .readonly()
                         .help("How many of the product's stock unit one of the output unit is."),
+                )
+                .field(
+                    FieldMeta::new("lead_time_days", "Lead time (days)", FieldType::Int).help(
+                        "How many days an order takes from its start until its product is in \
+                         stock: what planning plans a production order's start by.",
+                    ),
                 )
                 .field(FieldMeta::new("active", "Active", FieldType::Bool))
                 .field(created())
@@ -310,6 +321,9 @@ struct Body {
     /// A unit of the product (`item_uom`); its stock unit when omitted.
     uom: Option<String>,
     warehouse_id: Uuid,
+    /// When the product is due in stock; the order's date plus its bill's
+    /// lead time when omitted.
+    due_date: Option<NaiveDate>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -320,6 +334,7 @@ struct Order {
     uom: Option<String>,
     factor: Decimal,
     warehouse_id: Uuid,
+    due_date: Option<NaiveDate>,
     /// The product, from the bill.
     item_id: Uuid,
 }
@@ -464,7 +479,7 @@ async fn carries_stock(
 
 async fn load_order(conn: &mut PgConnection, document_id: Uuid) -> Result<Order> {
     let order = sqlx::query_as(
-        "SELECT o.bom_id, o.qty, o.uom, o.factor, o.warehouse_id, b.item_id
+        "SELECT o.bom_id, o.qty, o.uom, o.factor, o.warehouse_id, o.due_date, b.item_id
          FROM production_order o JOIN bom b ON b.id = o.bom_id
          WHERE o.document_id = $1",
     )
@@ -511,6 +526,10 @@ impl DocumentHandler for ProductionOrder {
                     .help("How many of the product's stock unit one of the order's unit is."),
                 FieldMeta::new("warehouse_id", "Warehouse", FieldType::link("warehouse"))
                     .required(),
+                FieldMeta::new("due_date", "Due", FieldType::Date).help(
+                    "When the product is due in stock. Planning dates the order by it; left out, \
+                     by the order's date plus its bill's lead time.",
+                ),
                 FieldMeta::new("item_id", "Product", FieldType::link("item")).readonly(),
             ],
             collections: vec![
@@ -638,14 +657,16 @@ impl DocumentHandler for ProductionOrder {
         }
 
         sqlx::query(
-            "INSERT INTO production_order (document_id, bom_id, qty, warehouse_id, uom, factor)
-             VALUES ($1, $2, $3, $4, $5, $6)
+            "INSERT INTO production_order (document_id, bom_id, qty, warehouse_id, uom, factor,
+                 due_date)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT (document_id) DO UPDATE SET
                 bom_id = EXCLUDED.bom_id,
                 qty = EXCLUDED.qty,
                 warehouse_id = EXCLUDED.warehouse_id,
                 uom = EXCLUDED.uom,
-                factor = EXCLUDED.factor",
+                factor = EXCLUDED.factor,
+                due_date = EXCLUDED.due_date",
         )
         .bind(doc.id)
         .bind(body.bom_id)
@@ -653,6 +674,7 @@ impl DocumentHandler for ProductionOrder {
         .bind(body.warehouse_id)
         .bind(uom)
         .bind(factor)
+        .bind(body.due_date)
         .execute(&mut *ctx.conn)
         .await?;
         Ok(())
@@ -683,6 +705,7 @@ impl DocumentHandler for ProductionOrder {
             "uom": order.uom,
             "factor": order.factor,
             "warehouse_id": order.warehouse_id,
+            "due_date": order.due_date,
             "item_id": order.item_id,
             "components": load_components(conn, doc.id).await?,
             "activities": load_activities(conn, doc.id).await?,
