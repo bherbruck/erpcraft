@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::guide;
 use crate::inbound::{ReadInterchange, SetRead, blocking, read_file};
 use crate::partner::{self, Partner};
 use crate::policy::{DUPLICATE_ORDER, PRICE_ZERO};
@@ -177,6 +178,39 @@ pub async fn message_row(ctx: &mut Ctx<'_>, id: Uuid, lock: bool) -> Result<Mess
     Ok(row)
 }
 
+/// The segments of a message received, as they came, for its guide's
+/// constraints.
+async fn segments_of(ctx: &mut Ctx<'_>, row: &MessageRow) -> Result<Vec<crate::Segment>> {
+    let (Some(interchange), Some(position)) = (row.interchange_id, row.position) else {
+        return Ok(vec![]);
+    };
+    let payload: Vec<u8> = sqlx::query_scalar("SELECT payload FROM edi_interchange WHERE id = $1")
+        .bind(interchange)
+        .fetch_one(&mut *ctx.conn)
+        .await?;
+    let index = (position as usize).saturating_sub(1);
+    let edifact = row.message == "ORDERS";
+    blocking(move || -> Vec<crate::Segment> {
+        if edifact {
+            crate::edifact::read(&payload)
+                .ok()
+                .and_then(|mut all| all.pop())
+                .and_then(|i| i.messages.into_iter().nth(index))
+                .map(|m| m.segments)
+                .unwrap_or_default()
+        } else {
+            crate::x12::read(&payload)
+                .ok()
+                .and_then(|mut all| all.pop())
+                .and_then(|i| i.groups.into_iter().flat_map(|g| g.sets).nth(index))
+                .map(|s| s.segments)
+                .unwrap_or_default()
+        }
+    })
+    .await
+    .map_err(Error::internal)
+}
+
 /// The typed order of a message received, read again from its bytes.
 pub async fn order_of(ctx: &mut Ctx<'_>, row: &MessageRow) -> Result<PurchaseOrder> {
     if row.direction != "in" || !matches!(row.message.as_str(), "850" | "ORDERS") {
@@ -265,18 +299,34 @@ async fn xref(
 }
 
 /// The item a line names, by its cross-references in the order gtin,
-/// seller's number, buyer's number; and how it was found.
+/// seller's number, buyer's number (or as the partner's guide says); and
+/// how it was found.
 async fn match_item(
     ctx: &mut Ctx<'_>,
     partner: &Partner,
     line: &Line,
+    guide: &guide::Options,
 ) -> Result<Option<(XrefRow, String)>> {
-    for kind in KIND_ORDER {
-        for id in line
-            .product_ids
+    let order: Vec<(&str, Vec<&str>)> = match &guide.item_match {
+        Some(matches) => matches
             .iter()
-            .filter(|p| kind_of(&p.qualifier) == Some(kind))
-        {
+            .map(|m| {
+                (
+                    m.kind.code(),
+                    m.qualifiers.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect(),
+        None => KIND_ORDER.iter().map(|k| (*k, vec![])).collect(),
+    };
+    for (kind, qualifiers) in order {
+        for id in line.product_ids.iter().filter(|p| {
+            if qualifiers.is_empty() {
+                kind_of(&p.qualifier) == Some(kind)
+            } else {
+                qualifiers.contains(&p.qualifier.as_str())
+            }
+        }) {
             if let Some(row) = xref(ctx, partner, kind, &id.value).await? {
                 return Ok(Some((row, format!("{kind} {}", id.value))));
             }
@@ -362,6 +412,7 @@ pub async fn build(
     choices: &Choices,
 ) -> Result<Proposal> {
     let mut findings: Vec<Finding> = Vec::new();
+    let spec = guide::spec_for(&mut *ctx.conn, partner, &row.message, "in").await?;
 
     // What reading found stays: syntax errors and counts.
     if let Ok(stored) = serde_json::from_value::<Vec<Finding>>(row.findings.clone()) {
@@ -411,6 +462,16 @@ pub async fn build(
             ),
         ));
     }
+    if !spec.constraints.is_empty() {
+        let segments = segments_of(ctx, row).await?;
+        for why in guide::violations(&spec.constraints, &segments) {
+            findings.push(Finding::note(
+                "guide",
+                None,
+                format!("The order breaks the partner's guide: {why}."),
+            ));
+        }
+    }
     for (position, tag) in &order.unhandled {
         findings.push(Finding::note(
             "unhandled",
@@ -434,7 +495,14 @@ pub async fn build(
     // Where the goods go, and the warehouse orders to that place ship
     // from, if the place names one.
     let mut location_warehouse: Option<Uuid> = None;
-    let sent = order.parties.iter().find(|p| p.role == "ST");
+    let (role, qualifier) = match &spec.options.ship_to {
+        Some(ship_to) => (ship_to.role.as_str(), ship_to.qualifier.as_deref()),
+        None => ("ST", None),
+    };
+    let sent = order
+        .parties
+        .iter()
+        .find(|p| p.role == role && qualifier.is_none_or(|q| p.id_qualifier == q));
     let ship_to = if let Some(address) = choices.shipping_address_id {
         erpcraft_party::check_address(
             &mut *ctx.conn,
@@ -576,7 +644,7 @@ pub async fn build(
                 },
                 "chosen".to_owned(),
             )),
-            None => match_item(ctx, partner, line).await?,
+            None => match_item(ctx, partner, line, &spec.options).await?,
         };
         let Some((xref, how)) = matched else {
             findings.push(Finding::blocking(

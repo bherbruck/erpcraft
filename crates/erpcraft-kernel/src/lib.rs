@@ -19,6 +19,12 @@ pub mod company;
 pub mod document;
 pub mod entity;
 pub mod i18n;
+/// Expressions over facts, evaluated in memory, for modules that let a
+/// company write one (such as an EDI guide's extra segments). The rule
+/// engine itself stays the kernel's dependency.
+pub mod expression {
+    pub use erpcraft_rules::Expression;
+}
 pub mod input;
 pub mod maintenance;
 pub mod numbering;

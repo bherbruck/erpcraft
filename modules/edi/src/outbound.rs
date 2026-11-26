@@ -24,6 +24,7 @@ use uuid::Uuid;
 use crate::commands::ExplainedSegment;
 use crate::control::{self, Kind};
 use crate::explain::explain;
+use crate::guide;
 use crate::inbound::{MESSAGE_COLUMNS, MessageOut};
 use crate::partner::{self, Partner};
 use crate::policy::{BEFORE_ASN, SEND};
@@ -1023,7 +1024,9 @@ pub async fn finish(ctx: &mut Ctx<'_>, mut made: Made, preview: bool) -> Result<
     .bind(message.code_for(&partner))
     .fetch_optional(&mut *ctx.conn)
     .await?;
+    // A preview keeps nothing, so it may look at a message made already.
     if let Some((_, state)) = &previous
+        && !preview
         && !matches!(state.as_str(), "invalid" | "rejected" | "failed")
     {
         return Err(Error::state(format!(
@@ -1033,11 +1036,18 @@ pub async fn finish(ctx: &mut Ctx<'_>, mut made: Made, preview: bool) -> Result<
         )));
     }
     let code = message.code_for(&partner);
+    let spec = guide::spec_for(&mut *ctx.conn, &partner, code, "out").await?;
+    if let Some(typed) = made.typed.as_mut() {
+        guide::apply_options(&spec.options, typed);
+    }
 
     if partner.is_edifact() {
-        return finish_edifact(ctx, made, preview, previous).await;
+        return finish_edifact(ctx, made, preview, previous, spec).await;
     }
     let body = made.typed.as_ref().and_then(Typed::body);
+    let extended = body
+        .as_ref()
+        .map(|b| guided(&spec, code, &mut made, b.clone()));
     if made.typed.is_some() && body.is_none() {
         made.findings.push(Finding::blocking(
             "amount",
@@ -1046,7 +1056,7 @@ pub async fn finish(ctx: &mut Ctx<'_>, mut made: Made, preview: bool) -> Result<
              rounding.",
         ));
     }
-    let segments = body
+    let segments = extended
         .as_deref()
         .map(|b| explained(b, message.code()))
         .unwrap_or_default();
@@ -1058,30 +1068,39 @@ pub async fn finish(ctx: &mut Ctx<'_>, mut made: Made, preview: bool) -> Result<
         .findings
         .iter()
         .all(|f| f.severity != Severity::Blocking)
-        && let (Some(typed), Some(body)) = (&made.typed, body)
+        && let (Some(typed), Some(body), Some(extended)) = (&made.typed, body, extended)
     {
         // The figures are the books'; now the bytes must say so too. A
-        // partner reads them with a reader like this one.
+        // partner reads them with a reader like this one. The guide's own
+        // segments are not the typed message's: the message without them
+        // reads back as meant, and with them reads without an error.
         let probe = partner.envelope(message.functional_id(), at, 1, 1, usage)?;
-        let reads_back = |text: &str| {
+        let set_of = |text: &str| {
             x12::read(text.as_bytes())
                 .ok()
                 .and_then(|mut i| i.pop())
+                .filter(|i| i.errors.is_empty())
                 .and_then(|i| i.groups.into_iter().next())
                 .and_then(|g| g.sets.into_iter().next())
-                .is_some_and(|set| typed.reads_back(&set))
         };
-        match x12::write(&probe, message.code(), std::slice::from_ref(&body)) {
+        let reads_back = |text: &str| set_of(text).is_some_and(|set| typed.reads_back(&set));
+        let sound = |text: &str| set_of(text).is_some_and(|set| set.errors.is_empty());
+        let written = |envelope: &x12::Envelope, b: &Vec<crate::segment::Segment>| {
+            x12::write(envelope, message.code(), std::slice::from_ref(b))
+        };
+        match written(&probe, &body).and_then(|base| Ok((base, written(&probe, &extended)?))) {
             Err(e) => made.findings.push(Finding::blocking(
                 "write",
                 None,
                 format!("The message cannot be written: {}.", e.message),
             )),
-            Ok(text) if !reads_back(&text) => made.findings.push(Finding::blocking(
-                "read_back",
-                None,
-                "The message written does not read back as what was meant.",
-            )),
+            Ok((text, full)) if !reads_back(&text) || !sound(&full) => {
+                made.findings.push(Finding::blocking(
+                    "read_back",
+                    None,
+                    "The message written does not read back as what was meant.",
+                ))
+            }
             Ok(_) if preview => {}
             Ok(_) => {
                 // Policies, then the numbers: the last step before the
@@ -1092,9 +1111,9 @@ pub async fn finish(ctx: &mut Ctx<'_>, mut made: Made, preview: bool) -> Result<
                 let group = control::next(&mut *ctx.conn, partner.id, Kind::Group).await?;
                 let envelope =
                     partner.envelope(message.functional_id(), at, interchange, group, usage)?;
-                let text = x12::write(&envelope, message.code(), std::slice::from_ref(&body))
-                    .map_err(|e| Error::internal(e.message))?;
-                if !reads_back(&text) {
+                let base = written(&envelope, &body).map_err(|e| Error::internal(e.message))?;
+                let text = written(&envelope, &extended).map_err(|e| Error::internal(e.message))?;
+                if !reads_back(&base) || !sound(&text) {
                     return Err(Error::internal(
                         "the message with its control numbers does not read back",
                     ));
@@ -1109,6 +1128,54 @@ pub async fn finish(ctx: &mut Ctx<'_>, mut made: Made, preview: bool) -> Result<
         }
     }
     store_made(ctx, made, preview, previous, segments, bytes).await
+}
+
+/// A message's body with the guide's extra segments, its constraints
+/// checked; what fails is a finding of `made`.
+fn guided(
+    spec: &guide::Spec,
+    code: &str,
+    made: &mut Made,
+    mut body: Vec<crate::segment::Segment>,
+) -> Vec<crate::segment::Segment> {
+    let header = &made.sent.header;
+    let mut reference = serde_json::Map::new();
+    for r in made.sent.references() {
+        reference.entry(r.qualifier).or_insert(json!(r.value));
+    }
+    let mut party = serde_json::Map::new();
+    let parties: Vec<Party> = serde_json::from_value(header["parties"].clone()).unwrap_or_default();
+    for p in parties {
+        party.entry(p.role).or_insert(json!(p.id));
+    }
+    let order = json!({
+        "number": made.sent.order_number,
+        "date": made.sent.order_date.map(|d| d.to_string()),
+        "release": made.sent.release,
+        "purpose": header["purpose"],
+        "currency": header["currency"],
+        "reference": reference,
+        "party": party,
+    });
+    let summary = &made.view.header.summary;
+    let document = json!({
+        "doc_type": made.view.header.doc_type,
+        "number": made.view.header.number,
+        "date": made.view.header.doc_date.to_string(),
+        "currency": summary["currency"],
+        "total_net": summary["total_net"],
+        "total_tax": summary["total_tax"],
+        "total_gross": summary["total_gross"],
+    });
+    let facts = guide::facts(&made.partner, &order, &document);
+    let lines = made
+        .typed
+        .as_ref()
+        .map(guide::line_facts)
+        .unwrap_or_default();
+    let findings = guide::apply_out(spec, code, &facts, &lines, &mut body);
+    made.findings.extend(findings);
+    body
 }
 
 /// The bytes of a message to send, fixed, with the references they carry.
@@ -1148,6 +1215,7 @@ async fn finish_edifact(
     mut made: Made,
     preview: bool,
     previous: Option<(Uuid, String)>,
+    spec: guide::Spec,
 ) -> Result<Generated> {
     let message = made.message;
     let partner = made.partner.clone();
@@ -1183,10 +1251,19 @@ async fn finish_edifact(
              which the message cannot carry.",
         ));
     }
-    let segments = body
+    let extended = body
+        .as_ref()
+        .map(|b| guided(&spec, code, &mut made, b.clone()));
+    let segments = extended
         .as_deref()
         .map(|b| explained(b, code))
         .unwrap_or_default();
+    let sound = |bytes: &[u8]| {
+        crate::edifact::read(bytes)
+            .ok()
+            .and_then(|mut i| i.pop())
+            .is_some_and(|i| i.errors.is_empty() && i.messages.iter().all(|m| m.errors.is_empty()))
+    };
     let outgoing = |body: Vec<crate::segment::Segment>| crate::edifact::Outgoing {
         kind: code.into(),
         version: "D".into(),
@@ -1201,28 +1278,38 @@ async fn finish_edifact(
         .findings
         .iter()
         .all(|f| f.severity != Severity::Blocking)
-        && let (Some(typed), Some(body)) = (&made.typed, body)
+        && let (Some(typed), Some(body), Some(extended)) = (&made.typed, body, extended)
     {
-        match crate::edifact::write(&probe, &[outgoing(body.clone())]) {
+        let both = crate::edifact::write(&probe, &[outgoing(body.clone())]).and_then(|base| {
+            Ok((
+                base,
+                crate::edifact::write(&probe, &[outgoing(extended.clone())])?,
+            ))
+        });
+        match both {
             Err(e) => made.findings.push(Finding::blocking(
                 "write",
                 None,
                 format!("The message cannot be written: {}.", e.message),
             )),
-            Ok(text) if !typed.edifact_reads_back(&text) => made.findings.push(Finding::blocking(
-                "read_back",
-                None,
-                "The message written does not read back as what was meant.",
-            )),
+            Ok((text, full)) if !typed.edifact_reads_back(&text) || !sound(&full) => {
+                made.findings.push(Finding::blocking(
+                    "read_back",
+                    None,
+                    "The message written does not read back as what was meant.",
+                ))
+            }
             Ok(_) if preview => {}
             Ok(_) => {
                 decide_send(ctx, &partner, code, &made).await?;
                 let interchange =
                     control::next(&mut *ctx.conn, partner.id, Kind::Interchange).await?;
                 let envelope = partner.edifact_envelope(at, interchange)?;
-                let written = crate::edifact::write(&envelope, &[outgoing(body)])
+                let base = crate::edifact::write(&envelope, &[outgoing(body)])
                     .map_err(|e| Error::internal(e.message))?;
-                if !typed.edifact_reads_back(&written) {
+                let written = crate::edifact::write(&envelope, &[outgoing(extended)])
+                    .map_err(|e| Error::internal(e.message))?;
+                if !typed.edifact_reads_back(&base) || !sound(&written) {
                     return Err(Error::internal(
                         "the message with its control reference does not read back",
                     ));

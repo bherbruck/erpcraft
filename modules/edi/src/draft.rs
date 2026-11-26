@@ -13,6 +13,7 @@ use erpcraft_kernel::{Ctx, Decimal, Error, Result, entity};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::guide;
 use crate::partner;
 use crate::policy::{AUTO_APPROVE, AUTO_DRAFT, DUPLICATE_ORDER, PRICE_ZERO};
 use crate::proposal::{self, Choices, Finding, Proposal, Severity};
@@ -166,13 +167,15 @@ pub async fn draft(ctx: &mut Ctx<'_>, request: Request) -> Result<DocumentView> 
             "unit_price": unit_price,
         }));
     }
+    let spec = guide::spec_for(&mut *ctx.conn, &partner, &row.message, "in").await?;
+    let dates = dates_of(&spec);
     let customer_id = partner.customer_id;
     let body = json!({
         "customer_id": customer_id,
         "currency": proposal.currency,
         "shipping_address_id": proposal.ship_to.address_id,
         "customer_reference": Some(proposal.order.number.trim()).filter(|n| !n.is_empty()),
-        "requested_date": requested(&proposal.order).map(|d| d.date),
+        "requested_date": requested(&proposal.order, &dates).map(|d| d.date),
         "lines": lines,
     });
     let doc_date = proposal
@@ -185,7 +188,7 @@ pub async fn draft(ctx: &mut Ctx<'_>, request: Request) -> Result<DocumentView> 
             doc_type: "sales_order".into(),
             company_id: partner.company_id,
             doc_date,
-            memo: Some(memo(&partner.code, &proposal.order, &notes)),
+            memo: Some(memo(&partner.code, &proposal.order, &notes, &dates)),
             body,
         },
     )
@@ -207,7 +210,7 @@ pub async fn draft(ctx: &mut Ctx<'_>, request: Request) -> Result<DocumentView> 
             "the draft does not have a line for every line of the order",
         ));
     }
-    keep(ctx, &proposal, &view, &line_ids).await?;
+    keep(ctx, &proposal, &view, &line_ids, &spec).await?;
     if request.remember {
         remember(ctx, &partner, &proposal, &request.choices).await?;
     }
@@ -277,10 +280,21 @@ async fn order_line_ids(ctx: &mut Ctx<'_>, view: &DocumentView) -> Result<Vec<Uu
     .await?)
 }
 
-/// The day the order asks for the goods: its requested delivery date
-/// (DTM 002), else its requested ship date (DTM 010).
-fn requested(order: &PurchaseOrder) -> Option<&DateOf> {
-    ["002", "010"]
+/// Which dates say when to ship, and which when the order is cancelled:
+/// the guide's, else the requested delivery date (DTM 002), then the
+/// requested ship date (DTM 010), and cancel after (DTM 001).
+fn dates_of(spec: &guide::Spec) -> guide::Dates {
+    spec.options.dates.clone().unwrap_or_else(|| guide::Dates {
+        ship: vec!["002".into(), "010".into()],
+        cancel: Some("001".into()),
+    })
+}
+
+/// The day the order asks for the goods: the first of the dates the
+/// guide says are the ship date.
+fn requested<'a>(order: &'a PurchaseOrder, dates: &guide::Dates) -> Option<&'a DateOf> {
+    dates
+        .ship
         .iter()
         .find_map(|qualifier| order.dates.iter().find(|d| d.qualifier == *qualifier))
 }
@@ -289,7 +303,12 @@ fn requested(order: &PurchaseOrder) -> Option<&DateOf> {
 /// has no field for and what a person accepted. The partner's order
 /// number is the order's customer reference and the date it asks for its
 /// requested date.
-fn memo(partner_code: &str, order: &PurchaseOrder, notes: &[&Finding]) -> String {
+fn memo(
+    partner_code: &str,
+    order: &PurchaseOrder,
+    notes: &[&Finding],
+    dates: &guide::Dates,
+) -> String {
     let mut memo = format!("EDI order from partner {partner_code}");
     if !order.release.is_empty() {
         memo.push_str(&format!(", release {}", order.release));
@@ -298,9 +317,13 @@ fn memo(partner_code: &str, order: &PurchaseOrder, notes: &[&Finding]) -> String
         memo.push_str(&format!(", dated {date}"));
     }
     memo.push('.');
-    let requested = requested(order);
+    let requested = requested(order, dates);
     for date in &order.dates {
         if requested.is_some_and(|r| std::ptr::eq(r, date)) {
+            continue;
+        }
+        if dates.cancel.as_deref() == Some(date.qualifier.as_str()) {
+            memo.push_str(&format!(" Cancel after: {}.", date.date));
             continue;
         }
         let what = match date.qualifier.as_str() {
@@ -308,7 +331,6 @@ fn memo(partner_code: &str, order: &PurchaseOrder, notes: &[&Finding]) -> String
             "010" => "Ship requested",
             "037" => "Ship not before",
             "038" => "Ship no later than",
-            "001" => "Cancel after",
             other => {
                 memo.push_str(&format!(" Date {other}: {}.", date.date));
                 continue;
@@ -331,8 +353,20 @@ async fn keep(
     proposal: &Proposal,
     view: &DocumentView,
     line_ids: &[Uuid],
+    spec: &guide::Spec,
 ) -> Result<()> {
     let order = &proposal.order;
+    // The references echoed in what is sent back: those the guide keeps.
+    let references: Vec<&crate::x12::po850::Reference> = order
+        .references
+        .iter()
+        .filter(|r| {
+            spec.options
+                .references
+                .as_ref()
+                .is_none_or(|kept| kept.contains(&r.qualifier))
+        })
+        .collect();
     sqlx::query(
         "INSERT INTO edi_document (doc_type, document_id, partner_id, message_id, order_number,
              release, order_date, header, sequence)
@@ -350,7 +384,7 @@ async fn keep(
         "purpose": order.purpose,
         "order_type": order.order_type,
         "currency": order.currency,
-        "references": order.references,
+        "references": references,
         "dates": order.dates,
         "terms": order.terms,
         "freight_terms": order.freight_terms,
@@ -526,12 +560,12 @@ mod tests {
             ..PurchaseOrder::default()
         };
         assert_eq!(
-            requested(&order).map(|d| d.date),
+            requested(&order, &dates_of(&guide::Spec::default())).map(|d| d.date),
             Some(dated("010", 3).date)
         );
         // The date that became the requested date leaves the memo; the
         // second ship date, the same kind, stays.
-        let memo = memo("ACME", &order, &[]);
+        let memo = memo("ACME", &order, &[], &dates_of(&guide::Spec::default()));
         assert_eq!(
             memo,
             "EDI order from partner ACME. Ship not before: 2026-12-01. \
@@ -539,7 +573,7 @@ mod tests {
         );
         order.dates.push(dated("002", 9));
         assert_eq!(
-            requested(&order).map(|d| d.date),
+            requested(&order, &dates_of(&guide::Spec::default())).map(|d| d.date),
             Some(dated("002", 9).date)
         );
         assert!(memo_of(&order).contains("Ship requested: 2026-12-03."));
@@ -547,6 +581,6 @@ mod tests {
     }
 
     fn memo_of(order: &PurchaseOrder) -> String {
-        memo("ACME", order, &[])
+        memo("ACME", order, &[], &dates_of(&guide::Spec::default()))
     }
 }

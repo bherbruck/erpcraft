@@ -18,7 +18,7 @@ use crate::segment::{Charset, MAX_BYTES, Tokenizer, skip_filler};
 use crate::{draft, explain, x12};
 
 /// The bytes a request carries: text, or base64.
-fn bytes_of(content: Option<String>, content_base64: Option<String>) -> Result<Vec<u8>> {
+pub(crate) fn bytes_of(content: Option<String>, content_base64: Option<String>) -> Result<Vec<u8>> {
     match (content, content_base64) {
         (Some(text), None) => {
             if text.len() > MAX_BYTES {

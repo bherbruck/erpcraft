@@ -2013,3 +2013,323 @@ async fn a_partner_unit_that_is_another_unit_of_the_item_converts_by_its_factor(
     assert_eq!(dec(&line["unit_price"]), 12.5, "{p}");
     t.stop().await;
 }
+
+/// A second partner of the same company, with its own identifiers, its
+/// own number for the tape's case and the same distribution centre.
+async fn second_partner(t: &TestApp, f: &Fixture) -> String {
+    let admin: String = sqlx::query_scalar("SELECT id::text FROM app_user WHERE is_admin LIMIT 1")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    let partner = t
+        .create(
+            "edi_partner",
+            json!({
+                "company_id": f.c.id, "code": "BX", "name": "Baxter Supply",
+                "customer_id": f.customer, "warehouse_id": f.warehouse, "usage": "production",
+                "our_qualifier": "ZZ", "our_id": "CEDARHOLLOW",
+                "their_qualifier": "ZZ", "their_id": "BAXTERSUPPLY",
+                "run_as_user_id": admin,
+            }),
+        )
+        .await;
+    t.create(
+        "edi_item_xref",
+        json!({ "company_id": f.c.id, "partner_id": partner, "item_id": f.tape, "kind": "gtin",
+                "value": "10400001000202", "partner_uom": "CA", "units_per": "6" }),
+    )
+    .await;
+    t.create(
+        "edi_location_xref",
+        json!({ "company_id": f.c.id, "partner_id": partner, "qualifier": "92", "code": "0007",
+                "address_id": f.dc07 }),
+    )
+    .await;
+    partner
+}
+
+/// The fixture as the second partner sends it.
+fn from_baxter(content: &str) -> String {
+    content
+        .replace("NORTHFIELDMERC ", "BAXTERSUPPLY   ")
+        .replace("NORTHFIELDMERC", "BAXTERSUPPLY")
+}
+
+async fn guide(t: &TestApp, f: &Fixture, code: &str, messages: Value) -> String {
+    let id = t
+        .create(
+            "edi_guide",
+            json!({ "company_id": f.c.id, "code": code, "name": format!("Guide {code}"),
+                    "syntax": "x12", "version": "004010" }),
+        )
+        .await;
+    for (message, direction, spec) in messages
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| (&m[0], &m[1], &m[2]))
+    {
+        t.create(
+            "edi_guide_message",
+            json!({ "company_id": f.c.id, "guide_id": id, "message": message,
+                    "direction": direction, "spec": spec }),
+        )
+        .await;
+    }
+    id
+}
+
+/// Approves, packs on one pallet, ships and invoices a drafted order;
+/// the 855, 856 and 810 as written.
+async fn order_to_cash(t: &TestApp, order: &Value) -> (String, String, String, Value) {
+    let order = run(t, "sales_order.approve", json!({ "id": order["id"] })).await;
+    deliver_events(t).await;
+    let (_, ack) = made(t, &order, "855").await;
+    let delivery = run(t, "sales_order.deliver", json!({ "id": order["id"] })).await;
+    let mut packs = vec![json!({ "kind": "pallet" })];
+    for line in delivery["body"]["lines"].as_array().unwrap() {
+        packs.push(json!({ "kind": "carton", "parent": 1,
+                           "lines": [{ "delivery_line_id": line["id"], "qty": line["qty"] }] }));
+    }
+    run(
+        t,
+        "edi_shipment.pack",
+        json!({ "delivery_id": delivery["id"], "packs": packs }),
+    )
+    .await;
+    let shipped = run(
+        t,
+        "edi_shipment.ship",
+        json!({ "delivery_id": delivery["id"] }),
+    )
+    .await;
+    assert_eq!(shipped["notice"]["state"], "ready", "{shipped}");
+    let (_, notice) = made(t, &delivery, "856").await;
+    let draft = run(t, "sales_order.invoice", json!({ "id": order["id"] })).await;
+    let invoice = run(t, "sales_invoice.post", json!({ "id": draft["id"] })).await;
+    deliver_events(t).await;
+    let (bill, bytes) = made(t, &invoice, "810").await;
+    assert_eq!(bill["state"], "ready", "{bill} {bytes}");
+    (ack, notice, bytes, invoice)
+}
+
+#[tokio::test]
+async fn two_partners_with_two_guides_trade_the_same_order_differently() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    answering(&t, &f).await;
+    let baxter = second_partner(&t, &f).await;
+
+    // Northfield's guide: pallets as packed, our vendor number (as it
+    // named it in the order) at the head of the invoice and the case lines marked.
+    let north = guide(
+        &t,
+        &f,
+        "NORTHFIELD",
+        json!([
+            ["856", "out", { "options": { "hierarchy": "SOTPI" } }],
+            ["810", "out", { "extra": [
+                { "segment": "REF", "after": "BIG",
+                  "elements": [{ "value": "VR" }, { "expr": "order.reference.IA" }] },
+                { "segment": "REF", "after": "IT1",
+                  "elements": [{ "value": "PK" }, { "expr": "'CASE OF ' + line.product.UK" }],
+                  "condition": "line.uom == 'CA'" },
+            ] }],
+        ]),
+    )
+    .await;
+    // Baxter's: a header-only acknowledgement, no pallets and its own
+    // packaging code, units written as it wants them, and an order must
+    // carry a contract number.
+    let bax = guide(
+        &t,
+        &f,
+        "BAXTER",
+        json!([
+            ["850", "in", { "constraints": [{ "segment": "REF", "element": 1,
+                                              "codes": ["DP", "IA", "CT"] },
+                                            { "segment": "TD1", "required": true }] }],
+            ["855", "out", { "options": { "ack_detail": "header" } }],
+            ["856", "out", { "options": { "hierarchy": "SOPI", "pack_qualifier": "PLT94" } }],
+            ["810", "out", { "options": { "uom": { "CA": "CS" } },
+                             "constraints": [{ "segment": "CUR", "not_used": true }] }],
+        ]),
+    )
+    .await;
+    for (partner, guide) in [(&f.partner, &north), (&baxter, &bax)] {
+        let (status, body) = t
+            .patch(
+                &t.admin,
+                &format!("/api/entities/edi_partner/{partner}"),
+                json!({ "guide_id": guide }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    // The same order from each. Baxter's guide wants a TD1 the order
+    // does not have: a note on the proposal, not a rejection.
+    let got = received(&t, &from_baxter(PO850)).await;
+    assert_eq!(got["messages"][0]["state"], "proposed", "{got}");
+    let p = proposal(&t, &t.admin, &got["messages"][0]).await;
+    let broken = findings(&p, "guide");
+    assert_eq!(broken.len(), 1, "{p}");
+    assert!(
+        broken[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("segment TD1 is required"),
+        "{p}"
+    );
+    assert_eq!(broken[0]["severity"], "note");
+    let (status, baxter_order) = t
+        .command(
+            &t.admin,
+            "edi.draft",
+            json!({ "message_id": got["messages"][0]["id"], "items": knife_choice(&f),
+                    "remember": true, "accept_notes": true }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{baxter_order}");
+    let north_order = drafted(&t, &f, PO850).await;
+
+    let (north_ack, north_notice, north_bill, _) = order_to_cash(&t, &north_order).await;
+    let (bax_ack, bax_notice, bax_bill, bax_invoice) = order_to_cash(&t, &baxter_order).await;
+
+    // The acknowledgement: every line for one, the header alone for the
+    // other.
+    assert_eq!(north_ack.matches("PO1*").count(), 3, "{north_ack}");
+    assert_eq!(bax_ack.matches("PO1*").count(), 0, "{bax_ack}");
+    assert!(bax_ack.contains("BAK*00*AD*4500018842"), "{bax_ack}");
+
+    // The notice: a pallet for one, cartons alone for the other.
+    assert!(north_notice.contains("*2*T*1~"), "{north_notice}");
+    assert!(!bax_notice.contains("*T*"), "{bax_notice}");
+    assert!(north_notice.contains("TD1*CTN25*3"), "{north_notice}");
+    assert!(bax_notice.contains("TD1*PLT94*3"), "{bax_notice}");
+
+    // The invoice: Northfield's vendor number after the BIG and a mark on
+    // the case line; Baxter's cases written CS. Both come to the books.
+    assert!(
+        north_bill.contains("*DI~REF*VR*0071934~REF*DP*042~"),
+        "{north_bill}"
+    );
+    assert!(
+        north_bill.contains("~REF*PK*CASE OF 10400001000202~"),
+        "{north_bill}"
+    );
+    assert_eq!(north_bill.matches("REF*PK*").count(), 1, "{north_bill}");
+    assert!(
+        bax_bill.contains("IT1*2*120*CS*31.2**UK*10400001000202"),
+        "{bax_bill}"
+    );
+    assert!(!bax_bill.contains("REF*VR*"), "{bax_bill}");
+    let gross = dec(&bax_invoice["summary"]["total_gross"]);
+    assert!(
+        bax_bill.contains(&format!("TDS*{}~", (gross * 100.0).round() as i64)),
+        "{bax_bill}"
+    );
+
+    // An expression that cannot be worked out: the message is invalid,
+    // never written with an empty value.
+    let id: String = sqlx::query_scalar(
+        "SELECT id::text FROM edi_guide_message WHERE guide_id = $1::uuid AND message = '810'",
+    )
+    .bind(&bax)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    let (status, body) = t
+        .patch(
+            &t.admin,
+            &format!("/api/entities/edi_guide_message/{id}"),
+            json!({ "message": "810", "direction": "out", "spec": { "extra": [
+                { "segment": "REF", "after": "BIG",
+                  "elements": [{ "value": "ZZ" }, { "expr": "order.reference.ZZ" }] }] } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let preview = run(
+        &t,
+        "edi.generate",
+        json!({ "doc_type": "sales_invoice", "id": bax_invoice["id"], "message": "810",
+                "preview": true }),
+    )
+    .await;
+    assert_eq!(preview["state"], "invalid", "{preview}");
+    assert!(
+        preview["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["code"] == "guide_extra"),
+        "{preview}"
+    );
+
+    // A spec that names a segment the message has not is refused on save.
+    let (status, body) = t
+        .post(
+            &t.admin,
+            "/api/entities/edi_guide_message",
+            json!({ "company_id": f.c.id, "guide_id": north, "message": "855",
+                    "direction": "out", "spec": { "extra": [
+                        { "segment": "REF", "after": "XYZ", "elements": [{ "value": "A" }] }] } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.to_string().contains("XYZ"), "{body}");
+
+    // Exported, imported into another company, exported again: the same.
+    let file = run(&t, "edi_guide.export", json!({ "guide_id": north })).await;
+    let other = t.company("OT", "USD").await;
+    let imported = run(
+        &t,
+        "edi_guide.import",
+        json!({ "company_id": other.id, "file": file }),
+    )
+    .await;
+    assert_eq!(imported["created"], true);
+    let again = run(
+        &t,
+        "edi_guide.export",
+        json!({ "guide_id": imported["guide_id"] }),
+    )
+    .await;
+    assert_eq!(again, file);
+    let (status, _) = t
+        .command(
+            &t.admin,
+            "edi_guide.import",
+            json!({ "company_id": other.id, "file": file }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // A sample checked under a guide, and what samples suggest.
+    let checked = run(
+        &t,
+        "edi_guide.check",
+        json!({ "guide_id": bax, "content": PO850 }),
+    )
+    .await;
+    assert_eq!(checked["messages"][0]["message"], "850", "{checked}");
+    assert_eq!(
+        checked["messages"][0]["violations"],
+        json!(["segment TD1 is required by the guide"]),
+        "{checked}"
+    );
+    let derived = run(&t, "edi_guide.derive", json!({ "content": [PO850] })).await;
+    let spec = &derived["messages"][0]["spec"];
+    assert_eq!(derived["messages"][0]["message"], "850", "{derived}");
+    assert_eq!(
+        spec["options"]["item_match"][0],
+        json!({ "kind": "gtin", "qualifiers": ["UP", "UK"] }),
+        "{derived}"
+    );
+    assert_eq!(
+        spec["options"]["ship_to"],
+        json!({ "role": "ST", "qualifier": "92" }),
+        "{derived}"
+    );
+    t.stop().await;
+}

@@ -38,12 +38,14 @@ pub struct Partner {
     pub decimal_mark: String,
     /// EDIFACT: the character set, such as `UNOC`.
     pub charset: String,
+    /// The partner's implementation guide, if it has one of its own.
+    pub guide_id: Option<Uuid>,
 }
 
 const COLUMNS: &str = "id, company_id, code, name, customer_id, warehouse_id, syntax, usage, \
     our_qualifier, our_id, their_qualifier, their_id, our_group_id, their_group_id, version, \
     ack_form, ack_hours, element_separator, component_separator, repetition_separator, \
-    segment_terminator, line_breaks, run_as_user_id, active, decimal_mark, charset";
+    segment_terminator, line_breaks, run_as_user_id, active, decimal_mark, charset, guide_id";
 
 pub async fn load(conn: &mut PgConnection, id: Uuid) -> Result<Partner> {
     sqlx::query_as(&format!("SELECT {COLUMNS} FROM edi_partner WHERE id = $1"))

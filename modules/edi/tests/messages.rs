@@ -259,6 +259,47 @@ fn an_856_tree_reads_back_both_ways_round() {
 }
 
 #[test]
+fn a_guides_hierarchy_rearranges_the_tree_and_it_reads_back() {
+    use erpcraft_edi::guide::{self, Hierarchy, Options};
+    use erpcraft_edi::outbound::Typed;
+    for (hierarchy, levels, structure, pallets, packs) in [
+        (Hierarchy::Sotpi, "HL*3*2*T*1~", "0001", 1, 2),
+        (Hierarchy::Sopi, "HL*3*2*P*1~", "0001", 0, 2),
+        (Hierarchy::Soip, "HL*3*2*I*1~", "0002", 0, 2),
+        (Hierarchy::Soi, "HL*3*2*I*0~", "0004", 0, 0),
+    ] {
+        let mut typed = Typed::Notice(notice(false));
+        guide::apply_options(
+            &Options {
+                hierarchy: Some(hierarchy),
+                ..Options::default()
+            },
+            &mut typed,
+        );
+        let Typed::Notice(mut meant) = typed else {
+            unreachable!()
+        };
+        assert_eq!(meant.structure, structure);
+        let (text, set) = round_trip("856", "SH", meant.body());
+        assert!(text.contains(levels), "{hierarchy:?}: {text}");
+        let level = |code: &str| {
+            text.matches(&format!("*{code}*1~")).count()
+                + text.matches(&format!("*{code}*0~")).count()
+        };
+        assert_eq!(level("T"), pallets, "{text}");
+        assert_eq!(level("P"), packs, "{text}");
+        // Two cartons of one line: one item of both, when items lead.
+        if matches!(hierarchy, Hierarchy::Soip | Hierarchy::Soi) {
+            assert_eq!(text.matches("SN1**2*CA**120*CA~").count(), 1, "{text}");
+        }
+        let (read, verdict) = asn856::read(&set);
+        assert!(verdict.segments.is_empty(), "{hierarchy:?}: {verdict:?}");
+        meant.levels_stated = Some(meant.levels() as u32);
+        assert_eq!(read, meant, "{hierarchy:?}");
+    }
+}
+
+#[test]
 fn an_856_parent_that_comes_later_or_nests_too_deep_is_refused() {
     let (text, _) = round_trip("856", "SH", notice(false).body());
     let later = text.replace("HL*3*2*T*1~", "HL*3*9*T*1~");

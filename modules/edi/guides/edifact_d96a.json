@@ -1,0 +1,22 @@
+{
+  "format": "erpcraft-edi-guide",
+  "code": "edifact_d96a",
+  "name": "EDIFACT D.96A, as this module reads and writes it",
+  "syntax": "edifact",
+  "version": "D96A",
+  "notes": "The module's own choices where the directory leaves them open, in its own words. Codes are as the typed messages hold them (a GTIN's EN, the ship-to's ST). A partner's guide builds on these.",
+  "messages": [
+    { "message": "ORDERS", "direction": "in", "spec": { "options": {
+        "item_match": [
+          { "kind": "gtin", "qualifiers": ["EN", "UK"] },
+          { "kind": "seller_item", "qualifiers": ["VN"] },
+          { "kind": "buyer_item", "qualifiers": ["IN"] }
+        ],
+        "ship_to": { "role": "ST" },
+        "dates": { "ship": ["002", "010"], "cancel": "001" }
+    } } },
+    { "message": "ORDRSP", "direction": "out", "spec": { "options": { "ack_detail": "line" } } },
+    { "message": "DESADV", "direction": "out", "spec": { "options": { "hierarchy": "SOTPI" } } },
+    { "message": "INVOIC", "direction": "out", "spec": {} }
+  ]
+}

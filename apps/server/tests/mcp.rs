@@ -1233,7 +1233,7 @@ async fn prompts_are_real_work_with_the_tools_that_exist() {
     // Every command a prompt names is registered. A prompt that names one
     // that is gone would not be offered; this makes that a failure.
     let named_commands = erpcraft_mcp::prompt_commands();
-    assert_eq!(named_commands.len(), 3);
+    assert_eq!(named_commands.len(), 4);
     for (prompt, commands) in &named_commands {
         assert!(commands.len() >= 3, "{prompt} is about tools");
         for command in commands {
@@ -1252,7 +1252,12 @@ async fn prompts_are_real_work_with_the_tools_that_exist() {
         .collect();
     assert_eq!(
         offered,
-        ["enter_vendor_invoice", "close_month", "explain_refusal"]
+        [
+            "enter_vendor_invoice",
+            "close_month",
+            "explain_refusal",
+            "edi_onboard_partner"
+        ]
     );
     for prompt in prompts {
         assert!(!prompt["title"].as_str().unwrap().is_empty());
@@ -1390,7 +1395,7 @@ async fn prompts_are_real_work_with_the_tools_that_exist() {
     // The earlier revisions have prompts too.
     let (status, body) = legacy(&t, &t.admin, Some("2025-06-18"), "prompts/list", json!({})).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["result"]["prompts"].as_array().unwrap().len(), 3);
+    assert_eq!(body["result"]["prompts"].as_array().unwrap().len(), 4);
     assert!(body["result"].get("ttlMs").is_none());
 
     t.stop().await;

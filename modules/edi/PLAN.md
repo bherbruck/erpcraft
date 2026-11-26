@@ -191,7 +191,7 @@ Same typed messages, second syntax. `src/edifact/orders.rs` reads ORDERS D.96A i
 
 Until here every partner is read and written the standard's way. Now what differs per partner is a record.
 
-**Migration `0003_guide.sql`**: `edi_guide` (`id`, `code`, `name`, `syntax`, `version`, `base_guide_id`, `notes`), `edi_guide_message` (`guide_id`, `message`, `direction`, `spec jsonb`, unique on the three), `edi_partner.guide_id`.
+**Migration `0006_guide.sql`** (planned as 0003; built as 6, and the guide's messages carry their company so they are read with its rights): `edi_guide` (`id`, `code`, `name`, `syntax`, `version`, `base_guide_id`, `notes`), `edi_guide_message` (`guide_id`, `message`, `direction`, `spec jsonb`, unique on the three), `edi_partner.guide_id`.
 
 **`spec`** has exactly three parts, each closed:
 
@@ -199,7 +199,7 @@ Until here every partner is read and written the standard's way. Now what differ
 2. `constraints`: per segment and element, `required`, `not_used`, `min`, `max`, `codes`. Checked on what is written (a failure makes the message `invalid`) and on what is read (a failure is a finding on the proposal: the 997 answers the standard, not the guide).
 3. `extra`: segments added at a named place of an outbound message, each element a constant or an `Expression` over a closed set of facts (`partner.*`, `order.*` as received, `document.*` summary fields, `line.*`), with an optional condition. This is what covers "`REF*IA` with our vendor number at the header".
 
-`src/guide.rs`: load with its base (one level), check on save (the message exists, tags and positions exist in the typed writer's layout, expressions parse and read only declared facts), apply. `guides/x12_004010.json`, `x12_005010.json`, `edifact_d96a.json`: the built-in bases, loaded at start-up like setup templates.
+`src/guide.rs`: load with its base (one level), check on save (the message exists, tags and positions exist in the typed writer's layout, expressions parse and read only declared facts), apply. `guides/x12_004010.json`, `x12_005010.json`, `edifact_d96a.json`: the built-in bases, loaded at start-up like setup templates. (Built: they are in the code, not rows, and every guide builds on its syntax's and version's; `base_guide_id` is the one level of the company's own.)
 
 **Commands**: `edi_guide.check` (`guide_id`, `content`: how a sample file reads under a guide, with every constraint it breaks), `edi_guide.derive` (`content`: proposes options from samples, such as which qualifiers the partner uses), `edi_guide.export` and `.import` (a guide as one JSON file, so guides can be shared between companies).
 

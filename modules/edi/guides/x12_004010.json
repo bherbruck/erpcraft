@@ -1,0 +1,22 @@
+{
+  "format": "erpcraft-edi-guide",
+  "code": "x12_004010",
+  "name": "X12 004010, as this module reads and writes it",
+  "syntax": "x12",
+  "version": "004010",
+  "notes": "The module's own choices where the standard leaves them open, in its own words. A partner's guide builds on these.",
+  "messages": [
+    { "message": "850", "direction": "in", "spec": { "options": {
+        "item_match": [
+          { "kind": "gtin", "qualifiers": ["UP", "EN", "UK"] },
+          { "kind": "seller_item", "qualifiers": ["VN", "VP"] },
+          { "kind": "buyer_item", "qualifiers": ["IN", "BP"] }
+        ],
+        "ship_to": { "role": "ST" },
+        "dates": { "ship": ["002", "010"], "cancel": "001" }
+    } } },
+    { "message": "855", "direction": "out", "spec": { "options": { "ack_detail": "line" } } },
+    { "message": "856", "direction": "out", "spec": { "options": { "hierarchy": "SOTPI", "pack_qualifier": "CTN25" } } },
+    { "message": "810", "direction": "out", "spec": {} }
+  ]
+}

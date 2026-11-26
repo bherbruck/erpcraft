@@ -190,6 +190,77 @@ before, failed attempts included, which often says how it got into its state.\n\
 \n\
 End with one sentence on what I can do next, and who else would have to act if I cannot.",
     },
+    Prompt {
+        name: "edi_onboard_partner",
+        title: "Set up a trading partner for EDI",
+        description: "Read a partner's implementation guide and sample files, create the \
+                      partner, its guide and cross-references, check the samples under the \
+                      guide, and make test documents before going live.",
+        arguments: &[
+            Argument {
+                name: "partner",
+                title: "Partner",
+                description: "Who the partner is: its name, the customer its orders are for, \
+                              and the identifiers and qualifiers it sends from and to.",
+                required: true,
+            },
+            Argument {
+                name: "guide",
+                title: "The partner's guide",
+                description: "What the partner's implementation guide says, as text: the \
+                              syntax and version, and per message what it requires, does not \
+                              use and adds.",
+                required: true,
+            },
+            Argument {
+                name: "samples",
+                title: "Sample files",
+                description: "The partner's sample files, as text, if it sent any.",
+                required: false,
+            },
+        ],
+        text: "Set up EDI with this trading partner:\n\
+{arg:partner}\n\
+\n\
+Its implementation guide says:\n\
+{arg:guide}\n\
+\n\
+Its sample files:\n\
+{arg:samples}\n\
+\n\
+What differs between partners is data, never code: a guide record with a spec per message. \
+Work in this order, and stop to ask me whenever the guide is unclear or asks for something \
+the spec cannot say.\n\
+\n\
+1. Find the customer the partner's orders are for with {tool:entity.list} on `customer`. If \
+there is none, ask me; do not create one.\n\
+2. If there are samples, call {tool:edi_guide.derive} with them. It proposes, from what the \
+samples use, which product id qualifiers carry which item number, the ship-to's role and \
+qualifier, the dates and references, and the segments every sample has. Compare that with \
+the guide's text and tell me where they disagree.\n\
+3. Write the guide as data. Create it with {tool:entity.create} on `edi_guide` (code, name, \
+syntax, version; `base_guide_id` if it builds on another guide of ours for the same \
+retailer). Then one `edi_guide_message` per message the guide describes (850 or ORDERS \
+received; 855, 856, 810 or ORDRSP, DESADV, INVOIC sent) with its `spec`: `options` for the \
+choices the guide makes, `constraints` for what it requires, does not use, or limits to codes \
+and lengths, and `extra` for segments it adds (a constant, or an expression over partner.*, \
+order.*, document.* and line.*). The spec is checked when it is saved; read the refusal and \
+fix the spec. Never put the text of the partner's guide or of the standard into a note.\n\
+4. Create the partner with {tool:entity.create} on `edi_partner`, with the customer, the \
+identifiers, `usage` `test`, and the guide. Add what its orders name: items with \
+`edi_item_xref`, units with `edi_uom_xref`, places with `edi_location_xref`.\n\
+5. Check every sample with {tool:edi_guide.check} under the guide. Each constraint broken is \
+listed. A broken constraint in a sample from the partner means the spec is wrong or the \
+sample is: tell me which you think, and why.\n\
+6. Receive one sample order with {tool:edi.receive} and read the proposal with \
+{tool:edi.proposal}. Every line should find its item and the ship-to its place; add the \
+cross-references that are missing. Draft it with {tool:edi.draft} only when I agree.\n\
+7. For each message we send, preview it with {tool:edi.generate} and `preview: true` from a \
+document of the order, and show me what the guide changed and any finding.\n\
+\n\
+End with what is set up, what the partner still has to confirm, and that the partner stays \
+in `usage` `test` until I change it.",
+    },
 ];
 
 /// The commands a text names, in order of appearance.

@@ -13,7 +13,8 @@
 //! - **The module**: trading partners and cross-references as entities;
 //!   the log of every interchange with its bytes ([`store`]); control
 //!   numbers ([`control`]); receiving ([`inbound`]); proposals
-//!   ([`proposal`]) and drafts ([`draft`]) of sales orders.
+//!   ([`proposal`]) and drafts ([`draft`]) of sales orders; a partner's
+//!   implementation guide as data ([`guide`]).
 //!
 //! ARCHITECTURE.md ("Electronic data interchange") says what the module
 //! is, PLAN.md in this directory the order it is built in, and README.md
@@ -35,6 +36,8 @@ pub mod commands_out;
 pub mod control;
 pub mod draft;
 pub mod entities;
+pub mod guide;
+pub mod guide_commands;
 pub mod inbound;
 pub mod label;
 pub mod outbound;
@@ -117,6 +120,11 @@ impl Module for EdiModule {
                 name: "edifact",
                 sql: include_str!("../migrations/0005_edifact.sql"),
             },
+            Migration {
+                version: 6,
+                name: "guide",
+                sql: include_str!("../migrations/0006_guide.sql"),
+            },
         ]
     }
 
@@ -149,6 +157,10 @@ impl Module for EdiModule {
             command(commands_out::LabelOf),
             command(commands_out::Pending),
             command(commands_out::Resend),
+            command(guide_commands::Check),
+            command(guide_commands::Derive),
+            command(guide_commands::Export),
+            command(guide_commands::Import),
         ]
     }
 }

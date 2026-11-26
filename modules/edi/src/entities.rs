@@ -2,7 +2,9 @@
 //! are written with the generic commands; the log of interchanges and
 //! messages is read-only, written only by the module's commands.
 
-use erpcraft_kernel::{EntityMeta, FieldMeta, FieldType};
+use erpcraft_kernel::registry::Registry;
+use erpcraft_kernel::{EntityMeta, Error, FieldMeta, FieldType, Result};
+use serde_json::{Map, Value};
 
 fn created() -> FieldMeta {
     FieldMeta::new("created_at", "Created", FieldType::Timestamp).readonly()
@@ -25,6 +27,8 @@ pub fn all() -> Vec<EntityMeta> {
         interchange(),
         message(),
         settings(),
+        guide(),
+        guide_message(),
     ]
 }
 
@@ -155,6 +159,12 @@ fn partner() -> EntityMeta {
             .help(
                 "EDIFACT: the character set interchanges are written in. A text it cannot carry \
                  makes the message invalid, never a changed text.",
+            ),
+        )
+        .field(
+            FieldMeta::new("guide_id", "Guide", FieldType::link("edi_guide")).help(
+                "The partner's implementation guide: what it reads and writes differently. \
+                 Empty: the module's own way for the syntax and version.",
             ),
         )
         .field(
@@ -432,4 +442,110 @@ pub fn settings() -> EntityMeta {
         .display(&["gs1_company_prefix"])
         .plural("EDI settings")
         .company_field("company_id")
+}
+
+fn guide() -> EntityMeta {
+    EntityMeta::new("edi_guide", "EDI guide")
+        .field(
+            FieldMeta::new("company_id", "Company", FieldType::link("company"))
+                .required()
+                .immutable(),
+        )
+        .field(FieldMeta::new("code", "Code", FieldType::Text).required())
+        .field(FieldMeta::new("name", "Name", FieldType::Text).required())
+        .field(
+            FieldMeta::new(
+                "syntax",
+                "Syntax",
+                FieldType::labelled(&[("x12", "ANSI X12"), ("edifact", "UN/EDIFACT")]),
+            )
+            .required(),
+        )
+        .field(
+            FieldMeta::new(
+                "version",
+                "Version",
+                FieldType::options(&["004010", "005010", "D96A"]),
+            )
+            .required(),
+        )
+        .field(
+            FieldMeta::new("base_guide_id", "Builds on", FieldType::link("edi_guide")).help(
+                "A guide of the company this one builds on, such as a retailer's general guide \
+                 under the guide of one of its divisions. One level only.",
+            ),
+        )
+        .field(FieldMeta::new("notes", "Notes", FieldType::Text))
+        .field(created())
+        .order_by(&["code"])
+        .search(&["code", "name"])
+        .display(&["code", "name"])
+        .plural("EDI guides")
+        .company_field("company_id")
+}
+
+fn guide_message() -> EntityMeta {
+    EntityMeta::new("edi_guide_message", "EDI guide message")
+        .field(
+            FieldMeta::new("company_id", "Company", FieldType::link("company"))
+                .required()
+                .immutable(),
+        )
+        .field(
+            FieldMeta::new("guide_id", "Guide", FieldType::link("edi_guide"))
+                .required()
+                .immutable(),
+        )
+        .field(
+            FieldMeta::new("message", "Message", FieldType::Text)
+                .required()
+                .help("Such as 850 or ORDERS."),
+        )
+        .field(
+            FieldMeta::new(
+                "direction",
+                "Direction",
+                FieldType::labelled(&[("in", "Received"), ("out", "Sent")]),
+            )
+            .required(),
+        )
+        .field(
+            FieldMeta::new("spec", "Spec", FieldType::Json)
+                .required()
+                .help(
+                    "What the guide says of the message: options, constraints and extra segments. \
+                 Checked when it is saved.",
+                ),
+        )
+        .order_by(&["message", "direction"])
+        .display(&["message", "direction"])
+        .plural("EDI guide messages")
+        .child_of("edi_guide", "guide_id")
+        .written_together(&["message", "direction", "spec"])
+        .validator(check_guide_message)
+        .company_field("company_id")
+}
+
+/// A guide's spec is checked when it is saved: what it names exists, and
+/// its expressions parse and read only declared facts.
+fn check_guide_message(_: &Registry, data: &Map<String, Value>) -> Result<()> {
+    let (Some(message), Some(direction), Some(spec)) =
+        (data.get("message"), data.get("direction"), data.get("spec"))
+    else {
+        return Ok(());
+    };
+    let message = message.as_str().unwrap_or_default();
+    let syntax = if message.bytes().all(|b| b.is_ascii_digit()) {
+        "x12"
+    } else {
+        "edifact"
+    };
+    let spec = crate::guide::parse(spec).map_err(|why| Error::field("spec", why))?;
+    crate::guide::check(
+        syntax,
+        message,
+        direction.as_str().unwrap_or_default(),
+        &spec,
+    )
+    .map_err(|why| Error::field("spec", why))
 }
