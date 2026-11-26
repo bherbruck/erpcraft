@@ -87,3 +87,103 @@ async fn verify_checks_a_receivable_account_that_has_no_open_items() {
         "the receivables account holds 100.00 that no open item stands for, yet:\n{text}"
     );
 }
+
+/// A payment dated before the invoice it settles was allowed until
+/// openitems 11. Such a settlement recorded before that migration was
+/// applied is legacy: a warning, and verify still passes. One recorded
+/// after it (here with the rule's trigger switched off, as drift) fails.
+#[tokio::test]
+async fn an_early_settlement_from_before_openitems_11_is_a_warning_and_a_later_one_fails() {
+    let u = common::upgrade::Upgrade::at(&[("open_items", 10)]).await;
+    let rows = |settlement: &str, payment: &str, posting: &str| {
+        format!(
+            "INSERT INTO document (id, company_id, doc_type, status, doc_date, created_by)
+                 VALUES ('{payment}', '00000000-0000-0000-0000-0000000000c1', 'payment',
+                         'posted', '2026-03-05', '00000000-0000-0000-0000-0000000000e1');
+             INSERT INTO posting (id, company_id, document_id, command, posting_date, created_by)
+                 VALUES ('{posting}', '00000000-0000-0000-0000-0000000000c1', '{payment}',
+                         'payment.post', '2026-03-05', '00000000-0000-0000-0000-0000000000e1');
+             INSERT INTO settlement (id, company_id, posting_id, open_item_id, amount, txn_amount)
+                 VALUES ('{settlement}', '00000000-0000-0000-0000-0000000000c1', '{posting}',
+                         '00000000-0000-0000-0000-0000000000f1', 10, 10);"
+        )
+    };
+    u.sql(
+        "INSERT INTO app_user (id, email, name) VALUES
+             ('00000000-0000-0000-0000-0000000000e1', 'old@example.com', 'Old');
+         INSERT INTO company (id, code, name, base_currency)
+             VALUES ('00000000-0000-0000-0000-0000000000c1', 'OLD', 'Old Inc', 'USD');
+         INSERT INTO account (id, company_id, code, name, account_type)
+             VALUES ('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000c1',
+                     '1200', 'Receivables', 'asset');
+         INSERT INTO document (id, company_id, doc_type, status, doc_date, created_by)
+             VALUES ('00000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-0000000000c1',
+                     'sales_invoice', 'posted', '2026-03-10', '00000000-0000-0000-0000-0000000000e1');
+         INSERT INTO posting (id, company_id, document_id, command, posting_date, created_by)
+             VALUES ('00000000-0000-0000-0000-0000000000b1', '00000000-0000-0000-0000-0000000000c1',
+                     '00000000-0000-0000-0000-0000000000d1', 'sales_invoice.post', '2026-03-10',
+                     '00000000-0000-0000-0000-0000000000e1');
+         INSERT INTO open_item (id, company_id, posting_id, kind, party_type, party_id, account_id,
+                                amount, txn_amount, currency, doc_date)
+             VALUES ('00000000-0000-0000-0000-0000000000f1', '00000000-0000-0000-0000-0000000000c1',
+                     '00000000-0000-0000-0000-0000000000b1', 'receivable', 'customer',
+                     '00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000000a1',
+                     100, 100, 'USD', '2026-03-10');",
+    )
+    .await;
+    u.sql(&rows(
+        "00000000-0000-0000-0000-000000000051",
+        "00000000-0000-0000-0000-0000000000d2",
+        "00000000-0000-0000-0000-0000000000b2",
+    ))
+    .await;
+    u.upgrade().await.unwrap();
+    let check = |report: &erpcraft_server::verify::Report| {
+        report.companies[0]
+            .checks
+            .iter()
+            .find(|c| c.name == "settlement_dates")
+            .cloned()
+            .unwrap()
+    };
+    let report = erpcraft_server::verify::verify(&u.pool, Some("OLD"))
+        .await
+        .unwrap();
+    let legacy = check(&report);
+    let text = report.text();
+
+    // Drift after the rule: the trigger off, an early settlement written.
+    u.sql(&format!(
+        "ALTER TABLE settlement DISABLE TRIGGER settlement_after_item;
+         {}
+         ALTER TABLE settlement ENABLE TRIGGER settlement_after_item;",
+        rows(
+            "00000000-0000-0000-0000-000000000052",
+            "00000000-0000-0000-0000-0000000000d3",
+            "00000000-0000-0000-0000-0000000000b3",
+        )
+    ))
+    .await;
+    let later = erpcraft_server::verify::verify(&u.pool, Some("OLD"))
+        .await
+        .unwrap();
+    let drift = check(&later);
+    u.stop().await;
+
+    assert!(legacy.ok, "{text}");
+    assert!(
+        legacy
+            .warning
+            .as_deref()
+            .is_some_and(|w| w.contains("legacy: 1")),
+        "{text}"
+    );
+    assert!(text.contains("warn settlement_dates"), "{text}");
+    assert!(!drift.ok, "{}", later.text());
+    assert!(
+        drift.detail.starts_with("1 settlements"),
+        "{}",
+        later.text()
+    );
+    assert!(drift.warning.is_some(), "the legacy one is still named");
+}

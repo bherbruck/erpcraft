@@ -60,10 +60,12 @@ It reads the database in one read-only snapshot and changes nothing. It checks e
 | `postings_balance` | Every posting balances on its own. |
 | `stock_levels`, `lot_levels` | Every stock level, and every lot's level, is the sum of its entries. |
 | `inventory` | The inventory accounts (the account rules for `inventory` and `inventory_in_transit`) carry exactly the value of the stock on hand. |
+| `standard_cost` | Stock of an item kept at standard is worth its quantity at its standard (to within the rounding of each entry). |
 | `open_item_settlements` | Every open item is settled by exactly its settlements. |
-| `open_items` | Every receivable and payable account carries exactly its open items, at what they are carried at (with revaluations standing). |
+| `settlement_dates` | No settlement is dated before the item it settles. One recorded before `open_items` migration 11 made that a rule (its `applied_at` in `erpcraft_migration`) is legacy: reported as a `warn` line with its count, and not a failure. |
+| `open_items` | Every receivable and payable account carries exactly its open items, at what they are carried at (with revaluations standing), the accounts the sales and purchasing settings name included when no item is on them. |
 | `tax` | On every tax account, what the postings that recorded tax put there equals the tax recorded: the tax report. Payments to the tax authority record no tax and are left out. |
 
 These are the checks the month-end scenario test makes, and they pass on its books. A failure names the account and both amounts. One that is not a restore problem: a manual journal entry straight onto an inventory, receivable or payable account. It balances, but leaves that ledger behind the general ledger. Reverse it, and use the document meant for that change (a stock adjustment, a payment, a credit note).
 
-The command exits 0 when everything agrees and 1 when anything does not, so a script or monitor can run it.
+The command exits 0 when everything agrees and 1 when anything does not, so a script or monitor can run it. Warnings do not change the exit code; the last line says when there are some. A company code given to `--company` that matches no company is a failure.

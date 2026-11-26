@@ -15,7 +15,8 @@
 //!   (receivables as debits, payables as credits, with revaluations
 //!   standing), the receivables and payables accounts the settings name
 //!   included when no open item is on them; no settlement is dated before
-//!   the item it settles;
+//!   the item it settles (one recorded before openitems 11 made that a
+//!   rule is a warning, not a failure);
 //! - a company code asked for that matches no company is a failure, not
 //!   an empty green report;
 //! - tax: on every tax account, what the postings that recorded tax put
@@ -36,6 +37,10 @@ pub struct Check {
     pub actual: Option<Decimal>,
     /// What does not agree, in words.
     pub detail: String,
+    /// Something to know that is not a failure: what an older version
+    /// allowed and the books still hold. The check passes with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -66,6 +71,7 @@ fn check(name: &'static str, expected: Decimal, actual: Decimal, what: &str) -> 
         } else {
             format!("{what}: expected {expected}, found {actual}")
         },
+        warning: None,
     }
 }
 
@@ -80,6 +86,7 @@ fn count(name: &'static str, found: i64, what: &str) -> Check {
         } else {
             format!("{found} {what}")
         },
+        warning: None,
     }
 }
 
@@ -211,6 +218,7 @@ pub async fn verify(pool: &PgPool, company_code: Option<&str>) -> Result<Report>
             ok: off_standard.is_empty(),
             expected: None,
             actual: None,
+            warning: None,
             detail: if off_standard.is_empty() {
                 "stock at standard is worth its standard".to_owned()
             } else {
@@ -242,20 +250,37 @@ pub async fn verify(pool: &PgPool, company_code: Option<&str>) -> Result<Report>
             settled,
             "open items not settled by exactly their settlements",
         ));
-        let early: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM settlement s
+        // Settled no earlier than the item: a rule since openitems 11.
+        // What was settled before that rule was applied is legacy, allowed
+        // then and kept: a warning. Anything after it fails. Reversals and
+        // cancellations call items off and are not settlements by date.
+        let (early, legacy): (i64, i64) = sqlx::query_as(
+            "SELECT count(*) FILTER (WHERE s.created_at >= m.applied_at),
+                    count(*) FILTER (WHERE s.created_at < m.applied_at)
+             FROM settlement s
              JOIN open_item i ON i.id = s.open_item_id
              JOIN posting p ON p.id = s.posting_id
-             WHERE s.company_id = $1 AND p.posting_date < i.doc_date",
+             CROSS JOIN (SELECT COALESCE(
+                 (SELECT applied_at FROM erpcraft_migration
+                  WHERE module = 'open_items' AND version = 11), '-infinity') AS applied_at) m
+             WHERE s.company_id = $1 AND p.posting_date < i.doc_date
+               AND NOT s.cancels AND s.reverses_id IS NULL",
         )
         .bind(id)
         .fetch_one(&mut *c)
         .await?;
-        checks.push(count(
+        let mut dates = count(
             "settlement_dates",
             early,
             "settlements dated before the item they settle",
-        ));
+        );
+        if legacy > 0 {
+            dates.warning = Some(format!(
+                "legacy: {legacy} settlement(s) dated before their item, allowed before \
+                 openitems 11 and recorded before it was applied"
+            ));
+        }
+        checks.push(dates);
         // The accounts the settings name carry open items, whether or not
         // any item is on them now.
         let mut named = vec![];
@@ -312,6 +337,7 @@ pub async fn verify(pool: &PgPool, company_code: Option<&str>) -> Result<Report>
         checks.push(Check {
             name: "open_items",
             ok: off.is_empty(),
+            warning: None,
             expected: Some(open),
             actual: Some(ledger),
             detail: if off.is_empty() {
@@ -358,6 +384,7 @@ pub async fn verify(pool: &PgPool, company_code: Option<&str>) -> Result<Report>
         checks.push(Check {
             name: "tax",
             ok: off.is_empty(),
+            warning: None,
             expected: Some(recorded),
             actual: Some(ledger),
             detail: if off.is_empty() {
@@ -384,6 +411,15 @@ pub async fn verify(pool: &PgPool, company_code: Option<&str>) -> Result<Report>
 }
 
 impl Report {
+    /// How many checks passed with a warning.
+    pub fn warnings(&self) -> usize {
+        self.companies
+            .iter()
+            .flat_map(|c| &c.checks)
+            .filter(|c| c.warning.is_some())
+            .count()
+    }
+
     /// The report as lines of text, one per check.
     pub fn text(&self) -> String {
         let mut out = String::new();
@@ -396,6 +432,9 @@ impl Report {
                     check.name,
                     check.detail
                 ));
+                if let Some(warning) = &check.warning {
+                    out.push_str(&format!("  warn {:<22} {warning}\n", check.name));
+                }
             }
         }
         if let Some(code) = &self.missing {
@@ -405,10 +444,13 @@ impl Report {
         } else if self.companies.is_empty() {
             out.push_str("no companies\n");
         }
-        out.push_str(if self.ok {
-            "the books agree\n"
-        } else {
-            "the books do NOT agree\n"
+        let warnings = self.warnings();
+        out.push_str(&match (self.ok, warnings) {
+            (true, 0) => "the books agree\n".to_owned(),
+            (true, n) => {
+                format!("the books agree, with {n} warning(s) above: they do not fail the check\n")
+            }
+            (false, _) => "the books do NOT agree\n".to_owned(),
         });
         out
     }
