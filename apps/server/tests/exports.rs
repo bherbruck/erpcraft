@@ -527,3 +527,269 @@ async fn the_general_ledger_exports_as_rows_and_as_csv() {
     );
     t.stop().await;
 }
+
+#[tokio::test]
+async fn a_tax_auditor_gets_the_year_described_by_the_gdpdu_standard() {
+    let t = TestApp::start().await;
+    let created = run(
+        &t,
+        "company.setup",
+        json!({ "template": "de_skr03", "code": "MUSTER", "name": "Muster GmbH",
+                "first_year": 2026 }),
+    )
+    .await;
+    let c = created["company"]["id"].as_str().unwrap().to_owned();
+    let kunde = t
+        .create(
+            "customer",
+            json!({ "code": "MUELLER", "name": "Müller \"Bau\" GmbH" }),
+        )
+        .await;
+    invoice(
+        &t,
+        "sales_invoice",
+        &c,
+        ("customer_id", &kunde),
+        "2026-03-10",
+        json!({ "account_id": account(&t, &c, "8400").await, "description": "Beratung",
+                "qty": "1", "unit_price": "100.00",
+                "tax_code_id": tax_code(&t, "DE-USt19").await }),
+    )
+    .await;
+    let (status, _) = t
+        .command(
+            &t.admin,
+            "gdpdu.export",
+            json!({ "company_id": c, "from": "2026-01-01", "to": "2027-06-30" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let file = run(
+        &t,
+        "gdpdu.export",
+        json!({ "company_id": c, "from": "2026-01-01", "to": "2026-12-31" }),
+    )
+    .await;
+    assert_eq!(file["filename"], "gdpdu_MUSTER_20260101_20261231.zip");
+    assert_eq!(file["content_type"], "application/zip");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(file["data"].as_str().unwrap())
+        .unwrap();
+    let dir = std::env::temp_dir().join(format!("erpcraft-gdpdu-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let zip = dir.join("export.zip");
+    std::fs::write(&zip, &bytes).unwrap();
+    // Unpacked with another tool than the one that packed it.
+    let unpacked = std::process::Command::new("python3")
+        .args([
+            "-c",
+            "import sys, zipfile; z = zipfile.ZipFile(sys.argv[1]); \
+                      assert z.testzip() is None; z.extractall(sys.argv[2]); \
+                      print(' '.join(sorted(z.namelist())))",
+        ])
+        .arg(&zip)
+        .arg(&dir)
+        .output();
+    if let Ok(out) = unpacked {
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "belege.csv buchungen.csv gdpdu-01-08-2002.dtd index.xml konten.csv partner.csv steuer.csv"
+        );
+        // index.xml is valid by the DTD it names.
+        if let Ok(valid) = std::process::Command::new("xmllint")
+            .args(["--noout", "--valid", "index.xml"])
+            .current_dir(&dir)
+            .output()
+        {
+            assert!(
+                valid.status.success(),
+                "index.xml is not valid: {}",
+                String::from_utf8_lossy(&valid.stderr)
+            );
+        }
+        let journal = std::fs::read_to_string(dir.join("buchungen.csv")).unwrap();
+        let lines: Vec<&str> = journal.split("\r\n").filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 4, "{journal}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(";\"8400\";0,00;100,00;\"EUR\";")),
+            "{journal}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(";\"customer\";\"MUELLER\";")),
+            "{journal}"
+        );
+        assert!(
+            lines.iter().all(|l| l.contains(";10.03.2026;")),
+            "{journal}"
+        );
+        let parties = std::fs::read_to_string(dir.join("partner.csv")).unwrap();
+        assert!(parties.contains("\"Müller \"\"Bau\"\" GmbH\""), "{parties}");
+        let accounts = std::fs::read_to_string(dir.join("konten.csv")).unwrap();
+        assert!(
+            accounts.contains("\"8400\";\"Erlöse 19 % USt\";\"income\";0,00;0,00;100,00;-100,00"),
+            "{accounts}"
+        );
+        let tax = std::fs::read_to_string(dir.join("steuer.csv")).unwrap();
+        assert!(
+            tax.contains(";\"DE-USt19\";19,0000;\"collected\";100,00;19,00;"),
+            "{tax}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    let index = file["text"].as_str().unwrap();
+    assert!(index.contains("<!DOCTYPE DataSet SYSTEM \"gdpdu-01-08-2002.dtd\">"));
+    assert!(index.contains("<URL>buchungen.csv</URL>"));
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn datev_rows_carry_foreign_currency_the_date_of_supply_and_eu_vat_numbers() {
+    let t = TestApp::start().await;
+    let created = run(
+        &t,
+        "company.setup",
+        json!({ "template": "de_skr03", "code": "MUSTER", "name": "Muster GmbH",
+                "first_year": 2026 }),
+    )
+    .await;
+    let c = created["company"]["id"].as_str().unwrap().to_owned();
+    t.create(
+        "datev_settings",
+        json!({ "company_id": c, "consultant_number": 1001, "client_number": 456 }),
+    )
+    .await;
+    t.create(
+        "exchange_rate",
+        json!({ "from_currency": "USD", "to_currency": "EUR", "rate_date": "2026-01-01",
+                "rate": "0.9" }),
+    )
+    .await;
+    let erloese = account(&t, &c, "8400").await;
+    let us = t
+        .create("customer", json!({ "code": "US", "name": "US Inc" }))
+        .await;
+    // 100 USD at 0.9: 90 EUR, and 19 % tax.
+    let (status, draft) = t
+        .post(
+            &t.admin,
+            "/api/documents/sales_invoice",
+            json!({ "company_id": c, "doc_date": "2026-03-10", "body": {
+                "customer_id": us, "currency": "USD", "lines": [{ "account_id": erloese,
+                "description": "Service", "qty": "1", "unit_price": "100.00",
+                "tax_code_id": tax_code(&t, "DE-USt19").await }] } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{draft}");
+    run(&t, "sales_invoice.post", json!({ "id": id(&draft) })).await;
+    // An intra-Community supply to France.
+    let fr = t
+        .create("customer", json!({ "code": "FR", "name": "Client SARL" }))
+        .await;
+    run(
+        &t,
+        "party.set",
+        json!({ "party_type": "customer", "party_id": fr,
+                "tax_ids": [{ "scheme": "eu_vat", "value": "FR12 345678901" }] }),
+    )
+    .await;
+    // Goods delivered on March 5, invoiced on March 12.
+    let warehouse = created["warehouse_id"].clone();
+    let item = t
+        .create("item", json!({ "code": "W", "name": "Widget" }))
+        .await;
+    let (_, receipt) = t
+        .post(
+            &t.admin,
+            "/api/documents/stock_adjustment",
+            json!({ "company_id": c, "doc_date": "2026-02-01", "body": {
+                "offset_account_id": created["roles"]["inventory"]["id"],
+                "lines": [{ "item_id": item, "warehouse_id": warehouse, "qty": "10",
+                            "unit_cost": "5" }] } }),
+        )
+        .await;
+    run(&t, "stock_adjustment.post", json!({ "id": id(&receipt) })).await;
+    let (_, order) = t
+        .post(
+            &t.admin,
+            "/api/documents/sales_order",
+            json!({ "company_id": c, "doc_date": "2026-03-01", "body": {
+                "customer_id": fr, "lines": [{ "item_id": item, "warehouse_id": warehouse,
+                "qty": "2", "unit_price": "50" }] } }),
+        )
+        .await;
+    let order = run(&t, "sales_order.approve", json!({ "id": id(&order) })).await;
+    let delivery = run(
+        &t,
+        "sales_order.deliver",
+        json!({ "id": id(&order), "doc_date": "2026-03-05" }),
+    )
+    .await;
+    run(&t, "sales_delivery.post", json!({ "id": id(&delivery) })).await;
+    let mut invoice = run(
+        &t,
+        "sales_order.invoice",
+        json!({ "id": id(&order), "doc_date": "2026-03-12" }),
+    )
+    .await;
+    invoice["body"]["lines"][0]["tax_code_id"] = json!(tax_code(&t, "DE-IGL").await);
+    let (status, invoice) = t
+        .patch(
+            &t.admin,
+            &format!("/api/documents/sales_invoice/{}", id(&invoice)),
+            json!({ "version": invoice["version"], "body": invoice["body"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{invoice}");
+    run(&t, "sales_invoice.post", json!({ "id": id(&invoice) })).await;
+
+    let file = run(
+        &t,
+        "datev.export_postings",
+        json!({ "company_id": c, "from": "2026-03-01", "to": "2026-03-31" }),
+    )
+    .await;
+    let all = lines(&file);
+    let names: Vec<&str> = all[1].split(';').collect();
+    let at = |name: &str| names.iter().position(|n| *n == name).unwrap();
+    let rows: Vec<Vec<&str>> = all[2..].iter().map(|l| l.split(';').collect()).collect();
+    let usd = rows
+        .iter()
+        .find(|r| r[at("WKZ Umsatz")] == "\"USD\"")
+        .unwrap_or_else(|| panic!("no USD row: {all:?}"));
+    assert_eq!(usd[at("Umsatz (ohne Soll/Haben-Kz)")], "119,00");
+    assert_eq!(usd[at("Basisumsatz")], "107,10");
+    assert_eq!(usd[at("WKZ Basisumsatz")], "\"EUR\"");
+    assert_eq!(usd[at("Kurs")], "1,111111");
+    let igl = rows
+        .iter()
+        .find(|r| r[at("EU-Land u. USt-IdNr.")] == "\"FR12345678901\"")
+        .unwrap_or_else(|| panic!("no intra-Community row: {all:?}"));
+    assert_eq!(igl[at("Umsatz (ohne Soll/Haben-Kz)")], "100,00");
+    assert_eq!(igl[at("Leistungsdatum")], "05032026");
+    assert_eq!(igl[at("Belegdatum")], "1203");
+
+    // The account names.
+    let names = run(&t, "datev.export_accounts", json!({ "company_id": c })).await;
+    let all = lines(&names);
+    let header: Vec<&str> = all[0].split(';').collect();
+    assert_eq!(
+        header[..5],
+        ["\"EXTF\"", "700", "20", "\"Kontenbeschriftungen\"", "2"]
+    );
+    assert_eq!(all[1], "Konto;Kontenbeschriftung;Sprach-ID");
+    assert!(
+        all.iter()
+            .any(|l| l == "8400;\"Erlöse 19 % USt\";\"de-DE\""),
+        "{all:?}"
+    );
+    t.stop().await;
+}

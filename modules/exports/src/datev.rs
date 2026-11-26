@@ -234,8 +234,20 @@ struct EntryRow {
     account_id: Uuid,
     code: String,
     amount: Decimal,
+    currency: String,
+    txn_amount: Decimal,
     source_line_id: Option<Uuid>,
     dimension_set_id: Option<Uuid>,
+}
+
+/// What a posting moves on one exported account, line and dimension set:
+/// in the accounting currency, and in the entries' own currency when they
+/// share one.
+struct Group {
+    amount: Decimal,
+    account: Uuid,
+    currency: Option<String>,
+    txn: Decimal,
 }
 
 pub(crate) struct ExportPostings;
@@ -296,6 +308,7 @@ impl Command for ExportPostings {
             .collect();
         let entries: Vec<EntryRow> = sqlx::query_as(
             "SELECT g.posting_id, g.account_id, a.code, g.debit - g.credit AS amount,
+                    g.currency, g.txn_debit - g.txn_credit AS txn_amount,
                     g.source_line_id, g.dimension_set_id
              FROM gl_entry g JOIN account a ON a.id = g.account_id
              WHERE g.posting_id = ANY ($1)
@@ -305,16 +318,27 @@ impl Command for ExportPostings {
         .fetch_all(&mut *ctx.conn)
         .await?;
         // Tax by posting and line, from the posting a reversal reverses.
-        let taxes: Vec<(Uuid, Option<Uuid>, Option<Uuid>, Uuid, String, bool, String)> =
-            sqlx::query_as(
-                "SELECT t.posting_id, t.source_line_id, t.account_id, t.tax_code_id, t.direction,
-                        t.self_assessed, c.code
+        #[allow(clippy::type_complexity)]
+        let taxes: Vec<(
+            Uuid,
+            Option<Uuid>,
+            Option<Uuid>,
+            Uuid,
+            String,
+            bool,
+            String,
+            Decimal,
+            Option<Decimal>,
+            Option<String>,
+        )> = sqlx::query_as(
+            "SELECT t.posting_id, t.source_line_id, t.account_id, t.tax_code_id, t.direction,
+                        t.self_assessed, c.code, t.amount, t.txn_amount, c.vat_category
                  FROM tax_entry t JOIN tax_code c ON c.id = t.tax_code_id
                  WHERE t.posting_id = ANY ($1)",
-            )
-            .bind(&originals)
-            .fetch_all(&mut *ctx.conn)
-            .await?;
+        )
+        .bind(&originals)
+        .fetch_all(&mut *ctx.conn)
+        .await?;
         let keys: HashMap<Uuid, (Option<String>, Option<String>)> =
             sqlx::query_as::<_, (Uuid, Option<String>, Option<String>)>(
                 "SELECT tax_code_id, sales_key, purchase_key FROM datev_tax_key",
@@ -359,6 +383,39 @@ impl Command for ExportPostings {
             .flat_map(|p| p.iter().cloned())
             .collect();
         let numbers = personal_accounts(ctx, company_id, s.account_length, &wanted).await?;
+        // The VAT identifiers of the customers, for intra-Community supplies.
+        let vat_ids: HashMap<Uuid, String> = sqlx::query_as::<_, (Uuid, String)>(
+            "SELECT party_id, value FROM party_tax_id
+             WHERE party_type = 'customer' AND scheme = 'eu_vat' AND party_id = ANY ($1)",
+        )
+        .bind(
+            wanted
+                .iter()
+                .filter(|p| p.0 == "customer")
+                .map(|p| p.1)
+                .collect::<Vec<_>>(),
+        )
+        .fetch_all(&mut *ctx.conn)
+        .await?
+        .into_iter()
+        .collect();
+        // The date of the supply of a sales invoice: the last delivery of
+        // the order lines it bills, by its date.
+        let supplied: HashMap<Uuid, NaiveDate> = sqlx::query_as::<_, (Uuid, Option<NaiveDate>)>(
+            "SELECT p.id, (SELECT max(dd.doc_date)
+                           FROM sales_invoice_line il
+                           JOIN sales_delivery_line dl ON dl.order_line_id = il.order_line_id
+                           JOIN document dd ON dd.id = dl.document_id AND dd.status = 'posted'
+                           WHERE il.document_id = p.document_id AND dd.doc_date <= d.doc_date)
+             FROM posting p JOIN document d ON d.id = p.document_id
+             WHERE p.id = ANY ($1) AND d.doc_type IN ('sales_invoice')",
+        )
+        .bind(&ids)
+        .fetch_all(&mut *ctx.conn)
+        .await?
+        .into_iter()
+        .filter_map(|(p, d)| d.map(|d| (p, d)))
+        .collect();
         // The cost centers of each dimension set.
         let sets: Vec<Uuid> = entries.iter().filter_map(|e| e.dimension_set_id).collect();
         let kost: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
@@ -418,8 +475,7 @@ impl Command for ExportPostings {
             };
             // Per exported account, what the posting moves on it.
             let mut per_account: BTreeMap<i64, Decimal> = BTreeMap::new();
-            let mut grouped: BTreeMap<(i64, Option<Uuid>, Option<Uuid>), (Decimal, Uuid)> =
-                BTreeMap::new();
+            let mut grouped: BTreeMap<(i64, Option<Uuid>, Option<Uuid>), Group> = BTreeMap::new();
             for e in rows {
                 let k = match konto(e) {
                     Ok(k) => k,
@@ -431,8 +487,17 @@ impl Command for ExportPostings {
                 *per_account.entry(k).or_default() += e.amount;
                 let g = grouped
                     .entry((k, e.source_line_id, e.dimension_set_id))
-                    .or_insert((Decimal::ZERO, e.account_id));
-                g.0 += e.amount;
+                    .or_insert(Group {
+                        amount: Decimal::ZERO,
+                        account: e.account_id,
+                        currency: Some(e.currency.clone()),
+                        txn: Decimal::ZERO,
+                    });
+                g.amount += e.amount;
+                g.txn += e.txn_amount;
+                if g.currency.as_deref() != Some(e.currency.as_str()) {
+                    g.currency = None;
+                }
             }
             let Some(pivot) = per_account
                 .iter()
@@ -446,7 +511,8 @@ impl Command for ExportPostings {
             let group_keys: Vec<_> = grouped.keys().copied().collect();
             for key in &group_keys {
                 let (konto_no, line, set) = *key;
-                let Some(&(amount, account)) = grouped.get(key) else {
+                let Some((amount, account)) = grouped.get(key).map(|g| (g.amount, g.account))
+                else {
                     continue;
                 };
                 if konto_no == pivot || !tax_accounts.contains(&account) || line.is_none() {
@@ -486,7 +552,9 @@ impl Command for ExportPostings {
                     b.1 == line
                         && b.0 != pivot
                         && b.0 != konto_no
-                        && grouped.get(b).is_some_and(|g| !tax_accounts.contains(&g.1))
+                        && grouped
+                            .get(b)
+                            .is_some_and(|g| !tax_accounts.contains(&g.account))
                         && (b.2 == set || b.2.is_none() || set.is_none())
                 });
                 let Some(base) = base else {
@@ -494,10 +562,16 @@ impl Command for ExportPostings {
                 };
                 grouped.remove(key);
                 if let Some(g) = grouped.get_mut(&base) {
-                    g.0 += amount;
-                    let auto = automatic.get(&g.1).copied().unwrap_or_else(|| {
+                    g.amount += amount;
+                    // The tax in the line's own currency, as the tax entry
+                    // kept it beside its value.
+                    g.txn += match tax.8 {
+                        Some(txn) if !tax.7.is_zero() => (amount * txn / tax.7).round_dp(2),
+                        _ => amount,
+                    };
+                    let auto = automatic.get(&g.account).copied().unwrap_or_else(|| {
                         rows.iter()
-                            .find(|e| e.account_id == g.1)
+                            .find(|e| e.account_id == g.account)
                             .is_some_and(|e| automatic_by_default(&s.chart, &e.code))
                     });
                     keyed.insert(base, if auto { String::new() } else { code_key });
@@ -509,14 +583,47 @@ impl Command for ExportPostings {
                 .or(p.doc_memo.clone())
                 .or(p.number.clone())
                 .unwrap_or_default();
-            for (key, (amount, _)) in &grouped {
+            // The customer of the posting, for an intra-Community supply.
+            let buyer = party_of
+                .iter()
+                .filter(|((posting, _), _)| *posting == p.id)
+                .flat_map(|(_, parties)| parties.iter())
+                .find(|party| party.0 == "customer")
+                .map(|party| party.1);
+            for (key, group) in &grouped {
+                let amount = &group.amount;
                 if key.0 == pivot || amount.round_dp(2).is_zero() {
                     continue;
                 }
                 let mut row = vec![String::new(); names.len()];
-                row[at["Umsatz (ohne Soll/Haben-Kz)"]] = datev_amount(amount.abs());
+                // In a foreign currency: the amount in it, the rate as
+                // DATEV states it (units of it per unit of the accounting
+                // currency), and the amount in the accounting currency.
+                match &group.currency {
+                    Some(c) if *c != currency && !group.txn.is_zero() => {
+                        row[at["Umsatz (ohne Soll/Haben-Kz)"]] = datev_amount(group.txn.abs());
+                        row[at["WKZ Umsatz"]] = datev_text(c, 3);
+                        row[at["Kurs"]] = format!("{:.6}", (group.txn / *amount).abs().round_dp(6))
+                            .replace('.', ",");
+                        row[at["Basisumsatz"]] = datev_amount(amount.abs());
+                        row[at["WKZ Basisumsatz"]] = datev_text(&currency, 3);
+                    }
+                    _ => {
+                        row[at["Umsatz (ohne Soll/Haben-Kz)"]] = datev_amount(amount.abs());
+                    }
+                }
                 row[at["Soll/Haben-Kennzeichen"]] =
                     datev_text(if *amount > Decimal::ZERO { "S" } else { "H" }, 1);
+                if let Some(day) = supplied.get(&p.id) {
+                    row[at["Leistungsdatum"]] = day.format("%d%m%Y").to_string();
+                }
+                let intra = tax_here
+                    .iter()
+                    .any(|t| t.1 == key.1 && t.4 == "collected" && t.9.as_deref() == Some("K"));
+                if intra && let Some(vat) = buyer.and_then(|b| vat_ids.get(&b)) {
+                    let vat: String = vat.chars().filter(|c| !c.is_whitespace()).collect();
+                    row[at["EU-Land u. USt-IdNr."]] = datev_text(&vat, 15);
+                }
                 row[at["Konto"]] = key.0.to_string();
                 row[at["Gegenkonto (ohne BU-Schlüssel)"]] = pivot.to_string();
                 if let Some(k) = keyed.get(key).filter(|k| !k.is_empty()) {
@@ -733,6 +840,89 @@ impl Command for ExportParties {
             warnings,
         );
         file.log(ctx, company_id, "datev_parties", None, false)
+            .await?;
+        Ok(file)
+    }
+}
+
+pub(crate) struct ExportAccounts;
+
+#[async_trait]
+impl Command for ExportAccounts {
+    type Input = PartiesInput;
+    type Output = ExportFile;
+
+    fn spec(&self) -> CommandSpec {
+        CommandSpec::action(
+            "datev.export_accounts",
+            "The DATEV Kontenbeschriftungen file (EXTF, format 700, category 20, version 2) of a \
+             company's accounts that can be posted to: number, name (40 characters) and \
+             language. In Windows-1252. Records the export in export_log.",
+        )
+        .permission("datev:export")
+        .target(false)
+    }
+
+    async fn run(&self, ctx: &mut Ctx<'_>, input: PartiesInput) -> Result<ExportFile> {
+        let company_id = input.company_id;
+        ctx.require("datev:export", company_id)?;
+        ctx.require("account:read", company_id)?;
+        let s = settings(ctx, company_id).await?;
+        let accounts: Vec<(String, String)> = sqlx::query_as(
+            "SELECT code, name FROM account WHERE company_id = $1 AND NOT is_group ORDER BY code",
+        )
+        .bind(company_id)
+        .fetch_all(&mut *ctx.conn)
+        .await?;
+        let mut warnings = vec![];
+        let mut lines = vec![];
+        for (code, name) in accounts {
+            let fits =
+                code.chars().all(|c| c.is_ascii_digit()) && code.len() <= s.account_length as usize;
+            match code.parse::<i64>() {
+                Ok(n) if fits => lines.push(format!(
+                    "{n};{};{}",
+                    datev_text(&name, 40),
+                    datev_text("de-DE", 5)
+                )),
+                _ => warnings.push(format!(
+                    "account {code} is not a number of at most {} digits and is left out",
+                    s.account_length
+                )),
+            }
+        }
+        let head = header(
+            20,
+            "Kontenbeschriftungen",
+            2,
+            &ctx.actor.name,
+            &s,
+            Some(fiscal_year_start(
+                Utc::now().date_naive(),
+                s.fiscal_year_start_month as u32,
+            )),
+            None,
+            "Kontenbeschriftungen",
+            None,
+            None,
+        );
+        let rows = lines.len();
+        let mut text = head;
+        text.push_str("\r\nKonto;Kontenbeschriftung;Sprach-ID\r\n");
+        for line in lines {
+            text.push_str(&line);
+            text.push_str("\r\n");
+        }
+        let bytes = windows_1252(&text);
+        let file = ExportFile::new(
+            "EXTF_Kontenbeschriftungen.csv".into(),
+            "text/csv; charset=windows-1252",
+            text,
+            bytes,
+            rows,
+            warnings,
+        );
+        file.log(ctx, company_id, "datev_accounts", None, false)
             .await?;
         Ok(file)
     }

@@ -9,8 +9,10 @@ use erpcraft_kernel::{DynCommand, EntityMeta, FieldMeta, FieldType, Migration, M
 
 mod datev;
 mod file;
+mod gdpdu;
 mod gl;
 mod returns;
+mod zip;
 
 pub struct ExportsModule;
 
@@ -241,9 +243,11 @@ impl Module for ExportsModule {
         vec![
             command(datev::ExportPostings),
             command(datev::ExportParties),
+            command(datev::ExportAccounts),
             command(returns::Report),
             command(returns::Export),
             command(gl::Export),
+            command(gdpdu::Export),
         ]
     }
 }
