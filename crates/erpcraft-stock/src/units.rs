@@ -99,9 +99,14 @@ pub fn price_per_stock_unit(price: Decimal, factor: Decimal) -> Decimal {
 
 /// A quantity kept in stock units, in a unit of `factor`: what a line in
 /// that unit says. Exact whenever the stock quantity came from that unit.
+/// Written with six places, as quantities are kept, when it has no more.
 pub fn from_stock(stock: Decimal, factor: Decimal) -> Decimal {
     if factor.is_zero() {
         return stock;
     }
-    (stock / factor).normalize()
+    let mut qty = (stock / factor).normalize();
+    if qty.scale() <= 6 {
+        qty.rescale(6);
+    }
+    qty
 }

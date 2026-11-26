@@ -222,9 +222,9 @@ pub(crate) async fn lines_with_progress(
     .fetch_all(&mut *conn)
     .await?;
     let shown = |qty: Decimal, factor: Decimal| {
-        erpcraft_stock::units::from_stock(qty, factor)
-            .round_dp(6)
-            .normalize()
+        let mut q = erpcraft_stock::units::from_stock(qty, factor).round_dp(6);
+        q.rescale(6);
+        q
     };
     Ok(lines
         .into_iter()

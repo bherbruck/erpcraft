@@ -457,7 +457,7 @@ async fn steel_is_adjusted_and_moved_by_the_tonne_and_the_bag() {
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{found}");
-    assert_eq!(found["body"]["lines"][0]["qty"], "2");
+    assert_eq!(dec(&found["body"]["lines"][0]["qty"]), 2.0);
     assert_eq!(found["body"]["lines"][0]["uom"], "t");
     assert_eq!(dec(&found["body"]["lines"][0]["factor"]), 1000.0);
     s.ok(&t, "stock_adjustment.post", json!({ "id": id(&found) }))
@@ -487,7 +487,7 @@ async fn steel_is_adjusted_and_moved_by_the_tonne_and_the_bag() {
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{transfer}");
-    assert_eq!(transfer["body"]["lines"][0]["qty"], "1");
+    assert_eq!(dec(&transfer["body"]["lines"][0]["qty"]), 1.0);
     s.ok(&t, "stock_transfer.post", json!({ "id": id(&transfer) }))
         .await;
     assert_eq!(level(&t, &s.steel, &yard).await, (1000.0, 900.0));
@@ -588,7 +588,7 @@ async fn frames_are_made_by_the_pack_from_steel_by_the_tonne() {
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{order}");
-    assert_eq!(order["body"]["qty"], "3");
+    assert_eq!(dec(&order["body"]["qty"]), 3.0);
     assert_eq!(order["body"]["uom"], "pack");
     let released = s
         .ok(&t, "production_order.release", json!({ "id": id(&order) }))
