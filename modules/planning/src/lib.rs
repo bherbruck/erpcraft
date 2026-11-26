@@ -14,6 +14,7 @@
 //! drafts purchase and production orders when asked.
 
 pub mod mrp;
+pub mod mrp_run;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -216,6 +217,7 @@ impl Module for PlanningModule {
             command(Suggestions),
             command(DraftPurchaseOrders),
             command(DraftProductionOrders),
+            command(mrp_run::Mrp),
         ]
     }
 }
@@ -625,6 +627,9 @@ async fn plan(
             ..AvailabilityRow::default()
         });
     }
+    // What MRP plans is not suggested by reorder point too.
+    let by_mrp = mrp_run::nodes(ctx, company).await?;
+    rows.retain(|r| !by_mrp.contains(&(r.item_id, r.warehouse_id)));
     let made: Vec<Uuid> = sqlx::query_scalar("SELECT DISTINCT item_id FROM bom WHERE active")
         .fetch_all(&mut *ctx.conn)
         .await?;
