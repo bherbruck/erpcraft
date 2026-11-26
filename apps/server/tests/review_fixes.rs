@@ -318,6 +318,9 @@ impl Upgrade {
                 let last = match set.module.as_str() {
                     "purchasing" | "sales" => 2,
                     "manufacturing" => 1,
+                    // Written after sales had salespeople: not there yet.
+                    "quotes" => 2,
+                    "commissions" => 0,
                     _ => i32::MAX,
                 };
                 set.migrations.retain(|m| m.version <= last);
