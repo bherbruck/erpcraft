@@ -622,3 +622,70 @@ async fn frames_are_made_by_the_pack_from_steel_by_the_tonne() {
     );
     t.stop().await;
 }
+
+#[tokio::test]
+async fn planning_buys_steel_in_whole_tonnes_and_counts_the_extra() {
+    let t = TestApp::start().await;
+    let s = shop(&t).await;
+    t.create(
+        "reorder_rule",
+        json!({ "company_id": s.c, "item_id": s.steel, "warehouse_id": s.plant,
+                "min_qty": "1500", "vendor_id": s.vendor, "purchase_uom": "t",
+                "unit_price": "0.9" }),
+    )
+    .await;
+    // Bolts are not bought by the box.
+    let (status, body) = t
+        .post(
+            &t.admin,
+            "/api/entities/reorder_rule",
+            json!({ "company_id": s.c, "item_id": s.bolt, "warehouse_id": s.plant,
+                    "min_qty": "100", "vendor_id": s.vendor, "purchase_uom": "box" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+    let plan = s
+        .ok(&t, "planning.suggestions", json!({ "company_id": s.c }))
+        .await;
+    let steel = plan["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["item_id"] == json!(s.steel))
+        .unwrap()
+        .clone();
+    assert_eq!(dec(&steel["qty"]), 1500.0, "{steel}");
+    assert_eq!(steel["purchase_uom"], "t");
+    assert_eq!(dec(&steel["purchase_qty"]), 2.0);
+    assert_eq!(dec(&steel["extra"]), 500.0);
+
+    let drafted = s
+        .ok(
+            &t,
+            "planning.draft_purchase_orders",
+            json!({ "company_id": s.c }),
+        )
+        .await;
+    let order = drafted["purchase_order_ids"][0].as_str().unwrap();
+    let (_, po) = t
+        .get(&t.admin, &format!("/api/documents/purchase_order/{order}"))
+        .await;
+    let line = &po["body"]["lines"][0];
+    assert_eq!(dec(&line["qty"]), 2.0, "{po}");
+    assert_eq!(line["uom"], "t");
+    assert_eq!(dec(&line["unit_price"]), 900.0);
+    // The draft brings in 2000 kg: nothing more is suggested.
+    let plan = s
+        .ok(&t, "planning.suggestions", json!({ "company_id": s.c }))
+        .await;
+    assert!(
+        !plan["suggestions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["item_id"] == json!(s.steel)),
+        "{plan}"
+    );
+    t.stop().await;
+}

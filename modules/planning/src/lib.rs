@@ -56,6 +56,11 @@ impl Module for PlanningModule {
                 name: "procure",
                 sql: include_str!("../migrations/0002_procure.sql"),
             },
+            Migration {
+                version: 3,
+                name: "purchase_unit",
+                sql: include_str!("../migrations/0003_purchase_unit.sql"),
+            },
         ]
     }
 
@@ -115,11 +120,18 @@ impl Module for PlanningModule {
                         .help("Whom it is bought from: drafted purchase orders go to it."),
                 )
                 .field(
+                    FieldMeta::new("purchase_uom", "Bought in", FieldType::Text).help(
+                        "The unit the vendor sells it in: one of the item's purchase units \
+                         (item_uom). Drafted purchase orders are in it, rounded up to whole \
+                         units of it. Empty: the stock unit.",
+                    ),
+                )
+                .field(
                     FieldMeta::new("unit_price", "Unit price", FieldType::Decimal)
                         .unit_price()
                         .help(
-                            "What a drafted purchase order asks, in the accounting currency; \
-                             the last price paid when left out.",
+                            "What a drafted purchase order asks per stock unit, in the \
+                             accounting currency; the last price paid when left out.",
                         ),
                 )
                 .field(FieldMeta::new("created_at", "Created", FieldType::Timestamp).readonly())
@@ -439,8 +451,17 @@ pub struct Suggestion {
     pub min_qty: Decimal,
     /// What to order or make: up to the rule's fill-up quantity (or its
     /// minimum, or zero without a rule), less what is planned, rounded up
-    /// to its multiple.
+    /// to its multiple. In stock units.
     pub qty: Decimal,
+    /// For an item bought in another unit (the rule's `purchase_uom`):
+    /// that unit, how many stock units one is, and how many of it to buy,
+    /// rounded up to whole units.
+    pub purchase_uom: Option<String>,
+    pub purchase_factor: Option<Decimal>,
+    pub purchase_qty: Option<Decimal>,
+    /// What buying whole purchase units brings in beyond `qty`, in stock
+    /// units.
+    pub extra: Decimal,
     /// `buy` or `make`: what the rule says; else `buy` when the rule names a
     /// vendor, `make` when the item has an active bill of materials, else
     /// `buy`.
@@ -474,6 +495,8 @@ struct Rule {
     vendor_id: Option<Uuid>,
     unit_price: Option<Decimal>,
     procure: Option<String>,
+    purchase_uom: Option<String>,
+    purchase_factor: Option<Decimal>,
 }
 
 /// What to order or make so that every item ends up at least at its
@@ -506,8 +529,11 @@ async fn plan(
 ) -> Result<Vec<Suggestion>> {
     let rows = availability(ctx, company, only_item, only_warehouse).await?;
     let rules: Vec<Rule> = sqlx::query_as(
-        "SELECT item_id, warehouse_id, min_qty, max_qty, multiple, vendor_id, unit_price, procure
-         FROM reorder_rule WHERE company_id = $1",
+        "SELECT r.item_id, r.warehouse_id, r.min_qty, r.max_qty, r.multiple, r.vendor_id,
+                r.unit_price, r.procure, r.purchase_uom, u.factor AS purchase_factor
+         FROM reorder_rule r
+         LEFT JOIN item_uom u ON u.item_id = r.item_id AND u.uom = r.purchase_uom
+         WHERE r.company_id = $1",
     )
     .bind(company)
     .fetch_all(&mut *ctx.conn)
@@ -581,7 +607,23 @@ async fn plan(
             }
             None => None,
         };
+        // Bought in another unit: whole units of it, and what that brings
+        // in beyond the need.
+        let unit = rule
+            .filter(|_| source == "buy")
+            .and_then(|r| r.purchase_uom.clone().zip(r.purchase_factor));
+        let (purchase_qty, extra) = match &unit {
+            Some((_, factor)) => {
+                let whole = (qty / factor).ceil();
+                (Some(whole.normalize()), (whole * factor - qty).normalize())
+            }
+            None => (None, Decimal::ZERO),
+        };
         out.push(Suggestion {
+            purchase_uom: unit.as_ref().map(|u| u.0.clone()),
+            purchase_factor: unit.as_ref().map(|u| u.1.normalize()),
+            purchase_qty,
+            extra,
             item_id: row.item_id,
             item_code: row.item_code.clone(),
             warehouse_id: row.warehouse_id,
@@ -736,12 +778,23 @@ impl Command for DraftPurchaseOrders {
             let lines: Vec<_> = lines
                 .iter()
                 .map(|s| {
-                    json!({
-                        "item_id": s.item_id,
-                        "warehouse_id": s.warehouse_id,
-                        "qty": s.qty,
-                        "unit_price": s.unit_price,
-                    })
+                    match (&s.purchase_uom, s.purchase_factor, s.purchase_qty) {
+                        // In the vendor's unit, at the price per stock unit
+                        // times the unit's factor.
+                        (Some(uom), Some(factor), Some(qty)) => json!({
+                            "item_id": s.item_id,
+                            "warehouse_id": s.warehouse_id,
+                            "qty": qty,
+                            "uom": uom,
+                            "unit_price": s.unit_price.map(|p| (p * factor).round_dp(6).normalize()),
+                        }),
+                        _ => json!({
+                            "item_id": s.item_id,
+                            "warehouse_id": s.warehouse_id,
+                            "qty": s.qty,
+                            "unit_price": s.unit_price,
+                        }),
+                    }
                 })
                 .collect();
             let view = document::create(
