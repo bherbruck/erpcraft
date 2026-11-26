@@ -1,4 +1,5 @@
 {
+  " -> ": " -> ",
   "Cost version": "Kostenversion",
   "Cost versions": "Kostenversionen",
   "Item ids": "Artikel",
@@ -19,5 +20,6 @@
   "only a draft cost version is activated": "nur eine Kostenversion im Entwurf wird aktiviert",
   "only a draft cost version is rolled up": "nur eine Kostenversion im Entwurf wird kalkuliert",
   "the bills of materials lead back to themselves: {path}": "die Stücklisten führen auf sich selbst zurück: {path}",
+  "the bills of materials lead back to themselves: {}": "die Stücklisten führen auf sich selbst zurück: {}",
   "the item is in the version twice": "der Artikel steht zweimal in der Version"
 }

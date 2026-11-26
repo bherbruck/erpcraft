@@ -33,6 +33,10 @@ curl -s localhost:8600/api/meta -H "Authorization: Bearer $TOKEN"
 - `audit.history` gives the history of one record; `GET /api/meta` includes what the caller is allowed to do.
 - `POST /mcp` is the MCP endpoint, with the same bearer token.
 
+## Using it
+
+The [user guide](docs/user/README.md), in English and German, walks through setting up a company, buying, selling and closing a month.
+
 ## Running it in production
 
 A Docker image with the UI built in, a compose file with PostgreSQL, HTTPS through Caddy, backups, restores, a check that the books agree, and upgrades:
