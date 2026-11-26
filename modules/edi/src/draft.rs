@@ -169,7 +169,7 @@ pub async fn draft(ctx: &mut Ctx<'_>, request: Request) -> Result<DocumentView> 
     }
     let spec = guide::spec_for(&mut *ctx.conn, &partner, &row.message, "in").await?;
     let dates = dates_of(&spec);
-    let customer_id = partner.customer_id;
+    let customer_id = partner.customer()?;
     let body = json!({
         "customer_id": customer_id,
         "currency": proposal.currency,

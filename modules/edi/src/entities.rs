@@ -42,9 +42,33 @@ fn partner() -> EntityMeta {
         .field(FieldMeta::new("code", "Code", FieldType::Text).required())
         .field(FieldMeta::new("name", "Name", FieldType::Text).required())
         .field(
-            FieldMeta::new("customer_id", "Customer", FieldType::link("customer"))
-                .required()
-                .help("The customer the partner's orders are drafted for."),
+            FieldMeta::new("customer_id", "Customer", FieldType::link("customer")).help(
+                "The customer the partner's orders are drafted for. A partner has a customer, a \
+                 vendor, or both.",
+            ),
+        )
+        .field(
+            FieldMeta::new("vendor_id", "Vendor", FieldType::link("vendor")).help(
+                "The vendor the partner is, for remittance advice sent to it when a payment run \
+                 pays it.",
+            ),
+        )
+        .field(
+            FieldMeta::new(
+                "inventory_minutes",
+                "Inventory advice every (minutes)",
+                FieldType::Int,
+            )
+            .help(
+                "Send the partner an inventory advice (846 or INVRPT) this often, from 15 minutes \
+                 to a week. Empty: only on demand (edi.inventory_advice).",
+            ),
+        )
+        .field(
+            FieldMeta::new("remittance_out", "Send remittance advice", FieldType::Bool).help(
+                "A posted payment run that pays the partner's vendor sends it a remittance advice \
+                 (820 or REMADV).",
+            ),
         )
         .field(
             FieldMeta::new("warehouse_id", "Ships from", FieldType::link("warehouse")).help(

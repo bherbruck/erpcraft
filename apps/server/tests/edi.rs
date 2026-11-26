@@ -2333,3 +2333,70 @@ async fn two_partners_with_two_guides_trade_the_same_order_differently() {
     );
     t.stop().await;
 }
+
+#[tokio::test]
+async fn an_inventory_advice_says_what_stock_availability_says_in_the_partners_units() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    answering(&t, &f).await;
+    // An order of 120 cases of tape takes 720 of the 5000 on hand.
+    let order = drafted(&t, &f, PO850).await;
+    run(&t, "sales_order.approve", json!({ "id": order["id"] })).await;
+
+    let availability = run(
+        &t,
+        "stock.availability",
+        json!({ "company_id": f.c.id, "warehouse_id": f.warehouse }),
+    )
+    .await;
+    let available = |item: &str| {
+        availability["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["item_id"] == item)
+            .map(|r| dec(&r["available"]))
+            .unwrap()
+    };
+    assert_eq!(available(&f.tape), 5000.0 - 720.0);
+
+    let preview = run(
+        &t,
+        "edi.inventory_advice",
+        json!({ "partner_id": f.partner, "preview": true }),
+    )
+    .await;
+    assert_eq!(preview["state"], "ready", "{preview}");
+    assert!(preview["message"].is_null());
+    let made = run(
+        &t,
+        "edi.inventory_advice",
+        json!({ "partner_id": f.partner }),
+    )
+    .await;
+    assert_eq!(made["state"], "ready", "{made}");
+    let bytes = content(&t, &json!({ "id": made["message"]["interchange_id"] })).await;
+    assert!(
+        bytes.contains("GS*IB*CEDARHOLLOW*NORTHFIELDMERC*"),
+        "{bytes}"
+    );
+    assert!(bytes.contains("ST*846*0001~BIA*00*SI*"), "{bytes}");
+    // The hammer by its GTIN, in each; the tape in whole cases of six:
+    // 4280 each is 713 cases and 2 over, which cannot be promised.
+    let hammer = available(&f.hammer) as i64;
+    assert!(
+        bytes.contains(&format!("LIN**UP*040000100010~QTY*33*{hammer}*EA~")),
+        "{bytes}"
+    );
+    assert!(
+        bytes.contains("LIN**UK*10400001000202~QTY*33*713*CA~"),
+        "{bytes}"
+    );
+    // The knife has no number for the partner: not advised.
+    assert_eq!(
+        bytes.matches("LIN*").count(),
+        3,
+        "the knife was remembered: {bytes}"
+    );
+    t.stop().await;
+}

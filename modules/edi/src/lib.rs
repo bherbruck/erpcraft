@@ -39,12 +39,14 @@ pub mod entities;
 pub mod guide;
 pub mod guide_commands;
 pub mod inbound;
+pub mod inventory;
 pub mod label;
 pub mod outbound;
 pub mod partner;
 pub mod policy;
 pub mod proposal;
 pub mod shipment;
+pub mod standalone;
 pub mod store;
 pub mod subscriber;
 
@@ -90,7 +92,7 @@ impl Module for EdiModule {
     }
 
     fn depends_on(&self) -> Vec<&'static str> {
-        vec!["sales", "stock", "party"]
+        vec!["sales", "stock", "party", "purchasing", "payments"]
     }
 
     fn migrations(&self) -> Vec<Migration> {
@@ -124,6 +126,11 @@ impl Module for EdiModule {
                 version: 6,
                 name: "guide",
                 sql: include_str!("../migrations/0006_guide.sql"),
+            },
+            Migration {
+                version: 8,
+                name: "phase7",
+                sql: include_str!("../migrations/0008_phase7.sql"),
             },
         ]
     }
@@ -161,6 +168,7 @@ impl Module for EdiModule {
             command(guide_commands::Derive),
             command(guide_commands::Export),
             command(guide_commands::Import),
+            command(inventory::Advise),
         ]
     }
 }

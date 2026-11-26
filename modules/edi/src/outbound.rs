@@ -988,7 +988,7 @@ fn invoice(made: &mut Made, order_line_of: &HashMap<Uuid, Uuid>) {
 }
 
 /// Explains a body's segments, numbered as in the set (the ST is 1).
-fn explained(body: &[crate::segment::Segment], set_id: &str) -> Vec<ExplainedSegment> {
+pub(crate) fn explained(body: &[crate::segment::Segment], set_id: &str) -> Vec<ExplainedSegment> {
     body.iter()
         .enumerate()
         .map(|(i, s)| {

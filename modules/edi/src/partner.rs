@@ -14,7 +14,11 @@ pub struct Partner {
     pub company_id: Uuid,
     pub code: String,
     pub name: String,
-    pub customer_id: Uuid,
+    /// The customer the partner's orders are for; none for a partner that
+    /// only sells to the company.
+    pub customer_id: Option<Uuid>,
+    /// The vendor the partner is, for remittance advice sent to it.
+    pub vendor_id: Option<Uuid>,
     pub warehouse_id: Option<Uuid>,
     pub syntax: String,
     pub usage: String,
@@ -40,12 +44,16 @@ pub struct Partner {
     pub charset: String,
     /// The partner's implementation guide, if it has one of its own.
     pub guide_id: Option<Uuid>,
+    /// Every how many minutes it is sent an inventory advice.
+    pub inventory_minutes: Option<i32>,
+    /// Whether a payment run paying its vendor sends it a remittance.
+    pub remittance_out: bool,
 }
 
 const COLUMNS: &str = "id, company_id, code, name, customer_id, warehouse_id, syntax, usage, \
     our_qualifier, our_id, their_qualifier, their_id, our_group_id, their_group_id, version, \
     ack_form, ack_hours, element_separator, component_separator, repetition_separator, \
-    segment_terminator, line_breaks, run_as_user_id, active, decimal_mark, charset, guide_id";
+    segment_terminator, line_breaks, run_as_user_id, active, decimal_mark, charset, guide_id, vendor_id, inventory_minutes, remittance_out";
 
 pub async fn load(conn: &mut PgConnection, id: Uuid) -> Result<Partner> {
     sqlx::query_as(&format!("SELECT {COLUMNS} FROM edi_partner WHERE id = $1"))
@@ -185,6 +193,16 @@ impl Partner {
     }
 
     /// Whether what is exchanged with this partner is test traffic.
+    /// The customer its orders are for: refused for a partner that has none.
+    pub fn customer(&self) -> Result<Uuid> {
+        self.customer_id.ok_or_else(|| {
+            Error::validation(
+                "the partner names no customer: its orders cannot be drafted, nor its payments \
+                 matched to invoices",
+            )
+        })
+    }
+
     pub fn is_test(&self) -> bool {
         self.usage != "production"
     }

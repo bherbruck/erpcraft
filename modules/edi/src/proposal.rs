@@ -484,10 +484,11 @@ pub async fn build(
     }
 
     // The customer, as the caller may read it.
-    let customer = erpcraft_party::owner(ctx, "customer", partner.customer_id)
+    let customer_id = partner.customer()?;
+    let customer = erpcraft_party::owner(ctx, "customer", customer_id)
         .await?
         .map(|record| CustomerRef {
-            id: partner.customer_id,
+            id: customer_id,
             code: record["code"].as_str().unwrap_or_default().to_owned(),
             name: record["name"].as_str().unwrap_or_default().to_owned(),
         });
@@ -507,7 +508,7 @@ pub async fn build(
         erpcraft_party::check_address(
             &mut *ctx.conn,
             "customer",
-            partner.customer_id,
+            customer_id,
             address,
             "shipping_address_id",
         )

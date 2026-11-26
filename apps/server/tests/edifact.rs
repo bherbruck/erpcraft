@@ -477,3 +477,29 @@ async fn a_broken_orders_is_rejected_and_the_contrl_says_so() {
     assert_eq!(findings[0]["code"], "partner_rejected", "{findings}");
     t.stop().await;
 }
+
+#[tokio::test]
+async fn an_invrpt_advises_stock_in_the_partners_units() {
+    let t = TestApp::start().await;
+    setup(&t).await;
+    let partner: String = sqlx::query_scalar("SELECT id::text FROM edi_partner WHERE code = 'LH'")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    let made = run(&t, "edi.inventory_advice", json!({ "partner_id": partner })).await;
+    assert_eq!(made["state"], "ready", "{made}");
+    assert_eq!(made["message"]["message"], "INVRPT");
+    let bytes = content(&t, made["message"]["interchange_id"].as_str().unwrap()).await;
+    assert!(bytes.contains("UNH+1+INVRPT:D:96A:UN'BGM+35+"), "{bytes}");
+    // 500 hammers in pieces; 1000 tapes as 166 cartons of six.
+    assert!(
+        bytes.contains("LIN+1++4098765100017:EN'QTY+145:500:PCE'"),
+        "{bytes}"
+    );
+    assert!(
+        bytes.contains("LIN+2++4098765100024:EN'QTY+145:166:CT'"),
+        "{bytes}"
+    );
+    assert!(bytes.contains("CNT+2:2'"), "{bytes}");
+    t.stop().await;
+}
