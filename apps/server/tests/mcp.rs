@@ -967,6 +967,7 @@ async fn an_agent_finds_the_tools_it_needs_without_reading_them_all() {
         names(&for_invoices),
         [
             // The generic tools that read and write it come first.
+            "document_blockers",
             "document_create",
             "document_delete",
             "document_get",
@@ -998,7 +999,12 @@ async fn an_agent_finds_the_tools_it_needs_without_reading_them_all() {
     // generic tools for that, and not posting.
     assert_eq!(
         names(&found(&clerk, json!({ "resource": "journal_entry" })).await),
-        ["document_create", "document_get", "document_list"]
+        [
+            "document_blockers",
+            "document_create",
+            "document_get",
+            "document_list"
+        ]
     );
     let kernel_tools = found(&clerk, json!({ "module": "kernel" })).await;
     assert!(names(&kernel_tools).contains(&"document_create"));
@@ -1652,7 +1658,11 @@ async fn an_agent_learns_what_to_write_and_what_comes_next() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(tools[0], "document_create", "{tools:?}");
+    assert_eq!(
+        tools[..2],
+        ["document_blockers", "document_create"],
+        "{tools:?}"
+    );
     assert!(tools.contains(&"sales_order_approve"));
     let resource = &structured["resource"];
     assert_eq!(resource["kind"], "document");

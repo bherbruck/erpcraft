@@ -239,6 +239,13 @@ const tasks: Task[] = [
       const id = found.value.groups?.find((g: any) => g.name === "sales_order")?.items?.[0]?.id;
       if (!id) return "order not found";
       await a.load({ resource: "sales_order" });
+      if (a.has("document_blockers")) {
+        const b = await a.call("document_blockers", { doc_type: "sales_order", id });
+        if (b.ok) {
+          const list = b.value.blockers ?? [];
+          return `${b.value.status}; ${list.length ? list.map((x: any) => `${x.kind}: ${x.message} (resolve: ${x.resolve.map((r: any) => r.tool).join(", ")})`).join("; ") : "nothing stands in the way"}`;
+        }
+      }
       const doc = await a.call("document_get", { doc_type: "sales_order", id });
       if (!a.has("document_get")) a.c.stuckOn("document_get is not among the sales order's tools");
       const status = doc.value.status;

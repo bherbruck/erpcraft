@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+mod blockers;
 mod cash_flow;
 mod dimensions;
 mod reports;
@@ -289,6 +290,10 @@ impl Module for GlModule {
         ];
         entities.extend(dimensions::entities());
         entities
+    }
+
+    fn blocker_checks(&self) -> Vec<Arc<dyn erpcraft_kernel::blockers::BlockerCheck>> {
+        vec![Arc::new(blockers::PeriodCheck)]
     }
 
     fn policies(&self) -> Vec<erpcraft_kernel::PolicyPoint> {

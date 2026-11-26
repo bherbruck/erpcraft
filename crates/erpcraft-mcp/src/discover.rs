@@ -66,7 +66,7 @@ fn named_item() -> Value {
 /// The tools every agent needs whatever it does, in the order it needs
 /// them: find, read, write. They belong to the kernel, so a module's tools
 /// do not include them.
-const CORE: [&str; 9] = [
+const CORE: [&str; 10] = [
     "search.records",
     "entity.list",
     "entity.get",
@@ -76,6 +76,7 @@ const CORE: [&str; 9] = [
     "document.get",
     "document.create",
     "document.update",
+    "document.blockers",
 ];
 
 fn tools_output() -> Value {
@@ -291,13 +292,13 @@ fn tools_for(request: &Request<'_>, arguments: &Value) -> Result<Value, Error> {
             tools::visible(request.kernel, request.actor)
                 .filter(|meta| {
                     meta.name.strip_prefix(prefix).is_some_and(|action| {
-                        ["list", "get", "create", "update", "delete"].contains(&action)
+                        ["list", "get", "create", "update", "delete", "blockers"].contains(&action)
                     })
                 })
                 .filter(|meta| module.is_none_or(|m| meta.module == m))
                 .filter(|meta| {
                     let action = match meta.name.rsplit('.').next().unwrap_or_default() {
-                        "list" | "get" => "read",
+                        "list" | "get" | "blockers" => "read",
                         other => other,
                     };
                     request.actor.can_any(&format!("{r}:{action}"))

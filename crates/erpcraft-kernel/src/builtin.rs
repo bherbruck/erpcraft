@@ -214,6 +214,7 @@ impl Module for KernelModule {
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
         let mut commands = vec![
             command(Describe),
+            command(crate::blockers::Blockers),
             command(EntityList),
             command(EntityGet),
             command(EntityCreate),

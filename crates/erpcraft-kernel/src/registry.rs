@@ -64,6 +64,12 @@ pub trait Module: Send + Sync + 'static {
         vec![]
     }
 
+    /// What the module can say stands in the way of a document's next
+    /// step, for `document.blockers`. See [`crate::blockers`].
+    fn blocker_checks(&self) -> Vec<Arc<dyn crate::blockers::BlockerCheck>> {
+        vec![]
+    }
+
     /// How callers prove who they are. At most one registered module may
     /// supply this.
     fn authenticator(&self) -> Option<Arc<dyn Authenticator>> {
@@ -1040,6 +1046,7 @@ pub struct Registry {
     policies: BTreeMap<String, PolicyPoint>,
     ledgers: Vec<Arc<dyn Ledger>>,
     subscribers: Vec<Arc<dyn Subscriber>>,
+    blocker_checks: Vec<Arc<dyn crate::blockers::BlockerCheck>>,
     authenticator: Option<Arc<dyn Authenticator>>,
     catalogues: crate::i18n::Catalogues,
 }
@@ -1066,6 +1073,7 @@ impl Registry {
             policies: BTreeMap::new(),
             ledgers: vec![],
             subscribers: vec![],
+            blocker_checks: vec![],
             authenticator: None,
             catalogues: crate::i18n::Catalogues::default(),
         };
@@ -1173,6 +1181,7 @@ impl Registry {
             }
 
             reg.ledgers.extend(module.ledgers());
+            reg.blocker_checks.extend(module.blocker_checks());
             for subscriber in module.subscribers() {
                 let subscriber_name = subscriber.name();
                 if !is_ident(subscriber_name) {
@@ -1240,6 +1249,20 @@ impl Registry {
                 }
             }
             if let Some(when) = &meta.primary_when {
+                // A command is never the primary action in a state it does
+                // not apply from.
+                if let Some(state) = when
+                    .states
+                    .iter()
+                    .find(|s| !meta.from_states.is_empty() && !meta.from_states.contains(s))
+                {
+                    return Err(bad(format!(
+                        "command '{}' is primary in state '{state}', which it does not apply from \
+                         (from_states: {})",
+                        meta.name,
+                        meta.from_states.join(", ")
+                    )));
+                }
                 for collection in when.empty.iter().chain(&when.not_empty) {
                     let known = doc_type
                         .is_some_and(|d| d.meta.collections.iter().any(|c| &c.name == collection));
@@ -1545,6 +1568,10 @@ impl Registry {
 
     pub fn ledgers(&self) -> &[Arc<dyn Ledger>] {
         &self.ledgers
+    }
+
+    pub fn blocker_checks(&self) -> &[Arc<dyn crate::blockers::BlockerCheck>] {
+        &self.blocker_checks
     }
 
     pub fn subscribers(&self) -> &[Arc<dyn Subscriber>] {

@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+mod blockers;
 mod credit;
 mod policy;
 mod returns;
@@ -182,6 +183,10 @@ impl Module for SalesModule {
             Arc::new(returns::SalesCreditNote),
             Arc::new(credit::SalesCredit),
         ]
+    }
+
+    fn blocker_checks(&self) -> Vec<Arc<dyn erpcraft_kernel::blockers::BlockerCheck>> {
+        vec![Arc::new(blockers::OrderCheck)]
     }
 
     fn policies(&self) -> Vec<erpcraft_kernel::PolicyPoint> {

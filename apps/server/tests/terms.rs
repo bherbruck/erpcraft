@@ -2448,3 +2448,119 @@ async fn deliveries_at_once_do_not_slip_past_firm_reservations() {
     assert_eq!(held, "5", "the third order still holds its five");
     t.stop().await;
 }
+
+/// document.blockers on orders: stock short and reserved elsewhere, line
+/// by line, with what would resolve each; a draft is told what comes
+/// first; an order that can ship is clear.
+#[tokio::test]
+async fn an_order_says_what_keeps_it_from_shipping() {
+    let t = TestApp::start().await;
+    let f = setup(&t).await;
+    let bought = f.order(&t, "purchase", "10", "1.00", json!({})).await;
+    f.posted(
+        &t,
+        "purchase_receipt",
+        "2026-01-02",
+        json!({ "purchase_order_id": bought["id"],
+                "lines": [{ "order_line_id": bought["body"]["lines"][0]["id"], "qty": "10" }] }),
+    )
+    .await;
+    let blockers = |order: &Value| {
+        let t = &t;
+        let id = order["id"].clone();
+        async move {
+            let (status, out) = t
+                .command(
+                    &t.admin,
+                    "document.blockers",
+                    json!({ "doc_type": "sales_order", "id": id }),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{out}");
+            out
+        }
+    };
+    // Ten on hand: the first order holds six of them, the second four.
+    let first = f.order(&t, "sales", "6", "5.00", json!({})).await;
+    let second = f.order(&t, "sales", "6", "5.00", json!({})).await;
+    let clear = blockers(&first).await;
+    assert_eq!(clear["step"], "sales_order.deliver");
+    assert_eq!(clear["then"], "sales_delivery.post");
+    assert_eq!(clear["clear"], true, "{clear}");
+
+    // Taking what the first holds is allowed by default; this company
+    // keeps reservations firm.
+    let clear = blockers(&second).await;
+    assert_eq!(clear["clear"], true, "{clear}");
+    let (status, rule) = t
+        .post(
+            &t.admin,
+            "/api/entities/policy_rule",
+            json!({ "company_id": f.c.id, "point": "sales_delivery.reserved_elsewhere",
+                    "effect": "refuse", "condition": "facts.short > 0", "priority": 10 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{rule}");
+    let held = blockers(&second).await;
+    assert_eq!(held["clear"], false);
+    let blocker = &held["blockers"][0];
+    assert_eq!(blocker["kind"], "reserved_elsewhere", "{held}");
+    assert_eq!(blocker["line"], 1);
+    assert_eq!(dec(&blocker["facts"]["free"]), 4.0);
+    assert_eq!(blocker["facts"]["held_by"][0]["id"], first["id"]);
+    assert_eq!(
+        held["blockers"].as_array().unwrap().len(),
+        1,
+        "the trial's refusal is the same: {held}"
+    );
+    let tools: Vec<&str> = blocker["resolve"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["tool"].as_str().unwrap())
+        .collect();
+    assert_eq!(tools, ["stock_reservations", "entity_create"]);
+
+    // More than there is: short by what is missing.
+    let big = f.order(&t, "sales", "25", "5.00", json!({})).await;
+    let short = blockers(&big).await;
+    let blocker = &short["blockers"][0];
+    assert_eq!(blocker["kind"], "stock_short", "{short}");
+    assert_eq!(dec(&blocker["facts"]["short"]), 15.0);
+    assert!(
+        blocker["resolve"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["input"]["doc_type"] == "purchase_order")
+    );
+
+    // A draft is not yet an order to deliver: approve it first.
+    let draft = f
+        .draft(&t, "sales_order", "2026-01-02", json!({ "customer_id": f.customer,
+            "lines": [{ "item_id": f.item, "warehouse_id": f.warehouse, "qty": "1", "unit_price": "5" }] }))
+        .await;
+    let waiting = blockers(&draft).await;
+    let state = waiting["blockers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["kind"] == "state")
+        .unwrap();
+    assert!(
+        state["resolve"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["tool"] == "sales_order_approve"),
+        "{state}"
+    );
+
+    // Nothing was saved by asking.
+    assert_eq!(
+        t.count("SELECT count(*) FROM document WHERE doc_type = 'sales_delivery'")
+            .await,
+        0
+    );
+    t.stop().await;
+}

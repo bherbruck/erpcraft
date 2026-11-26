@@ -28,8 +28,8 @@ pub struct Ctx<'a> {
     pub kernel: &'a Kernel,
     /// Name of the command being run.
     pub command: &'a str,
-    changed: bool,
-    touched: Subjects,
+    pub(crate) changed: bool,
+    pub(crate) touched: Subjects,
     /// The active policy rules of a company, read once per command: a
     /// posting asks several points, and each asked them anew before.
     pub(crate) policy_rules: crate::policy::RuleCache,

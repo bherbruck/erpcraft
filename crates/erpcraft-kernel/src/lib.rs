@@ -12,6 +12,7 @@
 pub mod approval;
 pub mod audit;
 pub mod authz;
+pub mod blockers;
 mod builtin;
 pub mod command;
 pub mod company;

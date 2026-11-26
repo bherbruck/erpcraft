@@ -33,3 +33,21 @@ The order costs 37.50 because the agent was told the price. With no price list f
 - **The description tokens for "what's overdue" went up** (3k to 8k). The agent now loads the core tools' schemas once at the start, which every later task reuses within a session. In this trial each task is a fresh session, so the cost is paid five times.
 - **"Why didn't it ship" still leaves the diagnosis to the agent.** It compares ordered, delivered and on hand itself. A query that says what blocks an order's delivery (stock, credit hold, an approval) would answer it in one call.
 - **The agent never needed** `meta_describe`, the guide resources or the `explain_refusal` prompt. The refusals it met were sentences it could act on.
+
+## Second round (document.blockers, slimmer schemas)
+
+Same trial, three servers: **before** (3b17803), **after** (19edc58, the round above), and **after-2** (this round).
+
+| Task | Requests | Tool-description tokens | Result tokens | Stuck |
+|---|---|---|---|---|
+| create a customer and a sales order for 3 widgets | 12 → 10 → 10 | 73,495 → 20,211 → 15,127 | 155,319 → 4,090 → 4,214 | 3 → 0 → 0 |
+| what's overdue for Acme | 5 → 6 → 6 | 3,243 → 8,372 → 7,976 | 1,598 → 2,717 → 2,840 | 2 → 0 → 0 |
+| post this vendor invoice from an e-invoice file | 8 → 13 → 13 | 9,623 → 14,041 → 10,072 | 4,587 → 8,511 → 8,636 | 3 → 0 → 0 |
+| why didn't order SO-2026-00004 ship | 7 → 8 → 5 | 41,326 → 22,771 → 13,320 | 3,459 → 6,310 → 3,721 | 3 → 0 → 0 |
+| close March | 50 → 8 → 8 | 29,732 → 6,687 → 5,914 | 5,579 → 7,331 → 7,331 | 3 → 0 → 0 |
+| **All five** | 82 → 45 → 42 | 157,419 → 72,082 → 52,409 | 170,542 → 28,959 → 26,742 | 14 → 0 → 0 |
+
+The whole `tools/list` went from 456,662 to 159,172 to 127,959 tokens. That is 216 tools now; three new commands landed on main in between.
+
+- **"Why didn't it ship" is now answered in one call.** `document_blockers` replied: "stock_short: line 1: 500 of item WIDGET to deliver from DE-HAM, 0 on hand there: 500 short". It names the 22 on hand in OH-MAIN and the tools that resolve it (a stock transfer, a purchase order, planning suggestions). Before, the agent compared ordered, delivered and on hand itself.
+- **Output schemas went from 87k to 57k tokens, and input schemas from 49k to 44k**, as tools/list counts them. Titles are gone (the property names say the same), a decimal is `format: decimal` instead of its pattern, and descriptions are on one line. An output schema still over 6,000 characters loses the fields of objects deeper than four levels, then falls back to its top-level field names. The document schema every document tool shares is now its id, type and status, with a pointer to erpcraft://guide/documents.

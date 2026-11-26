@@ -153,29 +153,146 @@ pub(crate) fn structured(output: Value, preview: bool) -> Value {
 fn document_schema() -> Value {
     json!({
         "type": "object",
-        "title": "Document",
-        "description": "A document: its header (id, company_id, doc_type, number once it has \
-                        one, status, version, doc_date, memo, who made it and when), `summary` \
-                        (the figures its type keeps), `body` (its type's fields and lines; null \
-                        with view header), `postings` (ledger entries it posted) and `links` \
-                        (documents it came from or led to, each with doc_type, id and number). \
-                        Send `version` back to update it.",
+        "description": "A document: header (id, doc_type, number, status, version, doc_date, \
+                        memo), summary, body, postings, links; erpcraft://guide/documents.",
         "properties": {
-            "id": { "type": "string", "format": "uuid" },
-            "company_id": { "type": "string", "format": "uuid" },
+            "id": { "type": "string" },
             "doc_type": { "type": "string" },
-            "number": { "type": ["string", "null"] },
             "status": { "type": "string" },
-            "version": { "type": "integer" },
-            "doc_date": { "type": "string", "format": "date" },
-            "memo": { "type": ["string", "null"] },
-            "summary": {},
-            "body": {},
-            "postings": { "type": "array" },
-            "links": { "type": "array" },
         },
-        "required": ["id", "company_id", "doc_type", "number", "status", "version", "doc_date"],
+        "required": ["id", "doc_type", "status"],
     })
+}
+
+/// The pattern every decimal of an output has: a string of digits.
+const DECIMAL_PATTERN: &str = r"^-?\d+(\.\d+)?$";
+
+/// An output schema as long as an agent needs it, and no longer: it is
+/// read with every tool loaded. Titles go (they label columns for people;
+/// the property names say what they are), a decimal is `format: decimal`
+/// instead of its pattern, descriptions lose their line breaks, and below
+/// [`SLIM_DEPTH`] levels of a schema still larger than [`SLIM_CHARS`] an
+/// object is just an object. What is left still holds for every result.
+fn slim(schema: Value) -> Value {
+    let schema = strip(schema);
+    if schema.to_string().len() <= SLIM_CHARS {
+        return schema;
+    }
+    let pruned = prune(schema.clone(), 0);
+    if pruned.to_string().len() <= SLIM_CHARS {
+        return pruned;
+    }
+    // Still large: the top-level fields by name, each any value.
+    let fields: Vec<&str> = schema["properties"]
+        .as_object()
+        .map(|p| p.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    json!({
+        "type": "object",
+        "description": format!(
+            "An object with {}. Their shape is in the result itself.",
+            fields.join(", ")
+        ),
+    })
+}
+
+const SLIM_CHARS: usize = 6_000;
+const SLIM_DEPTH: usize = 4;
+
+fn strip(schema: Value) -> Value {
+    strip_with(schema, true)
+}
+
+/// An input schema without titles and with descriptions on one line; its
+/// patterns stay, as they say what a value must look like.
+fn strip_input(schema: Value) -> Value {
+    strip_with(schema, false)
+}
+
+fn strip_with(schema: Value, output: bool) -> Value {
+    match schema {
+        Value::Object(map) => {
+            let decimal =
+                output && map.get("pattern").and_then(Value::as_str) == Some(DECIMAL_PATTERN);
+            let mut out = serde_json::Map::new();
+            for (key, value) in map {
+                match key.as_str() {
+                    "title" => {}
+                    "pattern" if decimal => {
+                        out.insert("format".into(), json!("decimal"));
+                    }
+                    "description" => {
+                        let text = value.as_str().unwrap_or_default();
+                        out.insert(
+                            key,
+                            json!(text.split_whitespace().collect::<Vec<_>>().join(" ")),
+                        );
+                    }
+                    // Property names are not keywords: a field may be called
+                    // `title` or `description`. Each value is a schema.
+                    "properties" | "$defs" | "patternProperties" => {
+                        let value = match value {
+                            Value::Object(entries) => Value::Object(
+                                entries
+                                    .into_iter()
+                                    .map(|(name, schema)| (name, strip_with(schema, output)))
+                                    .collect(),
+                            ),
+                            other => other,
+                        };
+                        out.insert(key, value);
+                    }
+                    _ => {
+                        out.insert(key, strip_with(value, output));
+                    }
+                }
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => {
+            Value::Array(items.into_iter().map(|v| strip_with(v, output)).collect())
+        }
+        other => other,
+    }
+}
+
+/// Below [`SLIM_DEPTH`], an object or a list of them without its fields.
+fn prune(schema: Value, depth: usize) -> Value {
+    let Value::Object(mut map) = schema else {
+        return schema;
+    };
+    // An object's fields go; its type stays (it may be nullable). A
+    // reference stays as it is: what it names may be no object.
+    if depth >= SLIM_DEPTH && map.contains_key("properties") {
+        let mut kept = serde_json::Map::new();
+        if let Some(description) = map.remove("description") {
+            kept.insert("description".into(), description);
+        }
+        kept.insert("type".into(), map.remove("type").unwrap_or(json!("object")));
+        return Value::Object(kept);
+    }
+    for (key, value) in map.iter_mut() {
+        let child = std::mem::take(value);
+        *value = match key.as_str() {
+            "properties" | "$defs" => match child {
+                Value::Object(entries) => Value::Object(
+                    entries
+                        .into_iter()
+                        .map(|(k, v)| (k, prune(v, depth + 1)))
+                        .collect(),
+                ),
+                other => other,
+            },
+            "items" | "anyOf" | "oneOf" | "allOf" | "additionalProperties" => match child {
+                Value::Array(items) => {
+                    Value::Array(items.into_iter().map(|v| prune(v, depth + 1)).collect())
+                }
+                other => prune(other, depth + 1),
+            },
+            _ => child,
+        };
+    }
+    Value::Object(map)
 }
 
 /// Whether a command returns a document view, which `view` can shorten.
@@ -267,7 +384,7 @@ pub(crate) fn definition(kernel: &Kernel, meta: &CommandMeta, speaking: Speaking
     let mut tool = json!({
         "name": meta.tool_name(),
         "description": description,
-        "inputSchema": input,
+        "inputSchema": strip_input(input),
     });
     if speaking.has("2025-03-26") {
         tool["annotations"] = annotations(meta);
@@ -279,7 +396,7 @@ pub(crate) fn definition(kernel: &Kernel, meta: &CommandMeta, speaking: Speaking
         } else {
             meta.output_schema.clone()
         };
-        tool["outputSchema"] = output_schema(&output, meta.read_only);
+        tool["outputSchema"] = slim(output_schema(&output, meta.read_only));
     }
     tool
 }
