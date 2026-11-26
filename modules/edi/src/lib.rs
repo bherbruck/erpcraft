@@ -46,6 +46,7 @@ pub mod outbound;
 pub mod partner;
 pub mod policy;
 pub mod proposal;
+pub mod remit_out;
 pub mod remittance;
 pub mod shipment;
 pub mod standalone;
@@ -175,6 +176,7 @@ impl Module for EdiModule {
             command(change::ApplyChange),
             command(remittance::ProposeRemittance),
             command(remittance::DraftRemittance),
+            command(remit_out::AdviseRemittance),
         ]
     }
 }

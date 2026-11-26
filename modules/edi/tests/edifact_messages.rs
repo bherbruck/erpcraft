@@ -527,3 +527,103 @@ fn any_byte_changed_is_read_or_refused_never_a_panic() {
         }
     }
 }
+
+#[test]
+fn a_remadv_an_ordchg_and_an_invrpt_read_back_as_written() {
+    use erpcraft_edi::edifact::{invrpt, ordchg, remadv};
+    use erpcraft_edi::x12::change860::{ChangeLine, OrderChange};
+    use erpcraft_edi::x12::inventory846::{InventoryAdvice, InventoryItem};
+    use erpcraft_edi::x12::remit820::{Adjustment, RemitItem, Remittance};
+    let env = envelope(b',', SyntaxId::Unoc);
+    let dec = |s: &str| s.parse::<Decimal>().unwrap();
+
+    let remit = Remittance {
+        handling: "I".into(),
+        credit_debit: "C".into(),
+        amount: Some(dec("347")),
+        date: Some(day(2026, 11, 20)),
+        trace: "PAY-5501".into(),
+        items: vec![
+            RemitItem {
+                qualifier: "IV".into(),
+                reference: "SI-1".into(),
+                paid: Some(dec("119")),
+                invoiced: Some(dec("119")),
+                ..RemitItem::default()
+            },
+            RemitItem {
+                qualifier: "IV".into(),
+                reference: "SI-2".into(),
+                paid: Some(dec("228")),
+                invoiced: Some(dec("238")),
+                discount: Some(dec("0.5")),
+                adjustments: vec![Adjustment {
+                    amount: Some(dec("-10")),
+                    reason: "CB".into(),
+                    reference: "CLAIM-12".into(),
+                    ..Adjustment::default()
+                }],
+            },
+        ],
+        ..Remittance::default()
+    };
+    let (m, d) = through(
+        &env,
+        outgoing("REMADV", "", remadv::body(&remit, &env.delimiters)),
+    );
+    let (read, verdict) = remadv::read(&m, &d);
+    assert!(verdict.is_clean());
+    assert_eq!(read, remadv::carried(&remit));
+
+    let change = OrderChange {
+        purpose: "04".into(),
+        order_number: "PO-88001".into(),
+        change_number: "CH-1".into(),
+        order_date: Some(day(2026, 11, 18)),
+        lines: vec![ChangeLine {
+            line_id: "2".into(),
+            change: "CA".into(),
+            quantity: Some(dec("15")),
+            uom: "CT".into(),
+            unit_price: Some(dec("31.2")),
+            product_ids: vec![ProductId {
+                qualifier: "EN".into(),
+                value: "4098765100024".into(),
+            }],
+            dates: vec![],
+        }],
+        ..OrderChange::default()
+    };
+    let (m, d) = through(
+        &env,
+        outgoing("ORDCHG", "", ordchg::body(&change, &env.delimiters)),
+    );
+    let (read, verdict) = ordchg::read(&m, &d);
+    assert!(verdict.is_clean());
+    let mut expected = change.clone();
+    expected.lines_stated = Some(1);
+    assert_eq!(read, expected);
+
+    let advice = InventoryAdvice {
+        purpose: "00".into(),
+        report_id: "R-1".into(),
+        date: Some(day(2026, 11, 20)),
+        items: vec![InventoryItem {
+            product_ids: vec![ProductId {
+                qualifier: "EN".into(),
+                value: "4098765100017".into(),
+            }],
+            qualifier: "33".into(),
+            quantity: Some(dec("500")),
+            uom: "PCE".into(),
+        }],
+        ..InventoryAdvice::default()
+    };
+    let (m, d) = through(
+        &env,
+        outgoing("INVRPT", "", invrpt::body(&advice, &env.delimiters)),
+    );
+    let (read, verdict) = invrpt::read(&m, &d);
+    assert!(verdict.is_clean());
+    assert_eq!(read, invrpt::carried(&advice));
+}

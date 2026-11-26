@@ -1,6 +1,7 @@
 //! What EDI does by itself once a change is committed: drafts an order
 //! that may be drafted without a person, and makes the 855, 856 or 810
-//! when the document they come from is approved or posted.
+//! when the document they come from is approved or posted, and the
+//! remittance advice of a posted payment run.
 //!
 //! Everything runs as the partner's run-as user, through the commands a
 //! person would run, with that user's permissions and every policy: the
@@ -18,8 +19,9 @@ use uuid::Uuid;
 
 pub struct EdiSubscriber;
 
-const TOPICS: [&str; 5] = [
+const TOPICS: [&str; 6] = [
     "edi.receive",
+    "payment_run.post",
     "sales_order.approve",
     "sales_delivery.post",
     "sales_invoice.post",
@@ -114,6 +116,28 @@ impl Subscriber for EdiSubscriber {
                     if let Some(user) = user {
                         let input = json!({ "message_id": message_id, "automatic": true });
                         run_as(kernel, user, "edi.draft", input).await?;
+                    }
+                }
+                Ok(())
+            }
+            "payment_run.post" => {
+                // A remittance advice to each vendor paid whose partner
+                // wants one.
+                let Some(run) = id else { return Ok(()) };
+                let payments: Vec<Uuid> = sqlx::query_scalar(
+                    "SELECT payment_id FROM payment_run_payment WHERE document_id = $1
+                     ORDER BY payment_id",
+                )
+                .bind(run)
+                .fetch_all(kernel.pool())
+                .await?;
+                for payment in payments {
+                    let mut conn = kernel.pool().acquire().await?;
+                    let partner = crate::remit_out::partner_of_payment(&mut conn, payment).await?;
+                    drop(conn);
+                    if let Some(user) = partner.and_then(|p| p.run_as_user_id) {
+                        let input = json!({ "payment_id": payment });
+                        run_as(kernel, user, "edi.remittance_advice", input).await?;
                     }
                 }
                 Ok(())

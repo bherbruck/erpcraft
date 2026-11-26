@@ -470,3 +470,86 @@ async fn a_legacy_iban_does_not_stop_the_rest_of_its_row_changing() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     t.stop().await;
 }
+
+#[tokio::test]
+async fn a_posted_run_sends_its_edi_vendor_a_remittance_advice() {
+    let t = TestApp::start().await;
+    let us = company(&t, "us_small_business", "OHIO").await;
+    let services = expense(&t, &us.id, "6990").await;
+    let parts = t
+        .create("vendor", json!({ "code": "PARTS", "name": "Parts Supply" }))
+        .await;
+    let admin: String = sqlx::query_scalar("SELECT id::text FROM app_user WHERE is_admin LIMIT 1")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    t.create(
+        "edi_partner",
+        json!({ "company_id": us.id, "code": "PARTS", "name": "Parts Supply",
+                "vendor_id": parts, "usage": "production", "remittance_out": true,
+                "our_qualifier": "ZZ", "our_id": "OHIOWIDGETS",
+                "their_qualifier": "ZZ", "their_id": "PARTSSUPPLY", "run_as_user_id": admin }),
+    )
+    .await;
+    bill(
+        &t,
+        (&us.id, &services),
+        &parts,
+        "2026-03-01",
+        "100.00",
+        "P-1001",
+        None,
+    )
+    .await;
+    bill(
+        &t,
+        (&us.id, &services),
+        &parts,
+        "2026-03-02",
+        "250.50",
+        "P-1002",
+        None,
+    )
+    .await;
+    let draft = new_run(&t, &us.id, &us.bank).await;
+    run(&t, "payment_run.propose", json!({ "id": id(&draft) })).await;
+    run(&t, "payment_run.approve", json!({ "id": id(&draft) })).await;
+    run(&t, "payment_run.post", json!({ "id": id(&draft) })).await;
+    erpcraft_kernel::outbox::deliver_batch(&t.kernel, 100)
+        .await
+        .unwrap();
+
+    let (payment, interchange, state): (String, String, String) = sqlx::query_as(
+        "SELECT m.document_id::text, m.interchange_id::text, m.state FROM edi_message m
+         WHERE m.message = '820' AND m.direction = 'out'",
+    )
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(state, "ready");
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "edi_interchange.content",
+            json!({ "id": interchange }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let bytes = body["content"].as_str().unwrap();
+    assert!(bytes.contains("GS*RA*OHIOWIDGETS*PARTSSUPPLY*"), "{bytes}");
+    assert!(bytes.contains("ST*820*0001~BPR*C*350.5*C*ACH*"), "{bytes}");
+    assert!(bytes.contains("*20260315~TRN*1*"), "{bytes}");
+    assert!(bytes.contains("RMR*IV*P-1001**100*100~"), "{bytes}");
+    assert!(bytes.contains("RMR*IV*P-1002**250.5*250.5~"), "{bytes}");
+
+    // Made once: again is refused.
+    let (status, _) = t
+        .command(
+            &t.admin,
+            "edi.remittance_advice",
+            json!({ "payment_id": payment }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    t.stop().await;
+}
