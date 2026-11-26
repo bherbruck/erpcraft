@@ -254,6 +254,27 @@ export function recordActions(
   );
 }
 
+/**
+ * The record's one primary action: the first whose `primary_when` the registry declares and the
+ * record meets (its status, and which collections have lines), else the first that neither ends
+ * nor undoes anything.
+ */
+export function primaryAction(
+  actions: ResourceAction[],
+  status: string,
+  lineCount: (collection: string) => number,
+): ResourceAction | null {
+  const declared = actions.find((action) => {
+    const when = action.command.primary_when;
+    if (!when) return false;
+    if (when.states.length > 0 && !when.states.includes(status)) return false;
+    if (when.empty !== null && lineCount(when.empty) > 0) return false;
+    if (when.not_empty !== null && lineCount(when.not_empty) === 0) return false;
+    return true;
+  });
+  return declared ?? actions.find((action) => !action.destructive) ?? null;
+}
+
 // ------------------------------------------------------------------ reports
 
 /**

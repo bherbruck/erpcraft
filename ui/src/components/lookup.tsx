@@ -7,6 +7,7 @@ import { useApp, useCompany } from "@/app/context";
 import { Button } from "@/components/button";
 import { Combobox, ComboboxNote, useDebounced } from "@/components/combobox";
 import { CommandGroup, CommandItem, CommandSeparator } from "@/components/ui/command";
+import { locale } from "@/i18n/language";
 import { t } from "@/i18n/t";
 import { recordLabel, rememberRecord, useLinkInfo } from "@/lib/link-labels";
 import { canEntity, findEntity, isCompanyScoped } from "@/lib/meta";
@@ -220,7 +221,7 @@ export function Lookup({
         ) : null}
         {results.data && results.data.total > results.data.shown ? (
           <ComboboxNote>
-            {t("lookup.more", { shown: results.data.shown, total: results.data.total.toLocaleString() })}
+            {t("lookup.more", { shown: results.data.shown, total: results.data.total.toLocaleString(locale()) })}
           </ComboboxNote>
         ) : null}
         {canClear || creatable ? (

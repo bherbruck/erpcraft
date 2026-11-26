@@ -11,6 +11,8 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { de } from "../src/i18n/de";
+import { en, type MessageKey } from "../src/i18n/en";
 import { type Browser, CTRL, launchBrowser } from "./browser";
 import { sweepLeftovers, undoOnSignal } from "./leftovers";
 import {
@@ -25,9 +27,68 @@ import {
 } from "./lib";
 
 const APP = process.env.ERPCRAFT_UI_URL ?? "http://127.0.0.1:5173";
+// The language the UI is driven in: `ERPCRAFT_E2E_LANGUAGE=de bun run e2e sign-in lists documents`.
+// The UI's own words are read from its dictionaries; what the server names (fields, commands,
+// states) stays as the server says it.
+const LANGUAGE: "en" | "de" = process.env.ERPCRAFT_E2E_LANGUAGE === "de" ? "de" : "en";
+const WORDS: Record<MessageKey, string> = LANGUAGE === "de" ? de : en;
+
+/** A word of the UI in the language under test, as the app's t() gives it. */
+function ui(key: MessageKey, params: Record<string, string | number> = {}): string {
+  return WORDS[key].replaceAll(/\{(\w+)\}/g, (whole, name: string) =>
+    params[name] === undefined ? whole : String(params[name]),
+  );
+}
+
+/** A decimal as a person types it in the language under test: 4,25 in German. */
+function num(text: string): string {
+  return LANGUAGE === "de" ? text.replace(".", ",") : text;
+}
 const FAILURES = resolve(import.meta.dir, "../e2e-failures");
 
 const session: Session = await signIn();
+
+// What the server names, in the language under test (`?locale=`); a server that does not translate
+// answers in English, which is what the UI then shows too.
+const META = asObject(await session.get(`/api/meta?locale=${LANGUAGE}`));
+function named(list: string, name: string): JsonObject {
+  const found = asArray(META[list])
+    .map(asObject)
+    .find((entry) => entry.name === name);
+  if (!found) throw new Error(`no ${list} ${name} in the registry`);
+  return found;
+}
+/** A field's label: `field("purchase_order", "lines.qty")` or `field("item", "name")`. */
+function field(owner: string, path: string): string {
+  const [first, second] = path.split(".");
+  const isDoc = asArray(META.doc_types).some((doc) => asObject(doc).name === owner);
+  const holder = isDoc ? named("doc_types", owner) : named("entities", owner);
+  const fields = second
+    ? asArray(
+        asArray(holder.collections)
+          .map(asObject)
+          .find((collection) => collection.name === first)?.fields,
+      )
+    : asArray(holder.fields);
+  const found = fields.map(asObject).find((candidate) => candidate.name === (second ?? first));
+  return asString(found?.label ?? path);
+}
+/** A command's label, as its button says: `command("vendor_invoice.reverse")`. */
+function command(name: string): string {
+  return asString(named("commands", name).label);
+}
+/** An entity's label: `entity("vendor")`. */
+function entity(name: string): string {
+  return asString(named("entities", name).label);
+}
+/** The label of a document type's state. */
+function state(docType: string, name: string): string {
+  return asString(
+    asArray(named("doc_types", docType).states)
+      .map(asObject)
+      .find((candidate) => candidate.name === name)?.label ?? name,
+  );
+}
 await sweepLeftovers(session);
 const browser: Browser = await launchBrowser(9334);
 const stamp = Date.now().toString(36).toUpperCase();
@@ -187,21 +248,21 @@ async function signInChecks(): Promise<void> {
   check("a page opened without a session leads to sign-in", (await browser.location()).startsWith("/sign-in"));
   await browser.fill("#email", "nobody@example.com");
   await browser.fill("#password", "wrong");
-  await browser.click("Sign in");
-  check("a wrong password is refused in words", (await browser.text()).includes("Could not sign in"));
+  await browser.click(ui("auth.sign_in"));
+  check("a wrong password is refused in words", (await browser.text()).includes(ui("auth.failed")));
   check("the email is kept after a failed sign-in", (await value("#email")) === "nobody@example.com");
 
   // Single sign-on: a refusal comes back as a word, and a login code that is no good leads back here.
   await browser.goto(`${APP}/sign-in?sso_error=domain_not_allowed`);
   check(
     "a refused single sign-on is explained in one sentence",
-    (await browser.text()).includes("not of a domain that may sign in"),
+    (await browser.text()).includes(ui("sso.error.domain_not_allowed")),
   );
   await browser.goto(`${APP}/c/OHIO/e/item?q=wid&sso_code=not-a-real-code`);
   const after = await browser.location();
   check(
     "a login code that is no good leads to the sign-in page, and leaves the address",
-    after === "/sign-in?sso_error=failed" && (await browser.text()).includes("did not work"),
+    after === "/sign-in?sso_error=failed" && (await browser.text()).includes(ui("sso.error.failed")),
     after,
   );
 }
@@ -273,7 +334,7 @@ async function listChecks(): Promise<void> {
   check("the search text is in the URL", (await browser.location()).includes("q=wid"));
   const found = await textOf("[data-grid-body]");
   check("the search runs and filters the rows", found.includes("WIDGET") && !found.includes("GADGET"), found);
-  await browser.click("Name", "[data-grid-header] button");
+  await browser.click(field("item", "name"), "[data-grid-header] button");
   check("the sort is in the URL", (await browser.location()).includes("sort=name"));
   await browser.evaluate("history.back()");
   await browser.settle();
@@ -286,13 +347,22 @@ async function listChecks(): Promise<void> {
   // The columns are the grid's: chosen in its Columns menu, kept per list.
   await browser.evaluate(`localStorage.removeItem("erpcraft.grid.entity.item")`);
   await open("/c/OHIO/e/item");
-  check("the Created column is hidden by default", !(await textOf("[data-grid-header]")).includes("Created"));
-  await menuItem("Columns", "Created");
-  check("the column chooser adds a column", (await textOf("[data-grid-header]")).includes("Created"));
+  check(
+    "the Created column is hidden by default",
+    !(await textOf("[data-grid-header]")).includes(field("item", "created_at")),
+  );
+  await menuItem(ui("grid.columns"), field("item", "created_at"));
+  check("the column chooser adds a column", (await textOf("[data-grid-header]")).includes(field("item", "created_at")));
   await open("/c/OHIO/e/item");
-  check("the chosen columns are remembered", (await textOf("[data-grid-header]")).includes("Created"));
-  await menuItem("Columns", "Reset columns");
-  check("the default columns can be restored", !(await textOf("[data-grid-header]")).includes("Created"));
+  check(
+    "the chosen columns are remembered",
+    (await textOf("[data-grid-header]")).includes(field("item", "created_at")),
+  );
+  await menuItem(ui("grid.columns"), ui("grid.resetLayout"));
+  check(
+    "the default columns can be restored",
+    !(await textOf("[data-grid-header]")).includes(field("item", "created_at")),
+  );
 
   // Paging and sorting run on the server and are in the URL.
   await open("/c/OHIO/e/account?sort=-code");
@@ -310,7 +380,7 @@ async function listChecks(): Promise<void> {
     codes,
   );
 
-  check("modules have readable names in the menu", (await textOf("nav")).includes("General ledger"));
+  check("modules have readable names in the menu", (await textOf("nav")).includes(asString(named("modules", "gl").label)));
 }
 
 async function documentChecks(): Promise<void> {
@@ -327,13 +397,16 @@ async function documentChecks(): Promise<void> {
     "every typed letter reaches the lookup's search",
     (await value("[role=combobox]:not(button)")) === `e2e supplier ${stamp}`,
   );
-  await browser.click(`New Vendor “e2e supplier ${stamp}”…`, "[role=option]");
+  await browser.click(
+    ui("lookup.new_named", { label: entity("vendor"), name: `e2e supplier ${stamp}` }),
+    "[role=option]",
+  );
   check(
     "New … opens a dialog with the typed name",
     (await value("#quick-create-vendor-name")) === `e2e supplier ${stamp}`,
   );
   await browser.fill("#quick-create-vendor-code", `Q${stamp}`);
-  await dialogClick("Create and select");
+  await dialogClick(ui("quick_create.submit"));
   const quick = await first("vendor", { code: `Q${stamp}` });
   if (quick) cleanup.push(() => session.run("entity.delete", { entity: "vendor", id: asString(quick.id) }));
   check("the new record is created and selected", (await textOf("#header-vendor_id")).includes(`Q${stamp}`));
@@ -348,21 +421,21 @@ async function documentChecks(): Promise<void> {
   const offered = await textOf("[role=listbox]");
   check(
     "recent choices come first in a lookup",
-    offered.startsWith("Recently chosen") && offered.includes("Parts Inc"),
+    offered.startsWith(ui("lookup.recent")) && offered.includes("Parts Inc"),
     offered,
   );
   await browser.key("Escape");
 
   const lines: [string, string, string][] = [
-    ["widget", "3", "4.25"],
-    ["gadget", "2", "9.5"],
+    ["widget", "3", num("4.25")],
+    ["gadget", "2", num("9.5")],
   ];
   for (const [row, [item, qty, price]] of lines.entries()) {
-    await pickInCell("Item", row, item);
-    await pickInCell("Deliver to", row, "main");
-    await typeInCell("Quantity", row, qty);
+    await pickInCell(field("purchase_order", "lines.item_id"), row, item);
+    await pickInCell(field("purchase_order", "lines.warehouse_id"), row, "main");
+    await typeInCell(field("purchase_order", "lines.qty"), row, qty);
     // Enter on the last line's last field adds a line and moves into it.
-    await typeInCell("Unit price", row, price, row === 0 ? "Enter" : "Tab");
+    await typeInCell(field("purchase_order", "lines.unit_price"), row, price, row === 0 ? "Enter" : "Tab");
     if (row === 0) {
       const rows = await browser.evaluate(`document.querySelectorAll("[data-grid-body] [role=row]").length`);
       const focused = await browser.evaluate("document.activeElement?.dataset?.row ?? null");
@@ -384,14 +457,14 @@ async function documentChecks(): Promise<void> {
   );
 
   // The server names the line and the field of a line it refuses.
-  await typeInCell("Quantity", 1, "-1");
-  await browser.click("Save");
+  await typeInCell(field("purchase_order", "lines.qty"), 1, "-1");
+  await browser.click(ui("action.save"));
   check(
     "a line the server refuses is named, with the field",
-    (await textOf("main")).includes("Line 2, Quantity"),
+    (await textOf("main")).includes(`${ui("lines.line_n", { line: 2 })}, ${field("purchase_order", "lines.qty")}`),
     (await textOf("main")).slice(0, 600),
   );
-  const refusedCell = await gridCell("Quantity", 1);
+  const refusedCell = await gridCell(field("purchase_order", "lines.qty"), 1);
   check(
     "the refused cell is marked, with the server's words",
     (await browser.evaluate(
@@ -400,33 +473,34 @@ async function documentChecks(): Promise<void> {
   );
   check(
     "a refused save keeps what was typed",
-    (await cellText("Quantity", 1)).startsWith("-1") && (await browser.text()).includes("Not saved"),
+    (await cellText(field("purchase_order", "lines.qty"), 1)).startsWith("-1") &&
+      (await browser.text()).includes(ui("record.save_failed")),
   );
-  await typeInCell("Quantity", 1, "7");
-  await browser.click("Save");
+  await typeInCell(field("purchase_order", "lines.qty"), 1, "7");
+  await browser.click(ui("action.save"));
   const updated = asObject(await session.run("document.get", { doc_type: "purchase_order", id }));
   check(
     "a draft is changed and its version moves on",
     updated.version === 2 && asObject(asArray(asObject(updated.body).lines)[1] ?? {}).qty === "7.000000",
   );
 
-  await browser.click("Approve");
+  await browser.click(command("purchase_order.approve"));
   check("an action is part of the URL", (await browser.location()).includes("action=approve"));
   const preview = await textOf("[role=dialog]");
   check(
     "the action is previewed before it runs",
-    preview.includes("What will happen") && preview.includes("Open"),
+    preview.includes(ui("preview.heading")) && preview.includes(state("purchase_order", "open")),
     preview,
   );
-  await dialogClick("Cancel");
+  await dialogClick(ui("action.cancel"));
   const still = asObject(await session.run("document.get", { doc_type: "purchase_order", id }));
   check(
     "closing the preview changes nothing",
     still.status === "draft" && !(await browser.location()).includes("action="),
   );
 
-  await browser.click("Delete");
-  await dialogClick("Delete");
+  await browser.click(ui("action.delete"));
+  await dialogClick(ui("action.delete"));
   check("a draft can be deleted", (await browser.location()) === "/c/OHIO/d/purchase_order");
   cleanup.pop();
 
@@ -447,12 +521,14 @@ async function documentChecks(): Promise<void> {
     const page = await browser.text();
     check(
       "a posted document shows its ledger entries and where it came from",
-      page.includes("Postings") && page.includes("Accounts payable") && page.includes("Created from"),
+      page.includes(ui("postings.title")) &&
+        page.includes("Accounts payable") &&
+        page.includes(ui("document.link_source")),
     );
     const offered = [...(await headerButtons()), ...(await moreActions())];
     check(
       "a posted document offers Reverse and not Post",
-      offered.includes("Reverse") && !offered.includes("Post"),
+      offered.includes(command("vendor_invoice.reverse")) && !offered.includes(command("vendor_invoice.post")),
       offered.join(", "),
     );
   }
@@ -1262,9 +1338,14 @@ async function bankingChecks(): Promise<void> {
     }),
   );
   await session.run("purchase_order.approve", { id: asString(order.id) });
-  const receipt = asObject(await session.run("purchase_order.receive", { id: asString(order.id) }));
+  // Received and invoiced before the statement: a payment cannot settle an item dated after it.
+  const receipt = asObject(
+    await session.run("purchase_order.receive", { id: asString(order.id), doc_date: "2026-05-21" }),
+  );
   await session.run("purchase_receipt.post", { id: asString(receipt.id) });
-  const invoice = asObject(await session.run("purchase_order.invoice", { id: asString(order.id) }));
+  const invoice = asObject(
+    await session.run("purchase_order.invoice", { id: asString(order.id), doc_date: "2026-05-22" }),
+  );
   const posted = asObject(await session.run("vendor_invoice.post", { id: asString(invoice.id) }));
   const number = asString(posted.number);
 
@@ -2110,6 +2191,8 @@ try {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       await browser.goto(`${APP}/sign-in`);
+      // The language is the browser's choice, read as each page loads.
+      await browser.evaluate(`localStorage.setItem("erpcraft.language", ${JSON.stringify(LANGUAGE)})`);
       break;
     } catch (cause) {
       console.log(

@@ -16,6 +16,7 @@ import { Button } from "@/components/button";
 import { Dialog } from "@/components/dialog";
 import { FormField } from "@/components/form-field";
 import { Lookup } from "@/components/lookup";
+import { MoneyInput } from "@/components/money-input";
 import { PageHeader, Section } from "@/components/page";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -27,6 +28,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { t } from "@/i18n/t";
 import { formatCalendarDate } from "@/lib/dates";
+import { formatDecimal } from "@/lib/decimal";
 import { canRun, enumLabel, findCommand, findEntity } from "@/lib/meta";
 import { paths } from "@/lib/paths";
 import { useAsync } from "@/lib/use-async";
@@ -359,21 +361,20 @@ function ProposalReview({
                     ) : null}
                   </TableCell>
                   <TableCell className="px-3 py-2.5 text-end align-top tabular-nums">
-                    {line.qty === null ? t("value.none") : `${line.qty} ${line.uom ?? ""}`}
+                    {line.qty === null ? t("value.none") : `${formatDecimal(line.qty)} ${line.uom ?? ""}`}
                   </TableCell>
                   <TableCell className="px-3 py-2 text-end align-top">
                     {open && line.unit_price === null ? (
-                      <Input
+                      <MoneyInput
                         aria-label={t("edi.price_for", { line: line.line_id })}
-                        inputMode="decimal"
-                        className="w-28 text-end tabular-nums"
+                        className="w-28"
                         value={prices[line.line_id] ?? ""}
-                        onChange={(event) =>
-                          setPrices((previous) => ({ ...previous, [line.line_id]: event.target.value }))
-                        }
+                        onChange={(next) => setPrices((previous) => ({ ...previous, [line.line_id]: next }))}
                       />
                     ) : (
-                      <span className="tabular-nums">{line.unit_price ?? t("value.none")}</span>
+                      <span className="tabular-nums">
+                        {line.unit_price === null ? t("value.none") : formatDecimal(line.unit_price)}
+                      </span>
                     )}
                   </TableCell>
                 </TableRow>

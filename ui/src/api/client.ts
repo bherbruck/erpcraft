@@ -3,6 +3,7 @@
 // Apart from signing in and out, everything goes through `run`, which executes
 // a registered command: the same commands an agent reaches over MCP.
 
+import { language } from "@/i18n/language";
 import { t } from "@/i18n/t";
 import type { CommandInputs, CommandName } from "./generated";
 import type { CommandOutputs, Json, JsonObject, LoginResult, Me, Meta, SsoProviders } from "./types";
@@ -93,6 +94,8 @@ async function request<T>(method: string, path: string, options: RequestOptions 
   const headers: Record<string, string> = { ...options.headers };
   if (token && !options.anonymous) headers.authorization = `Bearer ${token}`;
   if (options.body !== undefined) headers["content-type"] = "application/json";
+  // The server names things (fields, states, actions, reports) in the language the UI is in.
+  headers["accept-language"] = language();
 
   let response: Response;
   try {
@@ -209,8 +212,9 @@ export const api = {
     return request<Me>("GET", "/api/auth/me", { signal });
   },
 
+  /** The registry, its labels and help in the UI's language (`meta.describe` answers in English). */
   meta(signal?: AbortSignal): Promise<Meta> {
-    return api.run("meta.describe", {}, { signal });
+    return request<Meta>("GET", `/api/meta?${new URLSearchParams({ locale: language() })}`, { signal });
   },
 
   /** Run a command known when the UI was built. Input and output are typed. */

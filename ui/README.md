@@ -107,6 +107,9 @@ In development builds only (`import.meta.env.DEV`), a page opened with `#token=<
 
 - **Lots and serial numbers**: a stock line's lots (`lots`) are a column of the lines grid that shows them as "F-0601 ×30, F-0602 ×20" (also what is copied, and what may be typed or pasted). Enter opens a dialog to name them, with expiry and manufacturing dates for a new lot and "Propose lots" (`stock.lot_proposal`, first expiring first) for goods going out. "Lots on hand" (`stock.lots`) filters by item, warehouse, lot and expiry, and each lot opens its trace; "Lot traceability" (`stock.trace`) shows, forward or backward, the lots reached through production, every movement with its document and party, and the customers or vendors involved.
 
+- **One primary action**: a document's primary button is the action whose `primary_when` (states, and a collection that must be empty or not) the document meets, such as Propose on a payment run without lines and Approve once it has some; without one, the first action that neither ends nor undoes anything.
+- **German**: the UI's own words are in `src/i18n/en.ts` and `src/i18n/de.ts` (TypeScript checks that German has every key). The language is chosen beside the user's name, and on the sign-in page, and kept in the browser (per user once signed in); switching reloads the page. In German, numbers and dates are written as in Germany (1.234,56 and 25.11.2026), and amounts are typed that way and read exactly ("1.234,56" is 1234.56; a point alone before other than three digits, "1.5", is a decimal point). `ERPCRAFT_E2E_LANGUAGE=de bun run e2e sign-in lists documents` drives the UI in German.
+
 ## What does not exist yet
 
 - **Still decided by the UI, because the server does not say:**
@@ -119,4 +122,5 @@ In development builds only (`import.meta.env.DEV`), a page opened with `#token=<
 - Party data is not a generic entity, so which records have it (company, customer, vendor) and the labels of its fields and tax schemes are the UI's (`src/pages/party-details.tsx`); `party.get` and `party.set` describe the fields only in their schemas.
 - The labels and colours of approval statuses (`pending`, `executed`, `failed`, `stale`, `rejected`, `expired`) are the UI's: `approval.list` names them only in its description.
 - Aging cannot open the items of one bucket: `open_item.list` has no filter by days past due, so a party's row opens all its items.
-- Only English. Dates and numbers follow the browser's locale.
+- English and German only. What the server names is in English in both: entity, document type, field, state, command, module, ledger and report labels and help, the descriptions of commands and their inputs, policy points and facts, and the server's error messages. They would need translations on the server, chosen by the request's language, for a German UI to be German throughout.
+- Native date inputs show the date in the browser's own language (mm/dd/yyyy in an English browser), not in the UI's.

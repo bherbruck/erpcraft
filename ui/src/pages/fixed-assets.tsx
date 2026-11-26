@@ -17,6 +17,7 @@ import { Lookup } from "@/components/lookup";
 import { PageHeader, Section } from "@/components/page";
 import { Label } from "@/components/ui/label";
 import { TableCell, TableRow } from "@/components/ui/table";
+import { locale } from "@/i18n/language";
 import { t } from "@/i18n/t";
 import { formatCalendarDate } from "@/lib/dates";
 import { formatDecimal, isZeroDecimal } from "@/lib/decimal";
@@ -48,7 +49,7 @@ function labelled(field: FieldMeta | undefined, value: string): string {
 function monthLabel(day: string): string {
   const [year, month] = day.split("-").map(Number);
   if (!year || !month) return day;
-  return new Intl.DateTimeFormat(undefined, { month: "short", year: "numeric", timeZone: "UTC" }).format(
+  return new Intl.DateTimeFormat(locale(), { month: "short", year: "numeric", timeZone: "UTC" }).format(
     new Date(Date.UTC(year, month - 1, 1)),
   );
 }

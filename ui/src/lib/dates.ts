@@ -4,8 +4,10 @@
 
 const CALENDAR = /^(\d{4})-(\d{2})-(\d{2})$/;
 
-const calendarFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeZone: "UTC" });
-const timestampFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+import { locale } from "@/i18n/language";
+
+const calendarFormat = new Intl.DateTimeFormat(locale(), { dateStyle: "medium", timeZone: "UTC" });
+const timestampFormat = new Intl.DateTimeFormat(locale(), { dateStyle: "medium", timeStyle: "short" });
 
 /**
  * A calendar date for display. The date is placed at midnight UTC and formatted

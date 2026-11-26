@@ -1,6 +1,8 @@
 // Decimals arrive from the server as strings and stay strings. Nothing here
 // turns one into a JavaScript number: formatting is done on the digits.
 
+import { locale as uiLocale } from "@/i18n/language";
+
 const DECIMAL = /^(-?)(\d+)(?:\.(\d+))?$/;
 
 export function isDecimal(value: string): boolean {
@@ -53,7 +55,7 @@ export function formatDecimal(value: string, options: DecimalFormat = {}): strin
   const min = options.minFraction ?? 0;
   let fraction = rawFraction.replace(/0+$/, "");
   if (fraction.length < min) fraction = fraction.padEnd(min, "0");
-  const { group, decimal, minus } = separators(options.locale);
+  const { group, decimal, minus } = separators(options.locale ?? uiLocale());
   const isZero = /^0+$/.test(integer) && /^0*$/.test(fraction);
   const head = `${sign && !isZero ? minus : ""}${group(integer)}`;
   return fraction ? `${head}${decimal}${fraction}` : head;
@@ -86,4 +88,40 @@ export function trimDecimal(value: string): string {
   if (!match) return value;
   const fraction = (match[3] ?? "").replace(/0+$/, "");
   return `${match[1] ?? ""}${match[2] ?? "0"}${fraction ? `.${fraction}` : ""}`;
+}
+
+/** The decimal separator of a locale (the UI's when none is given): "." or ",". */
+export function decimalSeparator(locale: string | undefined = uiLocale()): string {
+  return separators(locale).decimal;
+}
+
+/**
+ * A decimal as a person types it in the UI's locale, to the exact decimal string the server
+ * takes, or null when it is not one. Where the decimal separator is a comma (German), points
+ * group thousands ("1.234,56"); a lone point with other than three digits after it is read as
+ * the decimal point people also type ("1.5"). Where it is a point, commas group.
+ */
+export function parseLocalDecimal(text: string, locale: string | undefined = uiLocale()): string | null {
+  let value = text
+    .trim()
+    .replace(/\s/g, "")
+    .replace(/^\u2212/, "-");
+  if (value === "") return null;
+  if (decimalSeparator(locale) === ",") {
+    if (value.includes(",")) value = value.replace(/\./g, "").replace(",", ".");
+    else if (/^-?\d{1,3}(\.\d{3})+$/.test(value)) value = value.replace(/\./g, "");
+  } else {
+    value = value.replace(/,/g, "");
+  }
+  return DECIMAL.test(value) ? value : null;
+}
+
+/** What a decimal input lets the user type in the UI's locale: digits, a sign, separators. */
+export function isLocalDecimalDraft(text: string): boolean {
+  return /^[-\u2212]?[\d.,\s]*$/.test(text);
+}
+
+/** A stored decimal as a person edits it: its digits with the locale's separator, no grouping. */
+export function toLocalDraft(value: string, locale: string | undefined = uiLocale()): string {
+  return isDecimal(value) ? value.trim().replace(".", decimalSeparator(locale)) : value;
 }

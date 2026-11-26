@@ -256,7 +256,8 @@ export async function launchBrowser(port: number): Promise<Browser> {
       // a navigation starts, the page on screen is still the one being left. A change
       // of the fragment alone loads no new document, so there is nothing to wait for.
       const here = String(await evaluate("location.href.split('#')[0]"));
-      const reloads = here !== url.split("#")[0];
+      // Going to the address the page is on loads it again; only a new fragment does not.
+      const reloads = !(here === url.split("#")[0] && url.includes("#"));
       await evaluate("window.__leaving = true");
       await send("Page.navigate", { url });
       for (let attempt = 0; reloads && attempt < 200; attempt += 1) {

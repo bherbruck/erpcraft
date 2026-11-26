@@ -19,6 +19,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/api/client";
 import type { CollectionMeta, FieldMeta, Json } from "@/api/types";
 import { useApp } from "@/app/context";
+import { locale } from "@/i18n/language";
 import { t } from "@/i18n/t";
 import { peekLinkLabel, recordLabel, rememberRecord, shortId, useLinkLabelsVersion } from "@/lib/link-labels";
 import { enumLabel, findEntity, isCompanyScoped } from "@/lib/meta";
@@ -446,6 +447,7 @@ export function LinesGrid({
           rowId={(line) => line.key}
           slots={slots}
           labels={GRID_LABELS}
+          locale={locale()}
           toolbar
           // The toolbar names the lines, with the keys behind a tip, beside the columns menu.
           toolbarExtra={

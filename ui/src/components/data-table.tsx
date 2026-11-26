@@ -7,6 +7,7 @@ import { Button } from "@/components/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { locale } from "@/i18n/language";
 import { t } from "@/i18n/t";
 import { cn } from "@/lib/utils";
 
@@ -225,7 +226,7 @@ export function DataTable<Row>({
             ) : total === 0 ? (
               t("list.count_none")
             ) : (
-              t("list.count", { first, last, total: total.toLocaleString() })
+              t("list.count", { first, last, total: total.toLocaleString(locale()) })
             )}
           </span>
           <span className="flex items-center gap-1">

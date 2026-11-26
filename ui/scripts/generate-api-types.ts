@@ -12,7 +12,8 @@ import { asArray, asObject, asString, type Json, type JsonObject, SERVER, signIn
 import { schemaToType, withNamedRefs } from "./schema-to-type";
 
 const session = await signIn();
-const meta = asObject(await session.get("/api/meta"));
+// The types are written from the English description, so they read the same on every machine.
+const meta = asObject(await session.get("/api/meta?locale=en"));
 
 const names = (key: string): string[] =>
   asArray(meta[key])

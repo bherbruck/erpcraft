@@ -15,10 +15,11 @@ import { Alert } from "@/components/alert";
 import { Button } from "@/components/button";
 import { DateInput } from "@/components/date-input";
 import { Dialog } from "@/components/dialog";
+import { MoneyInput } from "@/components/money-input";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { t } from "@/i18n/t";
-import { formatDecimal, isDecimal, isDecimalDraft, trimDecimal } from "@/lib/decimal";
+import { formatDecimal, isDecimal, parseLocalDecimal, trimDecimal } from "@/lib/decimal";
 import { canRun } from "@/lib/meta";
 
 /** The field of a stock line that names its lots. */
@@ -78,13 +79,14 @@ export function parseLots(text: string, current: unknown): { ok: true; value: Js
   }
   const known = new Map(lineLots(current).map((entry) => [entry.lot, entry]));
   const out: JsonObject[] = [];
-  for (const part of trimmed.split(/[,;\n]/)) {
+  // Lots are parted by a comma and a space, a semicolon or a line: a comma alone may be a decimal comma.
+  for (const part of trimmed.split(/;|\n|,\s+/)) {
     const piece = part.trim();
     if (piece === "") continue;
     const match = /^(.*?)\s*(?:[×x*]\s*|\s+)(-?[\d.,]+)$/i.exec(piece);
     const lot = (match?.[1] ?? piece).trim();
-    const qty = match?.[2]?.replace(/,/g, "") ?? "1";
-    if (lot === "" || !isDecimal(qty)) return { ok: false, error: t("lots.unreadable") };
+    const qty = match?.[2] ? parseLocalDecimal(match[2]) : "1";
+    if (lot === "" || qty === null) return { ok: false, error: t("lots.unreadable") };
     const before = known.get(lot);
     out.push({ ...(before ?? {}), lot, qty } as JsonObject);
   }
@@ -206,14 +208,10 @@ export function LotEditor<R>({ p, context }: { p: EditorSlotProps<R>; context: L
                   />
                 </TableCell>
                 <TableCell className="px-1 py-1">
-                  <Input
+                  <MoneyInput
                     aria-label={t("lots.qty_n", { n: index + 1 })}
-                    inputMode="decimal"
-                    className="text-end tabular-nums"
                     value={row.qty}
-                    onChange={(event) => {
-                      if (isDecimalDraft(event.target.value)) change(index, { qty: event.target.value });
-                    }}
+                    onChange={(next) => change(index, { qty: next })}
                   />
                 </TableCell>
                 <TableCell className="px-1 py-1">

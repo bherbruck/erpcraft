@@ -1,6 +1,6 @@
 import { type InputHTMLAttributes, type Ref, useState } from "react";
 import { Input } from "@/components/ui/input";
-import { formatDecimal, isDecimal, isDecimalDraft } from "@/lib/decimal";
+import { formatDecimal, isDecimal, isLocalDecimalDraft, parseLocalDecimal, toLocalDraft } from "@/lib/decimal";
 import { cn } from "@/lib/utils";
 
 /**
@@ -25,25 +25,31 @@ export function MoneyInput({
   minFraction?: number;
   ref?: Ref<HTMLInputElement>;
 }) {
-  const [editing, setEditing] = useState(false);
-  const shown = editing || !isDecimal(value) ? value : formatDecimal(value, { minFraction });
+  // While it is edited, the text as typed in the user's locale ("1.234,5" in German); the value is
+  // the exact decimal it reads as, passed on whenever the text is one.
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? (isDecimal(value) ? formatDecimal(value, { minFraction }) : value);
   return (
     <Input
       inputMode="decimal"
       autoComplete="off"
       value={shown}
       onFocus={(event) => {
-        setEditing(true);
+        setDraft(toLocalDraft(value));
         onFocus?.(event);
       }}
       onBlur={(event) => {
-        setEditing(false);
+        setDraft(null);
         onBlur?.(event);
       }}
       onChange={(event) => {
-        // A decimal comma is what many keyboards produce; the server expects a point.
-        const next = event.target.value.replace(",", ".");
-        if (isDecimalDraft(next)) onChange(next);
+        const next = event.target.value;
+        if (!isLocalDecimalDraft(next)) return;
+        setDraft(next);
+        // An empty field, or a sign alone, is no amount yet.
+        const parsed = parseLocalDecimal(next);
+        if (parsed !== null) onChange(parsed);
+        else if (next.trim() === "") onChange("");
       }}
       className={cn("text-end tabular-nums", className)}
       {...props}

@@ -4,6 +4,7 @@ import { Link } from "react-router";
 import { Button } from "@/components/button";
 import { Combobox, ComboboxNote, useDebounced } from "@/components/combobox";
 import { CommandGroup, CommandItem, CommandSeparator } from "@/components/ui/command";
+import { locale } from "@/i18n/language";
 import { t } from "@/i18n/t";
 import { useAsync } from "@/lib/use-async";
 
@@ -167,7 +168,7 @@ export function Picker({
       ) : null}
       {results.data?.total !== undefined && results.data.total > optionCount ? (
         <ComboboxNote>
-          {t("lookup.more", { shown: optionCount, total: results.data.total.toLocaleString() })}
+          {t("lookup.more", { shown: optionCount, total: results.data.total.toLocaleString(locale()) })}
         </ComboboxNote>
       ) : null}
       {canClear ? (

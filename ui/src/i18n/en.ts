@@ -500,6 +500,7 @@ export const en = {
   "lots.vendors": "Vendors who supplied it",
   "lots.no_customers": "No customer received any of it.",
   "lots.no_vendors": "No vendor supplied any of it.",
+  "language.choose": "Language",
   "grid.keys_label": "Keys in the lines",
   "grid.keys":
     "Arrows move · type to edit · Enter on the last line adds one · Ctrl+Enter inserts · Ctrl+− deletes · Ctrl+C / Ctrl+V with Excel · Ctrl+Z undoes",

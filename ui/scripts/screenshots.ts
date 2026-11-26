@@ -214,6 +214,8 @@ interface Shot {
   act?: (browser: Browser) => Promise<void>;
   /** Signs in with this token instead of the administrator's. */
   token?: string;
+  /** The language of the UI's own words (English when left out). */
+  language?: "en" | "de";
 }
 
 async function pick(browser: Browser, selector: string, search: string): Promise<void> {
@@ -684,6 +686,13 @@ const shots: Shot[] = [
       `${base}/e/site/${asString((await first("entity.list", { entity: "site", filters: { company_id: companyId, code: "DAY" } })).id)}`,
   },
   { name: "65-delegations", path: `${base}/approvals?scope=delegations` },
+  {
+    name: "69-german-sales-order",
+    language: "de",
+    path: async () =>
+      `${base}/d/sales_order/${await byMemo("sales_order", "Demo: order with a discount and freight (draft)")}`,
+  },
+  { name: "70-german-sales-orders", language: "de", path: `${base}/d/sales_order` },
   { name: "66-lots-on-hand", path: `${base}/r/stock.lots` },
   {
     name: "67-lot-trace",
@@ -761,6 +770,9 @@ try {
     if (path === null) continue;
     await browser.viewport(shot.width ?? 1440, shot.height ?? 900);
     await browser.dark(shot.dark === true);
+    // The language is the browser's choice, read as the page loads.
+    await browser.goto(`${APP}/sign-in`);
+    await browser.evaluate(`localStorage.setItem("erpcraft.language", "${shot.language ?? "en"}")`);
     if (shot.signedIn === false) {
       await browser.goto(`${APP}/sign-in`);
       await browser.evaluate("sessionStorage.clear()");

@@ -46,7 +46,7 @@ import { UnsavedDialog, useUnsavedGuard } from "@/components/unsaved-guard";
 import { t } from "@/i18n/t";
 import { formatCalendarDate, formatTimestamp, todayCalendarDate } from "@/lib/dates";
 import { forgetDocuments, rememberDocument } from "@/lib/doc-labels";
-import { canDoc, canRun, findCommand, findDocType, recordActions } from "@/lib/meta";
+import { canDoc, canRun, primaryAction as choosePrimary, findCommand, findDocType, recordActions } from "@/lib/meta";
 import { paths } from "@/lib/paths";
 import { newKey } from "@/lib/text";
 import { useUrlState } from "@/lib/url-state";
@@ -481,10 +481,16 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
 
   const status = doc?.status ?? docType.initial_state;
   const actions = useMemo(() => (doc ? recordActions(meta, docType.name, doc.status) : []), [meta, docType.name, doc]);
-  // The next step is the first action that neither ends nor undoes anything (Approve, Post); the
-  // rest wait behind "More actions" with printing, the PDF and sending.
-  const primaryAction = actions.find((action) => !action.destructive) ?? null;
-  const otherActions = actions.filter((action) => action !== primaryAction);
+  // The next step is the one the registry names for the document's state and lines (`primary_when`),
+  // else the first that neither ends nor undoes anything (Approve, Post); the rest wait behind
+  // "More actions" with printing, the PDF and sending. What the server holds now, not what is being typed: the step is for the saved document.
+  const primary = doc
+    ? choosePrimary(actions, doc.status, (collection) => {
+        const lines = doc.body[collection];
+        return Array.isArray(lines) ? lines.length : 0;
+      })
+    : null;
+  const otherActions = actions.filter((action) => action !== primary);
   const exportable = useExportable();
   const pdf = usePdfDownload(docType.name, id ?? "");
   const [dialog, setDialog] = useState<"send" | "einvoice" | null>(null);
@@ -619,9 +625,9 @@ function DocumentForm({ docType, id }: { docType: DocTypeMeta; id: string | null
               <output className="text-sm text-muted-foreground">{t("record.unsaved")}</output>
             ) : null}
             {/* One primary action: saving while there is something to save, else the next step. */}
-            {primaryAction && doc && !(canWrite && (dirty || isNew)) ? (
+            {primary && doc && !(canWrite && (dirty || isNew)) ? (
               <ActionButtons
-                actions={[primaryAction]}
+                actions={[primary]}
                 primary
                 running={followOn.running}
                 disabledReason={dirty ? t("record.save_first") : null}

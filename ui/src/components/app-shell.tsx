@@ -27,6 +27,7 @@ import { t } from "@/i18n/t";
 import { COMPANY, canEntity, canRun, findCommand, navigation, reportTitle } from "@/lib/meta";
 import { NO_COMPANY, pathInCompany, paths } from "@/lib/paths";
 import { CommandPalette } from "./command-palette";
+import { LanguageSwitch } from "./language-switch";
 import { Lookup } from "./lookup";
 
 function NavItem({ to, label }: { to: string; label: string }) {
@@ -149,6 +150,7 @@ export function AppShell() {
               <span className="hidden md:inline">{t("palette.open")}</span>
               <Kbd className="hidden md:inline-flex">{t("palette.shortcut")}</Kbd>
             </Button>
+            <LanguageSwitch userId={me.user_id} />
             <span className="hidden max-w-40 truncate text-sm font-medium sm:block" title={me.email}>
               {me.name}
             </span>

@@ -3,6 +3,7 @@ import { Navigate, useLocation, useNavigate, useSearchParams } from "react-route
 import { ApiError, api, session } from "@/api/client";
 import { Alert } from "@/components/alert";
 import { Button } from "@/components/button";
+import { LanguageSwitch } from "@/components/language-switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -120,6 +121,9 @@ export function SignInPage() {
           </form>
         </CardContent>
       </Card>
+      <div className="mt-4">
+        <LanguageSwitch />
+      </div>
     </main>
   );
 }

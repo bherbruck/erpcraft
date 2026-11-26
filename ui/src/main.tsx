@@ -4,7 +4,11 @@ import { RouterProvider } from "react-router";
 import { createAppRouter } from "./app/router";
 import { finishSingleSignOn } from "./app/sso";
 import { TooltipProvider } from "./components/ui/tooltip";
+import { language } from "./i18n/language";
 import "./index.css";
+
+// Screen readers, hyphenation and the browser's own controls follow the language of the page.
+document.documentElement.lang = language();
 
 const root = document.getElementById("root");
 if (!root) throw new Error("index.html has no #root element");

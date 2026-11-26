@@ -1,8 +1,10 @@
+import { de } from "date-fns/locale";
 import { CalendarIcon } from "lucide-react";
 import { type InputHTMLAttributes, useState } from "react";
 import { Calendar } from "@/components/ui/calendar";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { language } from "@/i18n/language";
 import { t } from "@/i18n/t";
 import { calendarDateToLocal, localToCalendarDate } from "@/lib/dates";
 import { cn } from "@/lib/utils";
@@ -46,6 +48,7 @@ export function DateInput({
           <PopoverContent align="end" className="w-auto p-0">
             <Calendar
               mode="single"
+              locale={language() === "de" ? de : undefined}
               captionLayout="dropdown"
               selected={selected}
               defaultMonth={selected}

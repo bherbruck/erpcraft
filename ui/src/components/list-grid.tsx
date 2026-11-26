@@ -15,6 +15,7 @@ import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useStat
 import { useNavigate } from "react-router";
 import type { ApiError } from "@/api/client";
 import type { FieldMeta, Json, JsonObject } from "@/api/types";
+import { locale } from "@/i18n/language";
 import { t } from "@/i18n/t";
 import { formatCalendarDate, formatTimestamp } from "@/lib/dates";
 import { formatDecimal } from "@/lib/decimal";
@@ -290,6 +291,7 @@ export function ListGrid<R extends JsonObject>({
           height={height}
           slots={slots}
           labels={GRID_LABELS}
+          locale={locale()}
           layoutStorage={localStorageLayout("erpcraft.grid.")}
           onEdit={onEdit}
           toolbarExtra={toolbar}

@@ -5,6 +5,7 @@ import type { EntityRecord } from "@/api/types";
 import { Alert } from "@/components/alert";
 import { Button } from "@/components/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { adoptUserLanguage } from "@/i18n/language";
 import { t } from "@/i18n/t";
 import { forgetLinkLabels, seedRecords, setLabelRegistry } from "@/lib/link-labels";
 import { COMPANY, CURRENCY } from "@/lib/meta";
@@ -47,6 +48,8 @@ export function SignedIn({ children }: { children: ReactNode }) {
 
   const base = useAsync(signedIn ? "base" : null, async (signal) => {
     const [meta, me] = await Promise.all([api.meta(signal), api.me(signal)]);
+    // The language this user chose on this browser before, if another is shown now.
+    if (me.user_id) adoptUserLanguage(me.user_id);
     return { meta, me };
   });
   const lists = useAsync(signedIn ? "lists" : null, async (signal) => {
