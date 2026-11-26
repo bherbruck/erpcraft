@@ -1,0 +1,17 @@
+{
+  "Address kind": "Type d'adresse",
+  "Addresses": "Adresses",
+  "Contacts": "Contacts",
+  "Electronic addresses": "Adresses électroniques",
+  "Party details": "Coordonnées du partenaire",
+  "Set party details": "Définir les coordonnées du partenaire",
+  "Tax ids": "Numéros d'inscription",
+  "a party's record stays with its party": "l'enregistrement d'un partenaire reste rattaché à ce partenaire",
+  "must be company, customer or vendor": "doit être company, customer ou vendor",
+  "party_id must be a %": "party_id doit être un %",
+  "the account paid into must be a bank account of the company": "le compte de versement doit être un compte bancaire de l'entreprise",
+  "the address named is no longer on record for the {kind}": "l'adresse indiquée n'est plus enregistrée pour le {kind}",
+  "the same address is given twice": "la même adresse est indiquée deux fois",
+  "this is not an address of the {kind}": "ceci n'est pas une adresse du {kind}",
+  "this is not an address of this party; leave the id out for a new one": "ceci n'est pas une adresse de ce partenaire; omettez l'ID pour une nouvelle adresse"
+}

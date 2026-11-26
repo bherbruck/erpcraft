@@ -1,0 +1,95 @@
+{#- Une facture en français. Le vendeur au Canada : les numéros de TPS/TVH
+    et de TVQ, les taxes par taux sous leurs noms québécois (TPS, TVH, TVQ,
+    TVP, TVD), d'après le code de taxe. Ailleurs (France, Belgique,
+    Union européenne) : SIREN, numéros de TVA intracommunautaire du vendeur
+    et de l'acheteur, date de livraison, échéance, escompte, pénalités de
+    retard et indemnité forfaitaire de 40 €. -#}
+{%- set canada = letterhead and letterhead.country_code == "CA" %}
+{%- set home = letterhead.country_code if letterhead else none %}
+{%- set heading = "Facture" %}
+{%- set number_label = "N° de facture" %}
+{%- set date_label = "Date de facture" %}
+{%- set dates = facts.service_dates %}
+{%- set extra_label = "Date de livraison" %}
+{%- if dates | length == 1 %}{% set extra_value = dates[0] | date %}{% elif dates %}{% set extra_value = (dates[0] | date) ~ " – " ~ (dates[-1] | date) %}{% else %}{% set extra_value = doc.doc_date | date %}{% endif %}
+<!--HEAD-->
+<section class="parties">
+  <div>
+    <h2>Facturé à</h2>
+    <div class="party-name">{{ (parties.buyer.name if parties and parties.buyer and parties.buyer.name) or (doc.summary.customer_id | ref) or doc.summary.customer_name }}</div>
+    {%- if parties and parties.buyer and parties.buyer.city %}
+    {%- set b = parties.buyer %}
+    <div class="address">{% if b.street %}{{ b.street }}<br>{% endif %}{% if b.additional_street %}{{ b.additional_street }}<br>{% endif %}{% if b.country_code == "CA" %}{{ b.city }}{% if b.region %} ({{ b.region }}){% endif %} {{ b.postcode or "" }}{% else %}{{ b.postcode or "" }} {{ b.city }}{% endif %}{% if b.country_code and b.country_code != home %}, {{ b.country_code }}{% endif %}</div>
+    {%- if b.siren %}<div class="muted">SIREN {{ b.siren }}</div>{% endif %}
+    {%- if b.vat_id %}<div class="muted">N° TVA intracommunautaire {{ b.vat_id }}</div>{% endif %}
+    {%- if b.ca_bn %}<div class="muted">TPS/TVH n° {{ b.ca_bn }}</div>{% endif %}
+    {%- if b.ca_qst %}<div class="muted">TVQ n° {{ b.ca_qst }}</div>{% endif %}
+    {%- if b.buyer_reference %}<div class="muted">Votre référence {{ b.buyer_reference }}</div>{% endif %}
+    {%- endif %}
+  </div>
+  {%- set s = parties.ship_to if parties and parties.ship_to else none %}
+  {%- if s and s.city %}
+  <div>
+    <h2>Livré à</h2>
+    <div class="address">{% if s.attention %}{{ s.attention }}<br>{% endif %}{% if s.street %}{{ s.street }}<br>{% endif %}{% if s.country_code == "CA" %}{{ s.city }}{% if s.region %} ({{ s.region }}){% endif %} {{ s.postcode or "" }}{% else %}{{ s.postcode or "" }} {{ s.city }}{% endif %}{% if s.country_code and s.country_code != home %}, {{ s.country_code }}{% endif %}</div>
+  </div>
+  {%- endif %}
+  <div>
+    <h2>Commande</h2>
+    <div>{{ doc.body.sales_order_id | ref }}</div>
+  </div>
+</section>
+<table class="lines">
+  <thead>
+    <tr><th class="num">Ligne</th><th>Désignation</th><th class="num">Qté</th><th>Unité</th><th class="num">Prix unitaire HT</th><th class="num">Remise</th><th>{{ "Taxe" if canada else "TVA" }}</th><th class="num">Montant HT</th></tr>
+  </thead>
+  <tbody>
+  {%- for line in doc.body.lines %}
+    {%- set ordered = refs[line.order_line_id].record if line.order_line_id else none %}
+    <tr>
+      <td class="num">{{ line.line_no }}</td>
+      <td>{% if line.order_line_id %}{{ line.order_line_id | ref }}{% elif line.charge_id %}{{ line.description or (line.charge_id | ref) }}{% else %}{{ line.description or (line.account_id | ref) }}{% endif %}{% if line.lots %}<div class="muted">{{ line.lots | lots }}</div>{% endif %}</td>
+      <td class="num">{{ line.qty | decimal }}</td>
+      <td>{% if ordered and ordered.uom %}{{ ordered.uom }}{% elif ordered and ordered.item_id %}{{ refs[ordered.item_id].record.uom }}{% endif %}</td>
+      <td class="num">{{ line.unit_price | price }}</td>
+      <td class="num">{% if line.discount_percent %}{{ line.discount_percent | decimal }} %{% endif %}{% if line.discount_amount %} {{ line.discount_amount | money }}{% endif %}</td>
+      <td class="short">{{ line.tax_code_id | ref("short") }}</td>
+      <td class="num">{% if line.net_amount is defined and line.net_amount is not none %}{{ line.net_amount | money }}{% else %}{{ line.qty | mul(line.unit_price) | money }}{% endif %}</td>
+    </tr>
+  {%- endfor %}
+  </tbody>
+</table>
+<table class="totals">
+  <tr><th>Total HT</th><td class="num">{{ doc.summary.total_net | money }}</td></tr>
+  {%- for t in facts.tax %}
+  {%- if canada %}
+  {%- set n = t.code or "" %}
+  <tr><th>{% if "QST" in n %}TVQ{% elif "HST" in n %}TVH{% elif "GST" in n %}TPS{% elif "RST" in n %}TVD{% elif "PST" in n %}TVP{% else %}{{ t.name or n or "Taxe" }}{% endif %} {{ t.rate | decimal }} % sur {{ t.base | money }}</th><td class="num">{{ t.amount | money }}</td></tr>
+  {%- elif t.reverse_charge %}
+  <tr><th>TVA {{ t.rate | decimal }} % sur {{ t.base | money }} (autoliquidation)</th><td class="num">{{ t.amount | money }}</td></tr>
+  {%- else %}
+  <tr><th>TVA {{ t.rate | decimal }} % sur {{ t.base | money }}</th><td class="num">{{ t.amount | money }}</td></tr>
+  {%- endif %}
+  {%- else %}
+  <tr><th>{{ "Taxes" if canada else "TVA" }}</th><td class="num">{{ doc.summary.total_tax | money }}</td></tr>
+  {%- endfor %}
+  <tr class="grand"><th>Total TTC {{ doc.summary.currency or company.currency }}</th><td class="num">{{ doc.summary.total_gross | money }}</td></tr>
+</table>
+{%- for t in facts.tax %}
+{%- if t.reverse_charge %}
+<p>Autoliquidation : la taxe est due par le preneur.{% if t.exemption_reason %} {{ t.exemption_reason }}{% endif %}</p>
+{%- elif t.exemption_reason %}
+<p>{{ t.exemption_reason }}</p>
+{%- endif %}
+{%- endfor %}
+{%- if not facts.service_dates %}
+<p>La date de livraison ou d'exécution de la prestation est la date de la facture.</p>
+{%- endif %}
+{%- set p = facts.payment %}
+{%- if p and p.due_date %}
+<p>Payable au plus tard le {{ p.due_date | date }}.{% if p.discount_date and p.discount_amount %} Escompte de {{ p.discount_amount | money }} {{ doc.summary.currency or company.currency }} pour paiement au plus tard le {{ p.discount_date | date }}.{% elif not canada %} Pas d'escompte pour paiement anticipé.{% endif %}</p>
+{%- endif %}
+{%- if not canada %}
+<p class="muted">En cas de retard de paiement, des pénalités sont exigibles de plein droit au taux d'intérêt appliqué par la Banque centrale européenne à son opération de refinancement la plus récente, majoré de 10 points (art. L. 441-10 du Code de commerce), ainsi qu'une indemnité forfaitaire pour frais de recouvrement de 40 € (art. D. 441-5 du Code de commerce).</p>
+{%- endif %}
+<!--FOOT-->

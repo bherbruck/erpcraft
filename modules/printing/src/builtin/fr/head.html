@@ -1,0 +1,30 @@
+<div class="page">
+<header class="head">
+  <div class="letterhead">
+    {%- if letterhead and letterhead.logo %}<img class="logo" src="#logo" alt="">{% endif %}
+    <div class="company-name">{{ letterhead.name if letterhead else company.name }}</div>
+    {%- set lh = letterhead %}
+    {%- if lh and lh.city %}
+    <div class="address">{% if lh.street %}{{ lh.street }}<br>{% endif %}{% if lh.additional_street %}{{ lh.additional_street }}<br>{% endif %}{% if lh.country_code == "CA" %}{{ lh.city }}{% if lh.region %} ({{ lh.region }}){% endif %} {{ lh.postcode or "" }}{% else %}{{ lh.postcode or "" }} {{ lh.city }}{% endif %}{% if lh.country_code %}, {{ lh.country_code }}{% endif %}</div>
+    {%- if lh.ca_bn %}<div class="muted">TPS/TVH n° {{ lh.ca_bn }}</div>{% endif %}
+    {%- if lh.ca_qst %}<div class="muted">TVQ n° {{ lh.ca_qst }}</div>{% endif %}
+    {%- if lh.siren %}<div class="muted">SIREN {{ lh.siren }}</div>{% endif %}
+    {%- if lh.vat_id %}<div class="muted">N° TVA intracommunautaire {{ lh.vat_id }}</div>{% endif %}
+    {%- if lh.tax_number %}<div class="muted">N° fiscal {{ lh.tax_number }}</div>{% endif %}
+    {%- else %}
+    <div class="muted">{{ company.code }}</div>
+    {%- endif %}
+  </div>
+  <div>
+    <h1>{{ heading or meta.label }}</h1>
+    <table class="facts">
+      <tr><th>{{ number_label or "Numéro" }}</th><td>{{ doc.number or "Brouillon" }}</td></tr>
+      <tr><th>{{ date_label or "Date" }}</th><td>{{ doc.doc_date | date }}</td></tr>
+      {%- if extra_label %}<tr><th>{{ extra_label }}</th><td>{{ extra_value }}</td></tr>{% endif %}
+      <tr><th>Monnaie</th><td>{{ doc.summary.currency or company.currency }}</td></tr>
+      {%- if doc.status not in ["open", "posted", "issued"] %}
+      <tr><th>État</th><td>{{ "Brouillon" if doc.status == "draft" else doc.status }}</td></tr>
+      {%- endif %}
+    </table>
+  </div>
+</header>

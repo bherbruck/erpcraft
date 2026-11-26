@@ -118,6 +118,8 @@ pub(crate) async fn letterhead(ctx: &mut Ctx<'_>, company_id: Uuid, name: &str) 
         "tax_number": party.tax_id("tax_number"),
         "us_ein": party.tax_id("us_ein"),
         "ca_bn": party.tax_id("ca_bn"),
+        "ca_qst": party.tax_id("ca_qst"),
+        "siren": party.tax_id("fr_siren"),
         "legal_registration": party.legal_registration,
         "legal_info": party.legal_info,
         "phone": party.contact_phone,

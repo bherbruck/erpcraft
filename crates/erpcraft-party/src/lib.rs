@@ -35,7 +35,10 @@ pub struct PartyModule;
 
 impl Module for PartyModule {
     fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
-        vec![("de", include_str!("../i18n/de.json"))]
+        vec![
+            ("de", include_str!("../i18n/de.json")),
+            ("fr", include_str!("../i18n/fr.json")),
+        ]
     }
 
     fn name(&self) -> &'static str {
@@ -67,6 +70,11 @@ impl Module for PartyModule {
                 version: 4,
                 name: "language",
                 sql: include_str!("../migrations/0004_language.sql"),
+            },
+            Migration {
+                version: 5,
+                name: "quebec_france_ids",
+                sql: include_str!("../migrations/0005_quebec_france_ids.sql"),
             },
         ]
     }
@@ -157,7 +165,8 @@ pub struct PartyData {
     /// The party's address it was read from, while that is on record.
     #[serde(skip)]
     pub address_id: Option<Uuid>,
-    /// `eu_vat`, `tax_number`, `us_ein`, `ca_bn` or `other`, and the value.
+    /// `eu_vat`, `tax_number`, `us_ein`, `ca_bn`, `ca_qst`, `fr_siren` or
+    /// `other`, and the value.
     pub tax_ids: Vec<(String, String)>,
     /// The scheme and the address.
     pub electronic_address: Option<(String, String)>,
@@ -892,7 +901,9 @@ fn billing() -> String {
 #[serde(deny_unknown_fields)]
 pub struct TaxIdRecord {
     /// `eu_vat`, `tax_number` (a national tax number, such as the German
-    /// Steuernummer), `us_ein`, `ca_bn` or `other`. One of each.
+    /// Steuernummer), `us_ein`, `ca_bn` (the Canadian business number, which
+    /// carries the GST/HST account), `ca_qst` (the Quebec sales tax number),
+    /// `fr_siren` (nine digits) or `other`. One of each.
     pub scheme: String,
     /// As the authority writes it, such as DE123456789.
     pub value: String,
@@ -1351,9 +1362,13 @@ pub struct PartyView {
     pub additional_street: Option<String>,
     pub city: Option<String>,
     pub postcode: Option<String>,
+    pub region: Option<String>,
     pub country_code: Option<String>,
     pub vat_id: Option<String>,
     pub tax_number: Option<String>,
+    pub ca_bn: Option<String>,
+    pub ca_qst: Option<String>,
+    pub siren: Option<String>,
     pub legal_registration: Option<String>,
     pub legal_info: Option<String>,
     pub contact_name: Option<String>,
@@ -1376,9 +1391,13 @@ impl From<PartyData> for PartyView {
             additional_street: address.additional_street,
             city: address.city,
             postcode: address.postcode,
+            region: address.region,
             country_code: has_address.then_some(address.country_code),
             vat_id: d.tax_id("eu_vat"),
             tax_number: d.tax_id("tax_number"),
+            ca_bn: d.tax_id("ca_bn"),
+            ca_qst: d.tax_id("ca_qst"),
+            siren: d.tax_id("fr_siren"),
             legal_registration: d.legal_registration,
             legal_info: d.legal_info,
             contact_name: d.contact_name,

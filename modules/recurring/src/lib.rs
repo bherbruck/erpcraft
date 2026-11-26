@@ -22,7 +22,10 @@ pub struct RecurringModule;
 
 impl Module for RecurringModule {
     fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
-        vec![("de", include_str!("../i18n/de.json"))]
+        vec![
+            ("de", include_str!("../i18n/de.json")),
+            ("fr", include_str!("../i18n/fr.json")),
+        ]
     }
 
     fn name(&self) -> &'static str {

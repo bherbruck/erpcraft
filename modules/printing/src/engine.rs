@@ -616,18 +616,49 @@ fn locale(state: &State) -> String {
 }
 
 /// A number written as [`format_decimal`] writes it, in the page's
-/// language: `1.234,56` in German.
+/// language: `1.234,56` in German, `1 234,56` in French (the thousands
+/// set apart by a no-break space, so that a number never breaks across
+/// lines).
 fn localized(state: &State, text: String) -> String {
-    if locale(state) != "de" {
-        return text;
-    }
+    let thousands = match locale(state).as_str() {
+        "de" => '.',
+        "fr" => '\u{a0}',
+        _ => return text,
+    };
     text.chars()
         .map(|c| match c {
-            ',' => '.',
+            ',' => thousands,
             '.' => ',',
             c => c,
         })
         .collect()
+}
+
+/// The months as French writes them in a date: `31 mars 2026`.
+const FRENCH_MONTHS: [&str; 12] = [
+    "janvier",
+    "février",
+    "mars",
+    "avril",
+    "mai",
+    "juin",
+    "juillet",
+    "août",
+    "septembre",
+    "octobre",
+    "novembre",
+    "décembre",
+];
+
+/// `1er mars 2026`, `31 mars 2026`: the first of a month is an ordinal
+/// in French, in Quebec as in France.
+fn french_date(day: NaiveDate) -> String {
+    use chrono::Datelike;
+    let month = FRENCH_MONTHS[day.month0() as usize];
+    match day.day() {
+        1 => format!("1er {month} {}", day.year()),
+        d => format!("{d} {month} {}", day.year()),
+    }
 }
 
 /// The decimal places of the company's currency, as the context has it.
@@ -680,15 +711,23 @@ fn decimal(state: &State, value: Value, places: Option<u32>) -> Result<String, T
         .unwrap_or_default())
 }
 
-/// `{{ doc.doc_date | date }}` as `31 Mar 2026` (in German `31.03.2026`),
-/// or `date("%Y-%m-%d")`.
+/// `{{ doc.doc_date | date }}` as `31 Mar 2026` (in German `31.03.2026`,
+/// in French `31 mars 2026`), or `date("%Y-%m-%d")`.
 fn date(state: &State, value: Value, format: Option<String>) -> Result<String, TemplateError> {
     let Some(text) = value.as_str().map(str::trim).filter(|t| !t.is_empty()) else {
         return Ok(String::new());
     };
+    if format.is_none() && locale(state) == "fr" {
+        let day = NaiveDate::from_str(text).or_else(|_| {
+            DateTime::parse_from_rfc3339(text).map(|at| at.with_timezone(&Utc).date_naive())
+        });
+        return day
+            .map(french_date)
+            .map_err(|_| invalid(format!("'{text}' is not a date")));
+    }
     // Day, month in letters, year: read the same everywhere, which a
-    // numeric date is not (03/04 is March or April). There is no locale
-    // on a company yet to choose otherwise.
+    // numeric date is not (03/04 is March or April); German pages write
+    // the numeric date Germans read, French ones the month in French.
     let format = format.unwrap_or_else(|| match locale(state).as_str() {
         "de" => "%d.%m.%Y".into(),
         _ => "%-d %b %Y".into(),
@@ -829,7 +868,15 @@ fn show(
             })
         }
         "date" | "timestamp" => date(state, value, None),
-        "bool" => Ok(if value.is_true() { "Yes" } else { "No" }.to_owned()),
+        "bool" => Ok(match (locale(state).as_str(), value.is_true()) {
+            ("de", true) => "Ja",
+            ("de", false) => "Nein",
+            ("fr", true) => "Oui",
+            ("fr", false) => "Non",
+            (_, true) => "Yes",
+            (_, false) => "No",
+        }
+        .to_owned()),
         // A line's lots, from the stock ledger's `lots` field.
         "json"
             if attr(&field, "name")
@@ -1070,5 +1117,27 @@ mod tests {
             "0.3|12.50|1.23456|123,456,789,012.34|123,456,789,012|10.5|10.50|31 Mar 2026|31.03.2026|W-1 Widget|W-1||"
         );
         assert!(render("{{ day | date('%Q') }}", &ctx).is_err());
+    }
+
+    #[test]
+    fn french_pages_write_numbers_and_dates_in_french() {
+        let ctx = json!({
+            "locale": "fr",
+            "company": { "decimals": 2 },
+            "amount": "1234567.5",
+            "day": "2026-03-31",
+            "first": "2026-03-01",
+            "at": "2026-08-15T10:00:00Z",
+        });
+        let page = body(&render(
+            "{{ amount | money }}|{{ '-0.5' | decimal }}|{{ day | date }}|{{ first | date }}|{{ at | date }}|{{ day | date('%Y-%m-%d') }}",
+            &ctx,
+        )
+        .unwrap());
+        assert_eq!(
+            page,
+            "1&nbsp;234&nbsp;567,50|-0,5|31 mars 2026|1er mars 2026|15 août 2026|2026-03-31"
+        );
+        assert!(render("{{ 'soon' | date }}", &ctx).is_err());
     }
 }

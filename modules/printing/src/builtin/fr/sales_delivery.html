@@ -1,0 +1,41 @@
+{%- set home = letterhead.country_code if letterhead else none %}
+{%- set heading = "Bon de livraison" %}
+{%- set number_label = "N° de livraison" %}
+{%- set date_label = "Date de livraison" %}
+<!--HEAD-->
+<section class="parties">
+  <div>
+    <h2>Livré à</h2>
+    <div class="party-name">{{ doc.summary.customer_id | ref or doc.summary.customer_name }}</div>
+    {%- set s = parties.ship_to if parties and parties.ship_to else (parties.buyer if parties else none) %}
+    {%- if s and s.city %}
+    <div class="address">{% if s.attention %}{{ s.attention }}<br>{% endif %}{% if s.street %}{{ s.street }}<br>{% endif %}{% if s.country_code == "CA" %}{{ s.city }}{% if s.region %} ({{ s.region }}){% endif %} {{ s.postcode or "" }}{% else %}{{ s.postcode or "" }} {{ s.city }}{% endif %}{% if s.country_code and s.country_code != home %}, {{ s.country_code }}{% endif %}</div>
+    {%- endif %}
+  </div>
+  <div>
+    <h2>Commande</h2>
+    <div>{{ doc.body.sales_order_id | ref }}</div>
+  </div>
+</section>
+<table class="lines">
+  <thead>
+    <tr><th class="num">Ligne</th><th>Article</th><th class="num">Qté</th><th>Unité</th><th>Lot / n° de série</th></tr>
+  </thead>
+  <tbody>
+  {%- for line in doc.body.lines %}
+    {%- set ordered = refs[line.order_line_id].record %}
+    <tr>
+      <td class="num">{{ line.line_no }}</td>
+      <td>{{ line.order_line_id | ref }}</td>
+      <td class="num">{{ line.qty | decimal }}</td>
+      <td>{{ ordered.uom or refs[ordered.item_id].record.uom }}</td>
+      <td class="short">{{ line.lots | lots }}</td>
+    </tr>
+  {%- endfor %}
+  </tbody>
+</table>
+<table class="totals">
+  <tr class="grand"><th>Lignes</th><td class="num">{{ doc.body.lines | length }}</td></tr>
+</table>
+<div class="signature"><div>Marchandise reçue</div><div>Date, signature</div></div>
+<!--FOOT-->

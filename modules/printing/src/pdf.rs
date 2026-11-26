@@ -274,9 +274,15 @@ fn runs_of(node: &Handle, style: Style, out: &mut Vec<Run>) {
                     }
                 }
             } else {
-                let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                let lead = contents.borrow().starts_with(char::is_whitespace);
-                let trail = contents.borrow().ends_with(char::is_whitespace);
+                // HTML collapses ASCII white space only: a no-break space
+                // (French sets thousands apart with one) stays, and holds.
+                let text = text.split_ascii_whitespace().collect::<Vec<_>>().join(" ");
+                let lead = contents
+                    .borrow()
+                    .starts_with(|c: char| c.is_ascii_whitespace());
+                let trail = contents
+                    .borrow()
+                    .ends_with(|c: char| c.is_ascii_whitespace());
                 let mut t = String::new();
                 if lead {
                     t.push(' ');

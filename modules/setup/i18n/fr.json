@@ -1,0 +1,21 @@
+{
+  "'{}' is not a setup template; there are: {}": "'{}' n'est pas un modèle de configuration; les modèles sont : {}",
+  ", ": ", ",
+  "Bank account code": "Code du compte bancaire",
+  "Bank account name": "Nom du compte bancaire",
+  "Base currency": "Monnaie de base",
+  "First year": "Premier exercice",
+  "Periods": "Périodes",
+  "Set up company": "Configurer l'entreprise",
+  "Setup": "Configuration",
+  "Setup templates": "Modèles de configuration",
+  "Start month": "Mois de début",
+  "Years": "Exercices",
+  "is not a year": "n'est pas une année",
+  "must be 1 to 12": "doit être de 1 à 12",
+  "must be 1 to {MAX_YEARS}": "doit être de 1 à {MAX_YEARS}",
+  "the payment terms {} exist and are not the template's; change one of them first": "les conditions de paiement {} existent et ne sont pas celles du modèle; modifiez d'abord l'une ou l'autre",
+  "the tax code {} exists and is not the template's tax{detail}; change one of them first": "le code de taxe {} existe et n'est pas la taxe du modèle{detail}; modifiez d'abord l'un ou l'autre",
+  "the tax code {} exists with another VAT category than the template's {wanted}; change one of them first": "le code de taxe {} existe avec une autre catégorie de TVA que celle du modèle, {wanted}; modifiez d'abord l'un ou l'autre",
+  "{code} is another account of the template's chart": "{code} est un autre compte du plan comptable du modèle"
+}

@@ -1,0 +1,64 @@
+{%- set home = letterhead.country_code if letterhead else none %}
+{%- set heading = "Relevé de compte" %}
+{%- set date_label = "Au" %}
+<!--HEAD-->
+<section class="parties">
+  <div>
+    <h2>Client</h2>
+    <div class="party-name">{{ doc.body.customer_id | ref }}</div>
+    {%- if parties and parties.buyer and parties.buyer.city %}
+    {%- set b = parties.buyer %}
+    <div class="address">{% if b.street %}{{ b.street }}<br>{% endif %}{% if b.country_code == "CA" %}{{ b.city }}{% if b.region %} ({{ b.region }}){% endif %} {{ b.postcode or "" }}{% else %}{{ b.postcode or "" }} {{ b.city }}{% endif %}{% if b.country_code and b.country_code != home %}, {{ b.country_code }}{% endif %}</div>
+    {%- endif %}
+  </div>
+  <div>
+    <h2>Période</h2>
+    <div>Du {{ doc.body.from_date | date }} au {{ doc.doc_date | date }}</div>
+  </div>
+</section>
+<table class="lines">
+  <thead>
+    <tr><th>Date</th><th>Pièce</th><th class="num">Débit</th><th class="num">Paiement / crédit</th><th class="num">Solde</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>{{ doc.body.from_date | date }}</td><td>Solde d'ouverture</td><td></td><td></td><td class="num">{{ doc.body.opening | money }}</td></tr>
+  {%- for line in doc.body.activity %}
+    <tr>
+      <td>{{ line.entry_date | date }}</td>
+      <td>{{ line.number or ("Paiement" if line.kind == "settlement" else ("Annulation" if line.kind == "cancelled" else "Facture")) }}</td>
+      <td class="num">{% if line.debit != "0.0000" %}{{ line.debit | money }}{% endif %}</td>
+      <td class="num">{% if line.credit != "0.0000" %}{{ line.credit | money }}{% endif %}</td>
+      <td class="num">{{ line.balance | money }}</td>
+    </tr>
+  {%- endfor %}
+  </tbody>
+</table>
+<table class="totals">
+  <tr class="grand"><th>Solde de clôture {{ doc.body.currency }}</th><td class="num">{{ doc.body.closing | money }}</td></tr>
+</table>
+<h2>Postes ouverts</h2>
+<table class="lines">
+  <thead>
+    <tr><th>Pièce</th><th>Date</th><th>Échéance</th><th class="num">Jours de retard</th><th class="num">Montant</th><th class="num">Solde dû</th></tr>
+  </thead>
+  <tbody>
+  {%- for item in doc.body.open_items %}
+    <tr>
+      <td>{{ item.number }}</td>
+      <td>{{ item.doc_date | date }}</td>
+      <td>{{ item.due_date | date }}</td>
+      <td class="num">{{ item.days_overdue }}</td>
+      <td class="num">{{ item.amount | money }}</td>
+      <td class="num">{{ item.open | money }}</td>
+    </tr>
+  {%- endfor %}
+  </tbody>
+</table>
+<table class="totals">
+  <tr><th>Non échu</th><td class="num">{{ doc.body.current_due | money }}</td></tr>
+  <tr><th>Échu de 1 à 30 jours</th><td class="num">{{ doc.body.overdue_1_30 | money }}</td></tr>
+  <tr><th>Échu de 31 à 60 jours</th><td class="num">{{ doc.body.overdue_31_60 | money }}</td></tr>
+  <tr><th>Échu de 61 à 90 jours</th><td class="num">{{ doc.body.overdue_61_90 | money }}</td></tr>
+  <tr><th>Échu depuis plus de 90 jours</th><td class="num">{{ doc.body.overdue_over_90 | money }}</td></tr>
+</table>
+<!--FOOT-->

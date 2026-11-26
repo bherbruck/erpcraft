@@ -38,7 +38,10 @@ pub struct PrintingModule;
 
 impl Module for PrintingModule {
     fn catalogues(&self) -> Vec<(&'static str, &'static str)> {
-        vec![("de", include_str!("../i18n/de.json"))]
+        vec![
+            ("de", include_str!("../i18n/de.json")),
+            ("fr", include_str!("../i18n/fr.json")),
+        ]
     }
 
     fn name(&self) -> &'static str {
@@ -386,6 +389,7 @@ fn title(meta: &DocTypeMeta, view: &DocumentView, locale: &str) -> String {
     match &view.header.number {
         Some(number) => format!("{} {number}", meta.label),
         None if locale == "de" => format!("{} (Entwurf)", meta.label),
+        None if locale == "fr" => format!("{} (brouillon)", meta.label),
         None => format!("{} (draft)", meta.label),
     }
 }

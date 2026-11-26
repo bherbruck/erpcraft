@@ -181,31 +181,38 @@ fn messages() -> BTreeSet<(String, String)> {
 }
 
 #[tokio::test]
-async fn every_error_message_has_a_german_translation() {
+async fn every_error_message_has_a_german_and_a_french_translation() {
     let t = TestApp::start().await;
     let catalogues = t.kernel.registry().catalogues();
     let all = messages();
     assert!(all.len() > 500, "the sources were not found: {}", all.len());
-    let missing: Vec<&(String, String)> = all
-        .iter()
-        .filter(|(module, text)| catalogues.lookup("de", module, text).is_none())
-        .collect();
-    if let Ok(path) = std::env::var("ERPCRAFT_MISSING_MESSAGES") {
-        let rows: Vec<_> = missing.iter().map(|(m, t)| json!([m, t])).collect();
-        std::fs::write(path, serde_json::to_string_pretty(&rows).unwrap()).unwrap();
+    for locale in ["de", "fr"] {
+        let missing: Vec<&(String, String)> = all
+            .iter()
+            .filter(|(module, text)| catalogues.lookup(locale, module, text).is_none())
+            .collect();
+        if let Ok(path) = std::env::var("ERPCRAFT_MISSING_MESSAGES") {
+            let rows: Vec<_> = missing.iter().map(|(m, t)| json!([m, t])).collect();
+            std::fs::write(
+                format!("{path}.{locale}"),
+                serde_json::to_string_pretty(&rows).unwrap(),
+            )
+            .unwrap();
+        }
+        let shown: Vec<String> = missing
+            .iter()
+            .take(40)
+            .map(|(module, text)| format!("{module}: {text:?}"))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} error messages have no translation into {locale}; add them to the module's \
+             i18n/{locale}.json (placeholders such as {{code}}, {{}} or a trigger's % stay as \
+             they are):\n{}",
+            missing.len(),
+            shown.join("\n")
+        );
     }
-    let shown: Vec<String> = missing
-        .iter()
-        .take(40)
-        .map(|(module, text)| format!("{module}: {text:?}"))
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "{} error messages have no German translation; add them to the module's i18n/de.json \
-         (placeholders such as {{code}}, {{}} or a trigger's % stay as they are):\n{}",
-        missing.len(),
-        shown.join("\n")
-    );
     t.stop().await;
 }
 
@@ -253,6 +260,35 @@ async fn a_refusal_answers_in_the_language_asked_for() {
             .as_str()
             .unwrap()
             .contains("nicht gefunden"),
+        "{body}"
+    );
+    // And in French, by header and by parameter.
+    let (_, body) = t
+        .send(
+            "POST",
+            "/api/commands/journal_entry.post",
+            Some(&t.admin),
+            Some(post.clone()),
+            &[("accept-language", "fr-CA,fr;q=0.9,en;q=0.5")],
+        )
+        .await;
+    assert_eq!(body["error"]["code"], body_en["error"]["code"]);
+    assert_eq!(
+        body["error"]["message"], "une écriture de journal requiert au moins deux lignes",
+        "{body} {body_en}"
+    );
+    let (status, body) = t
+        .get(
+            &t.admin,
+            "/api/entities/customer/00000000-0000-0000-0000-000000000000?locale=fr",
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("introuvable"),
         "{body}"
     );
     t.stop().await;

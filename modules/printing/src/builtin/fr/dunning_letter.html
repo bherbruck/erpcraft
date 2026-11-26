@@ -1,0 +1,39 @@
+{%- set home = letterhead.country_code if letterhead else none %}
+{%- set heading = ("Rappel de paiement" if doc.body.level == 1 else ("Relance n° " ~ doc.body.level)) %}
+<!--HEAD-->
+<section class="parties">
+  <div>
+    <h2>À</h2>
+    <div class="party-name">{{ doc.body.customer_id | ref }}</div>
+    {%- if parties and parties.buyer and parties.buyer.city %}
+    {%- set b = parties.buyer %}
+    <div class="address">{% if b.street %}{{ b.street }}<br>{% endif %}{% if b.country_code == "CA" %}{{ b.city }}{% if b.region %} ({{ b.region }}){% endif %} {{ b.postcode or "" }}{% else %}{{ b.postcode or "" }} {{ b.city }}{% endif %}{% if b.country_code and b.country_code != home %}, {{ b.country_code }}{% endif %}</div>
+    {%- endif %}
+  </div>
+</section>
+{% if doc.body.text %}<div class="memo">{{ doc.body.text }}</div>{% else %}<p>Sauf erreur de notre part, les factures suivantes restent impayées à ce jour.</p>{% endif %}
+<table class="lines">
+  <thead>
+    <tr><th>Facture</th><th>Date</th><th>Échéance</th><th class="num">Jours de retard</th><th class="num">Solde dû</th><th class="num">Intérêts de retard</th></tr>
+  </thead>
+  <tbody>
+  {%- for line in doc.body.lines %}
+    <tr>
+      <td>{{ line.number }}</td>
+      <td>{{ line.doc_date | date }}</td>
+      <td>{{ line.due_date | date }}</td>
+      <td class="num">{{ line.days_overdue }}</td>
+      <td class="num">{{ line.open | money }} {{ line.currency }}</td>
+      <td class="num">{{ line.interest | money }}</td>
+    </tr>
+  {%- endfor %}
+  </tbody>
+</table>
+<table class="totals">
+  <tr><th>Frais de relance</th><td class="num">{{ doc.body.fee | money }}</td></tr>
+  {%- if doc.body.tax != "0.0000" %}<tr><th>Taxes sur les frais de relance</th><td class="num">{{ doc.body.tax | money }}</td></tr>{% endif %}
+  <tr><th>Intérêts de retard</th><td class="num">{{ doc.body.interest | money }}</td></tr>
+  <tr class="grand"><th>Facturé par la présente lettre {{ company.currency }}</th><td class="num">{{ doc.summary.total | money }}</td></tr>
+</table>
+{% if doc.body.due_date %}<p>Nous vous prions de régler le solde dû, ainsi que les frais indiqués ci-dessus, au plus tard le {{ doc.body.due_date | date }}. Si votre paiement nous est parvenu entre-temps, veuillez ne pas tenir compte de la présente.</p>{% endif %}
+<!--FOOT-->

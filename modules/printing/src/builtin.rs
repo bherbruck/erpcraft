@@ -1,8 +1,11 @@
 //! The templates built into the server: one for each of the documents a
 //! company most often hands out, and one that prints any document from
 //! its type's description, so that every type prints something. Each in
-//! English, and in German (`de`), which also carries what § 14 UStG asks
-//! of an invoice.
+//! English; in German (`de`), which also carries what § 14 UStG asks of
+//! an invoice; and in French (`fr`), whose invoice states what Quebec asks
+//! (the GST/HST and QST numbers) for a seller in Canada, and what France
+//! asks (SIREN, the VAT identifiers, the late-payment penalties and the
+//! 40 € recovery indemnity) for a seller anywhere else.
 
 pub(crate) const STYLE: &str = include_str!("builtin/style.css");
 
@@ -11,6 +14,9 @@ fn part(locale: &str, name: &str) -> &'static str {
         ("de", "head") => include_str!("builtin/de/head.html"),
         ("de", "foot") => include_str!("builtin/de/foot.html"),
         ("de", "generic") => include_str!("builtin/de/generic.html"),
+        ("fr", "head") => include_str!("builtin/fr/head.html"),
+        ("fr", "foot") => include_str!("builtin/fr/foot.html"),
+        ("fr", "generic") => include_str!("builtin/fr/generic.html"),
         (_, "head") => include_str!("builtin/head.html"),
         (_, "foot") => include_str!("builtin/foot.html"),
         _ => include_str!("builtin/generic.html"),
@@ -25,6 +31,12 @@ fn own(doc_type: &str, locale: &str) -> Option<&'static str> {
         ("de", "sales_invoice") => include_str!("builtin/de/sales_invoice.html"),
         ("de", "customer_statement") => include_str!("builtin/de/customer_statement.html"),
         ("de", "dunning_letter") => include_str!("builtin/de/dunning_letter.html"),
+        ("fr", "purchase_order") => include_str!("builtin/fr/purchase_order.html"),
+        ("fr", "sales_order") => include_str!("builtin/fr/sales_order.html"),
+        ("fr", "sales_delivery") => include_str!("builtin/fr/sales_delivery.html"),
+        ("fr", "sales_invoice") => include_str!("builtin/fr/sales_invoice.html"),
+        ("fr", "customer_statement") => include_str!("builtin/fr/customer_statement.html"),
+        ("fr", "dunning_letter") => include_str!("builtin/fr/dunning_letter.html"),
         (_, "purchase_order") => include_str!("builtin/purchase_order.html"),
         (_, "sales_order") => include_str!("builtin/sales_order.html"),
         (_, "sales_delivery") => include_str!("builtin/sales_delivery.html"),
@@ -35,9 +47,14 @@ fn own(doc_type: &str, locale: &str) -> Option<&'static str> {
     })
 }
 
-/// The language a built-in is chosen in: German for `de`, else English.
+/// The language a built-in is chosen in: German for `de`, French for
+/// `fr`, else English.
 fn language(locale: &str) -> &'static str {
-    if locale == "de" { "de" } else { "en" }
+    match locale {
+        "de" => "de",
+        "fr" => "fr",
+        _ => "en",
+    }
 }
 
 /// Whether the type has a template of its own.
@@ -60,7 +77,7 @@ mod tests {
 
     #[test]
     fn every_builtin_compiles_and_holds_nothing_active() {
-        for locale in ["en", "de"] {
+        for locale in ["en", "de", "fr"] {
             for doc_type in [
                 "purchase_order",
                 "sales_order",

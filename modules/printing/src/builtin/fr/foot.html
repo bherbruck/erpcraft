@@ -1,0 +1,10 @@
+{% if doc.memo %}<div class="memo"><h2>Remarques</h2>{{ doc.memo }}</div>{% endif %}
+{%- set lh = letterhead %}
+{%- if lh and (lh.legal_registration or lh.legal_info or lh.bank or lh.phone or lh.email) %}
+<footer class="foot">
+  <div>{{ lh.name }}{% if lh.legal_registration %}<br>{{ lh.legal_registration }}{% endif %}{% if lh.legal_info %}<br>{{ lh.legal_info }}{% endif %}</div>
+  {%- if lh.phone or lh.email %}<div>{% if lh.phone %}Téléphone {{ lh.phone }}{% endif %}{% if lh.email %}<br>Courriel {{ lh.email }}{% endif %}</div>{% endif %}
+  {%- if lh.bank %}<div>{% if lh.bank.account_name %}{{ lh.bank.account_name }}<br>{% endif %}{% if lh.bank.iban %}IBAN {{ lh.bank.iban }}{% elif lh.bank.account_number %}Compte {{ lh.bank.account_number }}{% endif %}{% if lh.bank.bic %}<br>BIC {{ lh.bank.bic }}{% endif %}</div>{% endif %}
+</footer>
+{%- endif %}
+</div>
