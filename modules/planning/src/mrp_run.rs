@@ -83,7 +83,7 @@ async fn collect(ctx: &mut Ctx<'_>, company: Uuid, as_of: NaiveDate) -> Result<G
     .await?;
     let bill_rows: Vec<BillRow> = sqlx::query_as(
         "SELECT id, item_id, output_qty * output_factor AS output, lead_time_days
-         FROM bom WHERE active ORDER BY created_at, id",
+         FROM bom WHERE active ORDER BY code, id",
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -102,7 +102,8 @@ async fn collect(ctx: &mut Ctx<'_>, company: Uuid, as_of: NaiveDate) -> Result<G
     .fetch_all(&mut *conn)
     .await?;
 
-    // Each made item by its earliest active bill.
+    // Each made item by its active bill, the first by code when it has
+    // several (as the reorder drafts take it).
     let mut bills = BTreeMap::new();
     let mut bills_of: BTreeMap<Uuid, (Uuid, i32)> = BTreeMap::new();
     for b in &bill_rows {
@@ -497,4 +498,29 @@ impl Command for Mrp {
             levels: plan.levels,
         })
     }
+}
+
+/// The planned orders of one source (`buy` or `make`) to release by a day.
+pub async fn to_release(
+    ctx: &mut Ctx<'_>,
+    company: Uuid,
+    as_of: NaiveDate,
+    release_by: NaiveDate,
+    source: &str,
+) -> Result<Vec<PlannedOrder>> {
+    let any_mrp: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM reorder_rule WHERE company_id = $1 AND method = 'mrp')",
+    )
+    .bind(company)
+    .fetch_one(&mut *ctx.conn)
+    .await?;
+    if !any_mrp {
+        return Ok(vec![]);
+    }
+    Ok(run(ctx, company, as_of)
+        .await?
+        .planned_orders
+        .into_iter()
+        .filter(|p| p.source == source && p.release_date <= release_by)
+        .collect())
 }

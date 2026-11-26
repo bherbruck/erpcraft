@@ -483,6 +483,27 @@ async fn drafted(
 /// Planning's draft commands of one company run one at a time: each
 /// counts what the other drafted, so two runs at once do not draft the same
 /// need twice. Held until the transaction ends.
+/// The last price paid for an item on an order placed (not a draft), per
+/// stock unit whatever unit it was bought in, in the accounting currency.
+async fn last_price_paid(
+    conn: &mut erpcraft_kernel::PgConnection,
+    company: Uuid,
+    item: Uuid,
+) -> Result<Option<Decimal>> {
+    Ok(sqlx::query_scalar(
+        "SELECT round(l.unit_price / l.factor, 6) FROM purchase_order_line l
+         JOIN document d ON d.id = l.document_id
+         JOIN purchase_order o ON o.document_id = l.document_id
+         WHERE d.company_id = $1 AND l.item_id = $2 AND o.currency IS NULL
+           AND d.status IN ('open', 'closed')
+         ORDER BY d.doc_date DESC, d.created_at DESC LIMIT 1",
+    )
+    .bind(company)
+    .bind(item)
+    .fetch_optional(&mut *conn)
+    .await?)
+}
+
 async fn one_draft_at_a_time(
     conn: &mut erpcraft_kernel::PgConnection,
     company: Uuid,
@@ -666,19 +687,7 @@ async fn plan(
         let unit_price = match rule.and_then(|r| r.unit_price) {
             Some(price) => Some(price),
             None if source == "buy" => {
-                sqlx::query_scalar(
-                    // Per stock unit, whatever unit it was bought in.
-                    "SELECT round(l.unit_price / l.factor, 6) FROM purchase_order_line l
-                     JOIN document d ON d.id = l.document_id
-                     JOIN purchase_order o ON o.document_id = l.document_id
-                     WHERE d.company_id = $1 AND l.item_id = $2 AND o.currency IS NULL
-                       AND d.status IN ('open', 'closed')
-                     ORDER BY d.doc_date DESC, d.created_at DESC LIMIT 1",
-                )
-                .bind(company)
-                .bind(row.item_id)
-                .fetch_optional(&mut *ctx.conn)
-                .await?
+                last_price_paid(&mut *ctx.conn, company, row.item_id).await?
             }
             None => None,
         };
@@ -782,6 +791,9 @@ pub struct DraftInput {
     doc_date: Option<NaiveDate>,
     /// Only for this vendor.
     vendor_id: Option<Uuid>,
+    /// Planned orders of MRP to release by this day are drafted; the
+    /// order date (today) when omitted.
+    release_by: Option<NaiveDate>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -794,6 +806,10 @@ pub struct DraftOutput {
     /// Suggestions to buy with no price: neither the rule's nor one paid
     /// before. No line is drafted at a price nobody agreed to.
     without_price: Vec<Suggestion>,
+    /// MRP's planned orders to buy that name no vendor, or have no price:
+    /// not drafted.
+    planned_without_vendor: Vec<mrp::PlannedOrder>,
+    planned_without_price: Vec<mrp::PlannedOrder>,
 }
 
 pub struct DraftPurchaseOrders;
@@ -811,7 +827,10 @@ impl Command for DraftPurchaseOrders {
              price paid. The orders are drafts in the accounting currency: check and approve \
              them as any other; until then they count as planned, so running it again drafts \
              nothing more. Suggestions without a vendor or a price are returned, not ordered. \
-             Takes the right to read reorder rules.",
+             For items planned by MRP, the planned orders to buy whose release date is by \
+             release_by (the order date when omitted) are drafted too, one order per vendor and \
+             due date, expected on it. Takes the right to read reorder rules (and, with MRP, \
+             the rights planning.mrp takes).",
         )
         .permission("purchase_order:create")
     }
@@ -844,9 +863,6 @@ impl Command for DraftPurchaseOrders {
                 Some(_) => {}
                 None => without_vendor.push(s.clone()),
             }
-        }
-        if by_vendor.is_empty() {
-            ctx.no_change();
         }
         let mut ids = vec![];
         for (vendor, lines) in by_vendor {
@@ -885,10 +901,73 @@ impl Command for DraftPurchaseOrders {
             .await?;
             ids.push(view.header.id);
         }
+        // MRP's planned orders to buy: one draft per vendor and due date,
+        // expected on it.
+        let release_by = input.release_by.unwrap_or(doc_date);
+        let mut planned_without_vendor = vec![];
+        let mut planned_without_price = vec![];
+        let mut by_due: BTreeMap<(Uuid, NaiveDate), Vec<(mrp::PlannedOrder, Decimal)>> =
+            BTreeMap::new();
+        for p in mrp_run::to_release(ctx, company, doc_date, release_by, "buy").await? {
+            let Some(vendor) = p.vendor_id else {
+                planned_without_vendor.push(p);
+                continue;
+            };
+            if input.vendor_id.is_some_and(|v| v != vendor) {
+                continue;
+            }
+            let rule_price: Option<Decimal> = sqlx::query_scalar(
+                "SELECT unit_price FROM reorder_rule
+                 WHERE company_id = $1 AND item_id = $2 AND warehouse_id = $3",
+            )
+            .bind(company)
+            .bind(p.item_id)
+            .bind(p.warehouse_id)
+            .fetch_optional(&mut *ctx.conn)
+            .await?
+            .flatten();
+            let price = match rule_price {
+                Some(price) => Some(price),
+                None => last_price_paid(&mut *ctx.conn, company, p.item_id).await?,
+            };
+            match price {
+                Some(price) => by_due
+                    .entry((vendor, p.due_date))
+                    .or_default()
+                    .push((p, price)),
+                None => planned_without_price.push(p),
+            }
+        }
+        for ((vendor, due), lines) in by_due {
+            let lines: Vec<serde_json::Value> = lines
+                .iter()
+                .map(|(p, price)| {
+                    json!({ "item_id": p.item_id, "warehouse_id": p.warehouse_id,
+                            "qty": p.qty, "unit_price": price.normalize() })
+                })
+                .collect();
+            let view = document::create(
+                ctx,
+                NewDocument {
+                    doc_type: "purchase_order".into(),
+                    company_id: company,
+                    doc_date,
+                    memo: Some("Drafted by planning (MRP)".into()),
+                    body: json!({ "vendor_id": vendor, "expected_date": due, "lines": lines }),
+                },
+            )
+            .await?;
+            ids.push(view.header.id);
+        }
+        if ids.is_empty() {
+            ctx.no_change();
+        }
         Ok(DraftOutput {
             purchase_order_ids: ids,
             without_vendor,
             without_price,
+            planned_without_vendor,
+            planned_without_price,
         })
     }
 }
@@ -900,6 +979,9 @@ pub struct DraftProductionInput {
     company_id: Uuid,
     /// The date of the drafted orders. Today when omitted.
     doc_date: Option<NaiveDate>,
+    /// Planned orders of MRP to start by this day are drafted; the order
+    /// date (today) when omitted.
+    release_by: Option<NaiveDate>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -926,8 +1008,11 @@ impl Command for DraftProductionOrders {
              warehouse that needs it. The orders are drafts: check and release them as any \
              other; until then what they make counts as planned, so running it again drafts \
              nothing more. Their components are not planned until they are released. Items to \
-             be made without an active bill are returned, not drafted. Takes the right to read \
-             reorder rules and bills of materials.",
+             be made without an active bill are returned, not drafted. For items planned by \
+             MRP, every planned order to make whose release date is by release_by (the order \
+             date when omitted) is drafted too, dated its release (or the order date, if that \
+             has passed) and due its due date. Takes the right to read reorder rules and bills \
+             of materials.",
         )
         .permission("production_order:create")
     }
@@ -952,9 +1037,6 @@ impl Command for DraftProductionOrders {
                 .into_iter()
                 .filter(|s| s.source == "make")
                 .partition(|s| s.note.is_none());
-        if make.is_empty() {
-            ctx.no_change();
-        }
         let mut ids = vec![];
         for s in make {
             let bom: Option<Uuid> = sqlx::query_scalar(
@@ -983,6 +1065,28 @@ impl Command for DraftProductionOrders {
             )
             .await?;
             ids.push(view.header.id);
+        }
+        // MRP's planned orders to make: one draft each, dated when it is to
+        // start (today, if that has passed) and due when it is needed.
+        let release_by = input.release_by.unwrap_or(doc_date);
+        for p in mrp_run::to_release(ctx, company, doc_date, release_by, "make").await? {
+            let Some(bom) = p.bom_id else { continue };
+            let view = document::create(
+                ctx,
+                NewDocument {
+                    doc_type: "production_order".into(),
+                    company_id: company,
+                    doc_date: p.release_date.max(doc_date),
+                    memo: Some("Drafted by planning (MRP)".into()),
+                    body: json!({ "bom_id": bom, "qty": p.qty, "warehouse_id": p.warehouse_id,
+                                  "due_date": p.due_date }),
+                },
+            )
+            .await?;
+            ids.push(view.header.id);
+        }
+        if ids.is_empty() {
+            ctx.no_change();
         }
         Ok(DraftProductionOutput {
             production_order_ids: ids,

@@ -235,6 +235,50 @@ async fn a_three_level_bike_is_planned_back_from_its_dates_at_two_sites() {
         "{plan}"
     );
 
+    // Drafted from the plan: a production order per planned order to make,
+    // purchase orders for the tubes, expected when they are due.
+    let made = ok(
+        &t,
+        "planning.draft_production_orders",
+        json!({ "company_id": w.c, "doc_date": "2026-12-01", "release_by": "2026-12-31" }),
+    )
+    .await;
+    // East: a bike, a frame; west: two bikes, two frames.
+    assert_eq!(
+        made["production_order_ids"].as_array().unwrap().len(),
+        6,
+        "{made}"
+    );
+    let bought = ok(
+        &t,
+        "planning.draft_purchase_orders",
+        json!({ "company_id": w.c, "doc_date": "2026-12-01", "release_by": "2026-12-31" }),
+    )
+    .await;
+    let orders = bought["purchase_order_ids"].as_array().unwrap();
+    assert_eq!(orders.len(), 2, "{bought}");
+    let (_, east_po) = t
+        .get(
+            &t.admin,
+            &format!(
+                "/api/documents/purchase_order/{}",
+                orders[0].as_str().unwrap()
+            ),
+        )
+        .await;
+    assert!(east_po["body"]["expected_date"].is_string(), "{east_po}");
+    // Planned again: the drafts meet every need.
+    let again = ok(
+        &t,
+        "planning.mrp",
+        json!({ "company_id": w.c, "as_of": "2026-12-01" }),
+    )
+    .await;
+    assert!(
+        again["planned_orders"].as_array().unwrap().is_empty(),
+        "{again}"
+    );
+
     // The reorder suggestions leave what MRP plans alone.
     let suggestions = ok(&t, "planning.suggestions", json!({ "company_id": w.c })).await;
     assert!(

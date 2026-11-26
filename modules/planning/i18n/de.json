@@ -41,6 +41,7 @@
   "Purchase qty": "Einkaufsmenge",
   "Purchase uom": "Einkaufseinheit",
   "Receipt": "Zugang",
+  "Release by": "Freigeben bis",
   "Release date": "Freigabedatum",
   "Reorder point": "Meldebestand",
   "Reorder point: keep at least the minimum, whenever. MRP: plan by date, so that each order is met on its day, with lead times, safety stock and the bills' components.": "Meldebestand: jederzeit mindestens das Minimum halten. MRP: nach Datum planen, sodass jeder Auftrag an seinem Tag erfüllt wird, mit Durchlaufzeiten, Sicherheitsbestand und den Komponenten der Stücklisten.",

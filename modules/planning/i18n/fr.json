@@ -41,6 +41,7 @@
   "Purchase qty": "Quantité d'achat",
   "Purchase uom": "Unité d'achat",
   "Receipt": "Réception",
+  "Release by": "Lancer jusqu'au",
   "Release date": "Date de lancement",
   "Reorder point": "Point de commande",
   "Reorder point: keep at least the minimum, whenever. MRP: plan by date, so that each order is met on its day, with lead times, safety stock and the bills' components.": "Point de commande : garder au moins le minimum, à tout moment. MRP : planifier par date, pour que chaque commande soit servie à son jour, avec délais, stock de sécurité et composants des nomenclatures.",
