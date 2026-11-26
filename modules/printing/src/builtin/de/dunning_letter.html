@@ -1,0 +1,38 @@
+{%- set heading = ("Zahlungserinnerung" if doc.body.level == 1 else (doc.body.level ~ ". Mahnung")) %}
+<!--HEAD-->
+<section class="parties">
+  <div>
+    <h2>An</h2>
+    <div class="party-name">{{ doc.body.customer_id | ref }}</div>
+    {%- if parties and parties.buyer and parties.buyer.city %}
+    {%- set b = parties.buyer %}
+    <div class="address">{% if b.street %}{{ b.street }}<br>{% endif %}{{ b.postcode or "" }} {{ b.city }}{% if b.country_code and b.country_code != "DE" %}, {{ b.country_code }}{% endif %}</div>
+    {%- endif %}
+  </div>
+</section>
+{% if doc.body.text %}<div class="memo">{{ doc.body.text }}</div>{% else %}<p>Bei Durchsicht unserer Buchhaltung haben wir festgestellt, dass die folgenden Rechnungen noch offen sind.</p>{% endif %}
+<table class="lines">
+  <thead>
+    <tr><th>Rechnung</th><th>Datum</th><th>Fällig</th><th class="num">Tage überfällig</th><th class="num">Offen</th><th class="num">Verzugszinsen</th></tr>
+  </thead>
+  <tbody>
+  {%- for line in doc.body.lines %}
+    <tr>
+      <td>{{ line.number }}</td>
+      <td>{{ line.doc_date | date }}</td>
+      <td>{{ line.due_date | date }}</td>
+      <td class="num">{{ line.days_overdue }}</td>
+      <td class="num">{{ line.open | money }} {{ line.currency }}</td>
+      <td class="num">{{ line.interest | money }}</td>
+    </tr>
+  {%- endfor %}
+  </tbody>
+</table>
+<table class="totals">
+  <tr><th>Mahngebühr</th><td class="num">{{ doc.body.fee | money }}</td></tr>
+  {%- if doc.body.tax != "0.0000" %}<tr><th>Umsatzsteuer auf die Mahngebühr</th><td class="num">{{ doc.body.tax | money }}</td></tr>{% endif %}
+  <tr><th>Verzugszinsen</th><td class="num">{{ doc.body.interest | money }}</td></tr>
+  <tr class="grand"><th>Mit diesem Schreiben berechnet {{ company.currency }}</th><td class="num">{{ doc.summary.total | money }}</td></tr>
+</table>
+{% if doc.body.due_date %}<p>Bitte überweisen Sie den offenen Betrag zuzüglich der hier berechneten Kosten bis zum {{ doc.body.due_date | date }}. Sollten Sie inzwischen gezahlt haben, betrachten Sie dieses Schreiben bitte als gegenstandslos.</p>{% endif %}
+<!--FOOT-->

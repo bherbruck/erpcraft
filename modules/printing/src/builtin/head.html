@@ -15,7 +15,7 @@
     {%- endif %}
   </div>
   <div>
-    <h1>{{ meta.label }}</h1>
+    <h1>{{ heading or meta.label }}</h1>
     <table class="facts">
       <tr><th>Number</th><td>{{ doc.number or "Draft" }}</td></tr>
       <tr><th>Date</th><td>{{ doc.doc_date | date }}</td></tr>

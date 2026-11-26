@@ -1,0 +1,62 @@
+<!--HEAD-->
+<section class="parties">
+  <div>
+    <h2>Statement for</h2>
+    <div class="party-name">{{ doc.body.customer_id | ref }}</div>
+    {%- if parties and parties.buyer and parties.buyer.city %}
+    {%- set b = parties.buyer %}
+    <div class="address">{% if b.street %}{{ b.street }}<br>{% endif %}{{ b.postcode or "" }} {{ b.city }}{% if b.country_code %}, {{ b.country_code }}{% endif %}</div>
+    {%- endif %}
+  </div>
+  <div>
+    <h2>Period</h2>
+    <div>{{ doc.body.from_date | date }} to {{ doc.doc_date | date }}</div>
+    <div class="muted">{{ doc.body.currency }}</div>
+  </div>
+</section>
+<table class="lines">
+  <thead>
+    <tr><th>Date</th><th>Document</th><th class="num">Charged</th><th class="num">Paid or credited</th><th class="num">Balance</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>{{ doc.body.from_date | date }}</td><td>Opening balance</td><td></td><td></td><td class="num">{{ doc.body.opening | money }}</td></tr>
+  {%- for line in doc.body.activity %}
+    <tr>
+      <td>{{ line.entry_date | date }}</td>
+      <td>{{ line.number or line.kind }}</td>
+      <td class="num">{% if line.debit != "0.0000" %}{{ line.debit | money }}{% endif %}</td>
+      <td class="num">{% if line.credit != "0.0000" %}{{ line.credit | money }}{% endif %}</td>
+      <td class="num">{{ line.balance | money }}</td>
+    </tr>
+  {%- endfor %}
+  </tbody>
+</table>
+<table class="totals">
+  <tr class="grand"><th>Closing balance {{ doc.body.currency }}</th><td class="num">{{ doc.body.closing | money }}</td></tr>
+</table>
+<h2>Open items</h2>
+<table class="lines">
+  <thead>
+    <tr><th>Document</th><th>Date</th><th>Due</th><th class="num">Days overdue</th><th class="num">Amount</th><th class="num">Open</th></tr>
+  </thead>
+  <tbody>
+  {%- for item in doc.body.open_items %}
+    <tr>
+      <td>{{ item.number }}</td>
+      <td>{{ item.doc_date | date }}</td>
+      <td>{{ item.due_date | date }}</td>
+      <td class="num">{{ item.days_overdue }}</td>
+      <td class="num">{{ item.amount | money }}</td>
+      <td class="num">{{ item.open | money }}</td>
+    </tr>
+  {%- endfor %}
+  </tbody>
+</table>
+<table class="totals">
+  <tr><th>Not yet due</th><td class="num">{{ doc.body.current_due | money }}</td></tr>
+  <tr><th>1-30 days overdue</th><td class="num">{{ doc.body.overdue_1_30 | money }}</td></tr>
+  <tr><th>31-60 days overdue</th><td class="num">{{ doc.body.overdue_31_60 | money }}</td></tr>
+  <tr><th>61-90 days overdue</th><td class="num">{{ doc.body.overdue_61_90 | money }}</td></tr>
+  <tr><th>Over 90 days overdue</th><td class="num">{{ doc.body.overdue_over_90 | money }}</td></tr>
+</table>
+<!--FOOT-->

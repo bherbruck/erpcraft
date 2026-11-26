@@ -29,6 +29,7 @@ use uuid::Uuid;
 
 mod builtin;
 mod engine;
+mod facts;
 mod letterhead;
 pub mod pdf;
 pub mod xmp;
@@ -55,6 +56,11 @@ impl Module for PrintingModule {
                 version: 2,
                 name: "company_logo",
                 sql: include_str!("../migrations/0002_company_logo.sql"),
+            },
+            Migration {
+                version: 3,
+                name: "locale",
+                sql: include_str!("../migrations/0003_locale.sql"),
             },
         ]
     }
@@ -83,6 +89,10 @@ impl Module for PrintingModule {
                          and one for all companies.",
                     ),
                 )
+                .field(FieldMeta::new("locale", "Language", FieldType::Text).help(
+                    "The language it is written in, such as de: documents to a party of \
+                         that language print with it. Empty: any language.",
+                ))
                 .field(FieldMeta::new("active", "Active", FieldType::Bool))
                 .field(FieldMeta::new("created_at", "Created", FieldType::Timestamp).readonly())
                 .order_by(&["doc_type", "name"])
@@ -297,7 +307,8 @@ async fn render(ctx: &mut Ctx<'_>, doc_type: &str, id: Uuid, source: Source) -> 
     let meta = ctx.kernel.registry().doc_type(doc_type)?.meta.clone();
     let (template_id, body, field) = match source {
         Source::Stored(asked) => {
-            let (template_id, body) = template_for(ctx, &view, asked).await?;
+            let locale = language_of(ctx, &view).await?;
+            let (template_id, body) = template_for(ctx, &view, asked, &locale).await?;
             (template_id, body, "template_id")
         }
         Source::Draft(body) => {
@@ -307,8 +318,10 @@ async fn render(ctx: &mut Ctx<'_>, doc_type: &str, id: Uuid, source: Source) -> 
             (None, body, "body")
         }
     };
-    let title = title(&meta, &view);
-    let context = context(ctx, &meta, &view, &title).await?;
+    let locale = language_of(ctx, &view).await?;
+    let meta = translated_meta(ctx, &meta, &locale);
+    let title = title(&meta, &view, &locale);
+    let context = context(ctx, &meta, &view, &title, &locale).await?;
     let html = engine::render(&body, &context).map_err(|problem| {
         Error::validation(format!("the print template cannot be rendered: {problem}"))
             .with_field(field)
@@ -369,18 +382,78 @@ impl Command for Preview {
     }
 }
 
-fn title(meta: &DocTypeMeta, view: &DocumentView) -> String {
+fn title(meta: &DocTypeMeta, view: &DocumentView, locale: &str) -> String {
     match &view.header.number {
         Some(number) => format!("{} {number}", meta.label),
+        None if locale == "de" => format!("{} (Entwurf)", meta.label),
         None => format!("{} (draft)", meta.label),
     }
 }
 
-/// The template to render with, and its id when it is a stored one.
+/// The language a document prints in: that of the party it is to (the
+/// customer of a sales document, the vendor of a purchase document), else
+/// the company's, else English.
+async fn language_of(ctx: &mut Ctx<'_>, view: &DocumentView) -> Result<String> {
+    let summary = &view.header.summary;
+    let id = |field: &str| {
+        summary[field]
+            .as_str()
+            .and_then(|s| Uuid::parse_str(s).ok())
+    };
+    let party = id("customer_id")
+        .map(|c| ("customer", c))
+        .or_else(|| id("vendor_id").map(|v| ("vendor", v)))
+        .or_else(|| {
+            let kind = summary["party_type"].as_str()?;
+            let kind = match kind {
+                "customer" => "customer",
+                "vendor" => "vendor",
+                _ => return None,
+            };
+            id("party_id").map(|p| (kind, p))
+        });
+    erpcraft_party::language(&mut *ctx.conn, view.header.company_id, party).await
+}
+
+/// The document type's description in the page's language, as
+/// `meta.describe` gives it: its labels, plurals and help.
+fn translated_meta(ctx: &Ctx<'_>, meta: &DocTypeMeta, locale: &str) -> DocTypeMeta {
+    let mut meta = meta.clone();
+    if locale == "en" {
+        return meta;
+    }
+    let catalogues = ctx.kernel.registry().catalogues();
+    let module = meta.module.clone();
+    let tr = |text: &mut String| {
+        if let Some(t) = catalogues.lookup(locale, &module, text) {
+            *text = t.to_owned();
+        }
+    };
+    let field = |f: &mut erpcraft_kernel::FieldMeta| {
+        tr(&mut f.label);
+        if let Some(help) = &mut f.help {
+            tr(help);
+        }
+    };
+    tr(&mut meta.label);
+    tr(&mut meta.plural);
+    meta.fields.iter_mut().for_each(field);
+    meta.summary.iter_mut().for_each(field);
+    for collection in &mut meta.collections {
+        tr(&mut collection.label);
+        collection.fields.iter_mut().for_each(field);
+    }
+    for state in &mut meta.states {
+        tr(&mut state.label);
+    }
+    meta
+}
+
 async fn template_for(
     ctx: &mut Ctx<'_>,
     view: &DocumentView,
     asked: Option<Uuid>,
+    locale: &str,
 ) -> Result<(Option<Uuid>, String)> {
     let doc = &view.header;
     if let Some(id) = asked {
@@ -410,15 +483,17 @@ async fn template_for(
         "SELECT id, body FROM print_template
          WHERE doc_type = $1 AND is_default AND active
            AND (company_id = $2 OR company_id IS NULL)
-         ORDER BY company_id IS NULL LIMIT 1",
+           AND (locale = $3 OR locale IS NULL)
+         ORDER BY locale IS NULL, company_id IS NULL LIMIT 1",
     )
     .bind(&doc.doc_type)
     .bind(doc.company_id)
+    .bind(locale)
     .fetch_optional(&mut *ctx.conn)
     .await?;
     Ok(match default {
         Some((id, body)) => (Some(id), body),
-        None => (None, builtin::template(&doc.doc_type)),
+        None => (None, builtin::template(&doc.doc_type, locale)),
     })
 }
 
@@ -446,6 +521,7 @@ async fn context(
     meta: &DocTypeMeta,
     view: &DocumentView,
     title: &str,
+    locale: &str,
 ) -> Result<Value> {
     let company_id = view.header.company_id;
     let (code, name, currency): (String, String, String) =
@@ -495,6 +571,8 @@ async fn context(
         "parties": parties,
         "letterhead": letterhead::letterhead(ctx, company_id, &name).await?,
         "title": title,
+        "locale": locale,
+        "facts": facts::of(ctx, view).await?,
     }))
 }
 
@@ -725,6 +803,8 @@ struct BuiltinInput {
     /// Document type, for example `sales_invoice`. The generic template is
     /// returned for a type without one of its own.
     doc_type: String,
+    /// The language: `de` for the German one; English when omitted.
+    locale: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -757,8 +837,8 @@ impl Command for Builtin {
         ctx.actor.require_any("print_template:read")?;
         ctx.kernel.registry().doc_type(&input.doc_type)?;
         Ok(BuiltinOutput {
-            body: builtin::template(&input.doc_type),
-            specific: builtin::has_own(&input.doc_type),
+            body: builtin::template(&input.doc_type, input.locale.as_deref().unwrap_or("en")),
+            specific: builtin::has_own(&input.doc_type, input.locale.as_deref().unwrap_or("en")),
         })
     }
 }

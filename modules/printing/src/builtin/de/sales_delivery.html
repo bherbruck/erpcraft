@@ -1,0 +1,40 @@
+{%- set heading = "Lieferschein" %}
+{%- set number_label = "Lieferscheinnummer" %}
+{%- set date_label = "Lieferdatum" %}
+<!--HEAD-->
+<section class="parties">
+  <div>
+    <h2>Lieferanschrift</h2>
+    <div class="party-name">{{ doc.summary.customer_id | ref or doc.summary.customer_name }}</div>
+    {%- set s = parties.ship_to if parties and parties.ship_to else (parties.buyer if parties else none) %}
+    {%- if s and s.city %}
+    <div class="address">{% if s.attention %}{{ s.attention }}<br>{% endif %}{% if s.street %}{{ s.street }}<br>{% endif %}{{ s.postcode or "" }} {{ s.city }}{% if s.country_code and s.country_code != "DE" %}, {{ s.country_code }}{% endif %}</div>
+    {%- endif %}
+  </div>
+  <div>
+    <h2>Auftrag</h2>
+    <div>{{ doc.body.sales_order_id | ref }}</div>
+  </div>
+</section>
+<table class="lines">
+  <thead>
+    <tr><th class="num">Pos.</th><th>Artikel</th><th class="num">Menge</th><th>Einheit</th><th>Charge / Seriennummer</th></tr>
+  </thead>
+  <tbody>
+  {%- for line in doc.body.lines %}
+    {%- set ordered = refs[line.order_line_id].record %}
+    <tr>
+      <td class="num">{{ line.line_no }}</td>
+      <td>{{ line.order_line_id | ref }}</td>
+      <td class="num">{{ line.qty | decimal }}</td>
+      <td>{{ ordered.uom or refs[ordered.item_id].record.uom }}</td>
+      <td class="short">{{ line.lots | lots }}</td>
+    </tr>
+  {%- endfor %}
+  </tbody>
+</table>
+<table class="totals">
+  <tr class="grand"><th>Positionen</th><td class="num">{{ doc.body.lines | length }}</td></tr>
+</table>
+<div class="signature"><div>Ware erhalten</div><div>Datum, Unterschrift</div></div>
+<!--FOOT-->

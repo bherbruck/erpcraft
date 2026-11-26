@@ -63,6 +63,11 @@ impl Module for PartyModule {
                 name: "einvoice_format",
                 sql: include_str!("../migrations/0003_einvoice_format.sql"),
             },
+            Migration {
+                version: 4,
+                name: "language",
+                sql: include_str!("../migrations/0004_language.sql"),
+            },
         ]
     }
 
@@ -724,6 +729,27 @@ fn fill_gaps(mut kept: PartyData, now: PartyData) -> PartyData {
 /// else XRechnung in UBL when it has a Leitweg-ID (an electronic address of
 /// scheme 0204, or an invoice reference shaped like one) or an electronic
 /// address other than an email, else a PDF.
+/// The language a party is written to in: its own, else (for a customer
+/// or vendor) its company's, else English.
+pub async fn language(
+    conn: &mut PgConnection,
+    company_id: Uuid,
+    party: Option<(&str, Uuid)>,
+) -> Result<String> {
+    let found: Option<String> = sqlx::query_scalar(
+        "SELECT language FROM party_profile
+         WHERE language IS NOT NULL
+           AND ((party_type = $1 AND party_id = $2) OR (party_type = 'company' AND party_id = $3))
+         ORDER BY party_type = 'company' LIMIT 1",
+    )
+    .bind(party.map(|p| p.0))
+    .bind(party.map(|p| p.1))
+    .bind(company_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(found.unwrap_or_else(|| "en".into()))
+}
+
 pub async fn einvoice_format(conn: &mut PgConnection, customer_id: Uuid) -> Result<String> {
     let (set, reference): (Option<String>, Option<String>) = sqlx::query_as(
         "SELECT einvoice_format, invoice_reference FROM party_profile
@@ -821,6 +847,12 @@ pub struct Profile {
     #[serde(default)]
     #[sqlx(default)]
     pub einvoice_format: Option<String>,
+    /// The language the party is written to in, ISO 639-1 (`de`, `en`):
+    /// its printed documents. Left out on a customer or vendor: the
+    /// company's; on the company: English.
+    #[serde(default)]
+    #[sqlx(default)]
+    pub language: Option<String>,
 }
 
 /// A postal address of the party.
@@ -924,7 +956,7 @@ async fn records(
         party_id: id,
         profile: sqlx::query_as(
             "SELECT legal_name, trading_name, legal_registration, legal_info, invoice_reference,
-                    payment_account_id, einvoice_format
+                    payment_account_id, einvoice_format, language
              FROM party_profile WHERE party_type = $1 AND party_id = $2",
         )
         .bind(k)
@@ -1104,15 +1136,16 @@ impl Command for Set {
             sqlx::query(
                 "INSERT INTO party_profile (id, party_type, party_id, legal_name, trading_name,
                      legal_registration, legal_info, invoice_reference, payment_account_id,
-                     einvoice_format)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                     einvoice_format, language)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                  ON CONFLICT (party_type, party_id) DO UPDATE SET
                      legal_name = EXCLUDED.legal_name, trading_name = EXCLUDED.trading_name,
                      legal_registration = EXCLUDED.legal_registration,
                      legal_info = EXCLUDED.legal_info,
                      invoice_reference = EXCLUDED.invoice_reference,
                      payment_account_id = EXCLUDED.payment_account_id,
-                     einvoice_format = EXCLUDED.einvoice_format",
+                     einvoice_format = EXCLUDED.einvoice_format,
+                     language = EXCLUDED.language",
             )
             .bind(new_id())
             .bind(k)
@@ -1124,6 +1157,7 @@ impl Command for Set {
             .bind(clean(p.invoice_reference))
             .bind(p.payment_account_id)
             .bind(clean(p.einvoice_format))
+            .bind(clean(p.language).map(|l| l.to_lowercase()))
             .execute(&mut *conn)
             .await?;
         }

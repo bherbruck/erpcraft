@@ -175,6 +175,7 @@
   "Kernel": "Kern",
   "Kind": "Art",
   "Label": "Bezeichnung",
+  "Language": "Sprache",
   "Last error": "Letzter Fehler",
   "Left out on an item line: what the price lists propose.": "Bei einer Artikelzeile ohne Angabe: was die Preislisten vorschlagen.",
   "Liabilities": "Verbindlichkeiten",

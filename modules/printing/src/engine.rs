@@ -606,6 +606,30 @@ pub(crate) fn format_decimal(value: Decimal, places: Option<u32>) -> String {
     }
 }
 
+/// The language the page is in, as the context has it: `en` unless it
+/// says otherwise.
+fn locale(state: &State) -> String {
+    state
+        .lookup("locale")
+        .and_then(|l| l.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "en".into())
+}
+
+/// A number written as [`format_decimal`] writes it, in the page's
+/// language: `1.234,56` in German.
+fn localized(state: &State, text: String) -> String {
+    if locale(state) != "de" {
+        return text;
+    }
+    text.chars()
+        .map(|c| match c {
+            ',' => '.',
+            '.' => ',',
+            c => c,
+        })
+        .collect()
+}
+
 /// The decimal places of the company's currency, as the context has it.
 fn currency_places(state: &State) -> u32 {
     state
@@ -620,7 +644,7 @@ fn currency_places(state: &State) -> u32 {
 fn money(state: &State, value: Value, places: Option<u32>) -> Result<String, TemplateError> {
     let places = places.unwrap_or_else(|| currency_places(state)).min(10);
     Ok(to_decimal(&value)?
-        .map(|value| format_decimal(value, Some(places)))
+        .map(|value| localized(state, format_decimal(value, Some(places))))
         .unwrap_or_default())
 }
 
@@ -631,7 +655,7 @@ fn price(state: &State, value: Value) -> Result<String, TemplateError> {
     Ok(to_decimal(&value)?
         .map(|value| {
             let places = value.normalize().scale().clamp(currency, 6);
-            format_decimal(value, Some(places))
+            localized(state, format_decimal(value, Some(places)))
         })
         .unwrap_or_default())
 }
@@ -650,21 +674,25 @@ fn mul(value: Value, other: Value) -> Result<String, TemplateError> {
 
 /// `{{ qty | decimal }}` without trailing zeros, or `decimal(3)` with
 /// exactly three places.
-fn decimal(value: Value, places: Option<u32>) -> Result<String, TemplateError> {
+fn decimal(state: &State, value: Value, places: Option<u32>) -> Result<String, TemplateError> {
     Ok(to_decimal(&value)?
-        .map(|value| format_decimal(value, places.map(|p| p.min(20))))
+        .map(|value| localized(state, format_decimal(value, places.map(|p| p.min(20)))))
         .unwrap_or_default())
 }
 
-/// `{{ doc.doc_date | date }}` as `31 Mar 2026`, or `date("%Y-%m-%d")`.
-fn date(value: Value, format: Option<String>) -> Result<String, TemplateError> {
+/// `{{ doc.doc_date | date }}` as `31 Mar 2026` (in German `31.03.2026`),
+/// or `date("%Y-%m-%d")`.
+fn date(state: &State, value: Value, format: Option<String>) -> Result<String, TemplateError> {
     let Some(text) = value.as_str().map(str::trim).filter(|t| !t.is_empty()) else {
         return Ok(String::new());
     };
     // Day, month in letters, year: read the same everywhere, which a
     // numeric date is not (03/04 is March or April). There is no locale
     // on a company yet to choose otherwise.
-    let format = format.unwrap_or_else(|| "%-d %b %Y".into());
+    let format = format.unwrap_or_else(|| match locale(state).as_str() {
+        "de" => "%d.%m.%Y".into(),
+        _ => "%-d %b %Y".into(),
+    });
     let items: Vec<Item> = StrftimeItems::new(&format).collect();
     if items.iter().any(|item| matches!(item, Item::Error)) {
         return Err(invalid(format!("'{format}' is not a date format")));
@@ -779,7 +807,7 @@ fn show(
                 "quantity" => scale.map(|scale| number.normalize().scale().min(scale)),
                 _ => scale,
             };
-            Ok(format_decimal(number, places))
+            Ok(localized(state, format_decimal(number, places)))
         }
         "link" | "document_link" | "line_link" | "entity_link" => {
             let shown = reference(state, value.clone(), form);
@@ -800,7 +828,7 @@ fn show(
                 shown
             })
         }
-        "date" | "timestamp" => date(value, None),
+        "date" | "timestamp" => date(state, value, None),
         "bool" => Ok(if value.is_true() { "Yes" } else { "No" }.to_owned()),
         // A line's lots, from the stock ledger's `lots` field.
         "json"

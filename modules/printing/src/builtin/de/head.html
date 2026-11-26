@@ -1,0 +1,28 @@
+<div class="page">
+<header class="head">
+  <div class="letterhead">
+    {%- if letterhead and letterhead.logo %}<img class="logo" src="#logo" alt="">{% endif %}
+    <div class="company-name">{{ letterhead.name if letterhead else company.name }}</div>
+    {%- set lh = letterhead %}
+    {%- if lh and lh.city %}
+    <div class="address">{% if lh.street %}{{ lh.street }}<br>{% endif %}{% if lh.additional_street %}{{ lh.additional_street }}<br>{% endif %}{{ lh.postcode or "" }} {{ lh.city }}{% if lh.country_code and lh.country_code != "DE" %}, {{ lh.country_code }}{% endif %}</div>
+    {%- if lh.tax_number %}<div class="muted">Steuernummer {{ lh.tax_number }}</div>{% endif %}
+    {%- if lh.vat_id %}<div class="muted">USt-IdNr. {{ lh.vat_id }}</div>{% endif %}
+    {%- else %}
+    <div class="muted">{{ company.code }}</div>
+    {%- endif %}
+  </div>
+  <div>
+    <h1>{{ heading or meta.label }}</h1>
+    <table class="facts">
+      <tr><th>{{ number_label or "Nummer" }}</th><td>{{ doc.number or "Entwurf" }}</td></tr>
+      <tr><th>{{ date_label or "Datum" }}</th><td>{{ doc.doc_date | date }}</td></tr>
+      {%- if extra_label %}<tr><th>{{ extra_label }}</th><td>{{ extra_value }}</td></tr>{% endif %}
+      <tr><th>Währung</th><td>{{ doc.summary.currency or company.currency }}</td></tr>
+      {%- if doc.status not in ["open", "posted", "issued"] %}
+      <tr><th>Status</th><td>{{ "Entwurf" if doc.status == "draft" else doc.status }}</td></tr>
+      {%- endif %}
+    </table>
+  </div>
+</header>
+{% if doc.memo %}<div class="memo"><h2>Hinweise</h2>{{ doc.memo }}</div>{% endif %}

@@ -12,6 +12,7 @@
   "Remove logo": "Logo entfernen",
   "Set logo": "Logo setzen",
   "The document type the template prints, such as sales_invoice.": "Die Belegart, die die Vorlage druckt, etwa sales_invoice.",
+  "The language it is written in, such as de: documents to a party of that language print with it. Empty: any language.": "Die Sprache, in der sie geschrieben ist, etwa de: Belege an einen Partner dieser Sprache werden damit gedruckt. Leer: jede Sprache.",
   "Used when no template is asked for. One per document type and company, and one for all companies.": "Wird verwendet, wenn keine Vorlage verlangt wird. Eine je Belegart und Mandant und eine für alle Mandanten.",
   "a logo is a PNG or a JPEG image": "ein Logo ist ein PNG- oder JPEG-Bild",
   "a logo is at most 512 KiB": "ein Logo hat höchstens 512 KiB",

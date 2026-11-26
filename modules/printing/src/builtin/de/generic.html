@@ -1,0 +1,33 @@
+<!--HEAD-->
+{%- set body = doc.body or {} %}
+{%- if meta.fields %}
+<table class="facts" style="margin: 0 0 6mm 0">
+  {%- for field in meta.fields %}
+  <tr><th>{{ field.label }}</th><td style="text-align:left">{{ body[field.name] | show(field) }}</td></tr>
+  {%- endfor %}
+</table>
+{%- endif %}
+{%- for collection in meta.collections %}
+{%- set columns = collection.fields | rejectattr("name", "equalto", "id") | list %}
+<h2>{{ collection.label }}</h2>
+<table class="lines" style="margin-bottom: 6mm">
+  <thead>
+    <tr>{% for field in columns %}<th{% if field.type.kind in ["decimal", "int"] %} class="num"{% endif %}>{{ field.label }}</th>{% endfor %}</tr>
+  </thead>
+  <tbody>
+  {%- for line in body[collection.name] or [] %}
+    <tr>{% for field in columns %}<td{% if field.type.kind in ["decimal", "int"] %} class="num"{% elif field.type.kind in ["link", "entity_link", "document_link", "line_link"] and field.name != collection.subject %} class="short"{% endif %}>{{ line[field.name] | show(field, none if field.name == collection.subject else "short") }}</td>{% endfor %}</tr>
+  {%- endfor %}
+  </tbody>
+</table>
+{%- endfor %}
+{%- if meta.summary %}
+<table class="totals">
+  {%- for field in meta.summary %}
+  {%- if field.type.kind == "decimal" %}
+  <tr><th>{{ field.label }}</th><td class="num">{{ doc.summary[field.name] | show(field) }}</td></tr>
+  {%- endif %}
+  {%- endfor %}
+</table>
+{%- endif %}
+<!--FOOT-->

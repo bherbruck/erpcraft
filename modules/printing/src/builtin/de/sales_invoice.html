@@ -1,0 +1,67 @@
+{%- set heading = "Rechnung" %}
+{%- set number_label = "Rechnungsnummer" %}
+{%- set date_label = "Rechnungsdatum" %}
+{%- set dates = facts.service_dates %}
+{%- set extra_label = "Leistungsdatum" %}
+{%- if dates | length == 1 %}{% set extra_value = dates[0] | date %}{% elif dates %}{% set extra_value = (dates[0] | date) ~ " – " ~ (dates[-1] | date) %}{% else %}{% set extra_value = doc.doc_date | date %}{% endif %}
+<!--HEAD-->
+<section class="parties">
+  <div>
+    <h2>Rechnungsempfänger</h2>
+    <div class="party-name">{{ (parties.buyer.name if parties and parties.buyer and parties.buyer.name) or (doc.summary.customer_id | ref) or doc.summary.customer_name }}</div>
+    {%- if parties and parties.buyer and parties.buyer.city %}
+    {%- set b = parties.buyer %}
+    <div class="address">{% if b.street %}{{ b.street }}<br>{% endif %}{% if b.additional_street %}{{ b.additional_street }}<br>{% endif %}{{ b.postcode or "" }} {{ b.city }}{% if b.country_code and b.country_code != "DE" %}, {{ b.country_code }}{% endif %}</div>
+    {%- if b.vat_id %}<div class="muted">USt-IdNr. {{ b.vat_id }}</div>{% endif %}
+    {%- if b.buyer_reference %}<div class="muted">Ihre Referenz {{ b.buyer_reference }}</div>{% endif %}
+    {%- endif %}
+  </div>
+  <div>
+    <h2>Auftrag</h2>
+    <div>{{ doc.body.sales_order_id | ref }}</div>
+  </div>
+</section>
+<table class="lines">
+  <thead>
+    <tr><th class="num">Pos.</th><th>Bezeichnung</th><th class="num">Menge</th><th>Einheit</th><th class="num">Einzelpreis</th><th class="num">Rabatt</th><th>USt</th><th class="num">Betrag netto</th></tr>
+  </thead>
+  <tbody>
+  {%- for line in doc.body.lines %}
+    {%- set ordered = refs[line.order_line_id].record if line.order_line_id else none %}
+    <tr>
+      <td class="num">{{ line.line_no }}</td>
+      <td>{% if line.order_line_id %}{{ line.order_line_id | ref }}{% elif line.charge_id %}{{ line.description or (line.charge_id | ref) }}{% else %}{{ line.description or (line.account_id | ref) }}{% endif %}{% if line.lots %}<div class="muted">{{ line.lots | lots }}</div>{% endif %}</td>
+      <td class="num">{{ line.qty | decimal }}</td>
+      <td>{% if ordered and ordered.uom %}{{ ordered.uom }}{% elif ordered and ordered.item_id %}{{ refs[ordered.item_id].record.uom }}{% endif %}</td>
+      <td class="num">{{ line.unit_price | price }}</td>
+      <td class="num">{% if line.discount_percent %}{{ line.discount_percent | decimal }} %{% endif %}{% if line.discount_amount %} {{ line.discount_amount | money }}{% endif %}</td>
+      <td class="short">{{ line.tax_code_id | ref("short") }}</td>
+      <td class="num">{% if line.net_amount is defined and line.net_amount is not none %}{{ line.net_amount | money }}{% else %}{{ line.qty | mul(line.unit_price) | money }}{% endif %}</td>
+    </tr>
+  {%- endfor %}
+  </tbody>
+</table>
+<table class="totals">
+  <tr><th>Summe netto</th><td class="num">{{ doc.summary.total_net | money }}</td></tr>
+  {%- for t in facts.tax %}
+  <tr><th>{% if t.reverse_charge %}USt {{ t.rate | decimal }} % (Steuerschuldnerschaft des Leistungsempfängers){% else %}Umsatzsteuer {{ t.rate | decimal }} %{% endif %} auf {{ t.base | money }}</th><td class="num">{{ t.amount | money }}</td></tr>
+  {%- else %}
+  <tr><th>Umsatzsteuer</th><td class="num">{{ doc.summary.total_tax | money }}</td></tr>
+  {%- endfor %}
+  <tr class="grand"><th>Gesamtbetrag {{ doc.summary.currency or company.currency }}</th><td class="num">{{ doc.summary.total_gross | money }}</td></tr>
+</table>
+{%- for t in facts.tax %}
+{%- if t.reverse_charge %}
+<p>Steuerschuldnerschaft des Leistungsempfängers (§ 13b UStG). {% if t.exemption_reason %}{{ t.exemption_reason }}{% endif %}</p>
+{%- elif t.exemption_reason %}
+<p>{{ t.exemption_reason }}</p>
+{%- endif %}
+{%- endfor %}
+{%- if not facts.service_dates %}
+<p>Das Liefer- bzw. Leistungsdatum entspricht dem Rechnungsdatum.</p>
+{%- endif %}
+{%- set p = facts.payment %}
+{%- if p and p.due_date %}
+<p>Zahlbar bis {{ p.due_date | date }} ohne Abzug.{% if p.discount_date and p.discount_amount %} Bei Zahlung bis {{ p.discount_date | date }} gewähren wir {{ p.discount_amount | money }} {{ doc.summary.currency or company.currency }} Skonto.{% endif %}</p>
+{%- endif %}
+<!--FOOT-->
