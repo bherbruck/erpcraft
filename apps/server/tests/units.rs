@@ -509,3 +509,116 @@ async fn steel_is_adjusted_and_moved_by_the_tonne_and_the_bag() {
     }
     t.stop().await;
 }
+
+#[tokio::test]
+async fn frames_are_made_by_the_pack_from_steel_by_the_tonne() {
+    let t = TestApp::start().await;
+    let s = shop(&t).await;
+    let frame = t
+        .create(
+            "item",
+            json!({ "code": "FRAME", "name": "Frame", "uom": "each" }),
+        )
+        .await;
+    t.create(
+        "item_uom",
+        json!({ "item_id": frame, "uom": "pack", "factor": "10", "purchase": false,
+                "sales": true }),
+    )
+    .await;
+    t.create(
+        "item_uom",
+        json!({ "item_id": s.steel, "uom": "third", "factor": "0.333333", "purchase": false,
+                "sales": false }),
+    )
+    .await;
+    let offset = t
+        .create(
+            "account",
+            json!({ "company_id": s.c, "code": "5190", "name": "Stock found",
+                    "account_type": "expense" }),
+        )
+        .await;
+    let (status, found) = s
+        .draft(
+            &t,
+            "stock_adjustment",
+            json!({ "offset_account_id": offset, "lines": [
+                { "item_id": s.steel, "warehouse_id": s.plant, "qty": "1", "uom": "t",
+                  "unit_cost": "900" }] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{found}");
+    s.ok(&t, "stock_adjustment.post", json!({ "id": id(&found) }))
+        .await;
+
+    // A pack of frames takes five kilograms of steel, written in tonnes.
+    let bom = t
+        .create(
+            "bom",
+            json!({ "item_id": frame, "code": "FRAME-1", "name": "Frame",
+                    "output_qty": "1", "output_uom": "pack" }),
+        )
+        .await;
+    t.create(
+        "bom_line",
+        json!({ "bom_id": bom, "item_id": s.steel, "qty": "0.005", "uom": "t" }),
+    )
+    .await;
+    let (_, line) = t
+        .get(&t.admin, &format!("/api/entities/bom_line?bom_id={bom}"))
+        .await;
+    assert_eq!(dec(&line["items"][0]["factor"]), 1000.0, "{line}");
+    // Half a third of a kilogram has more places than stock is kept in.
+    let (status, body) = t
+        .post(
+            &t.admin,
+            "/api/entities/bom_line",
+            json!({ "bom_id": bom, "item_id": s.bolt, "qty": "0.5", "uom": "third" }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::CREATED, "{body}");
+
+    // Three packs: thirty frames from fifteen kilograms.
+    let (status, order) = s
+        .draft(
+            &t,
+            "production_order",
+            json!({ "bom_id": bom, "qty": "3", "uom": "pack", "warehouse_id": s.plant }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{order}");
+    assert_eq!(order["body"]["qty"], "3");
+    assert_eq!(order["body"]["uom"], "pack");
+    let released = s
+        .ok(&t, "production_order.release", json!({ "id": id(&order) }))
+        .await;
+    assert_eq!(
+        dec(&released["body"]["components"][0]["qty"]),
+        15.0,
+        "{released}"
+    );
+    s.ok(&t, "production_order.complete", json!({ "id": id(&order) }))
+        .await;
+    assert_eq!(level(&t, &frame, &s.plant).await.0, 30.0);
+    assert_eq!(level(&t, &s.steel, &s.plant).await, (985.0, 886.5));
+
+    // Twenty frames in each: two packs' worth.
+    let (status, order) = s
+        .draft(
+            &t,
+            "production_order",
+            json!({ "bom_id": bom, "qty": "20", "warehouse_id": s.plant }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{order}");
+    let released = s
+        .ok(&t, "production_order.release", json!({ "id": id(&order) }))
+        .await;
+    assert_eq!(
+        dec(&released["body"]["components"][0]["qty"]),
+        10.0,
+        "{released}"
+    );
+    t.stop().await;
+}

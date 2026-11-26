@@ -408,8 +408,9 @@ struct Bill {
 async fn bill_of(conn: &mut PgConnection, company_id: Uuid, item_id: Uuid) -> Result<Option<Bill>> {
     // Which bill a made item is made by is not the newest one's to say:
     // with more than one active, the rollup cannot know and refuses.
-    let boms: Vec<(Uuid, Decimal)> = sqlx::query_as(
-        "SELECT id, output_qty FROM bom WHERE item_id = $1 AND active ORDER BY created_at, id",
+    let boms: Vec<(Uuid, Decimal, Decimal)> = sqlx::query_as(
+        "SELECT id, output_qty, output_factor FROM bom WHERE item_id = $1 AND active
+         ORDER BY created_at, id",
     )
     .bind(item_id)
     .fetch_all(&mut *conn)
@@ -422,11 +423,11 @@ async fn bill_of(conn: &mut PgConnection, company_id: Uuid, item_id: Uuid) -> Re
             boms.len()
         )));
     }
-    let Some((bom, output_qty)) = boms.into_iter().next() else {
+    let Some((bom, output_qty, output_factor)) = boms.into_iter().next() else {
         return Ok(None);
     };
     let components: Vec<(Uuid, Decimal)> = sqlx::query_as(
-        "SELECT item_id, qty FROM bom_line WHERE bom_id = $1 ORDER BY created_at, id",
+        "SELECT item_id, qty * factor FROM bom_line WHERE bom_id = $1 ORDER BY created_at, id",
     )
     .bind(bom)
     .fetch_all(&mut *conn)
@@ -464,7 +465,8 @@ async fn bill_of(conn: &mut PgConnection, company_id: Uuid, item_id: Uuid) -> Re
         }
     }
     Ok(Some(Bill {
-        output_qty,
+        // Per stock unit of the product: the output in stock units.
+        output_qty: output_qty * output_factor,
         components,
         labour,
         overhead,

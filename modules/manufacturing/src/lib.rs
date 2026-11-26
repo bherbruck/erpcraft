@@ -73,6 +73,11 @@ impl Module for ManufacturingModule {
                 name: "routing",
                 sql: include_str!("../migrations/0004_routing.sql"),
             },
+            Migration {
+                version: 5,
+                name: "units",
+                sql: include_str!("../migrations/0005_units.sql"),
+            },
         ]
     }
 
@@ -120,7 +125,17 @@ impl Module for ManufacturingModule {
                 .field(
                     FieldMeta::new("output_qty", "Output quantity", FieldType::Decimal)
                         .quantity()
-                        .unit_of("item_id", "uom"),
+                        .unit_in("output_uom"),
+                )
+                .field(FieldMeta::new("output_uom", "Output unit", FieldType::Text).help(
+                    "A unit of the product (item_uom) the output quantity is in; its stock unit \
+                     when left out.",
+                ))
+                .field(
+                    FieldMeta::new("output_factor", "Stock units in one", FieldType::Decimal)
+                        .quantity()
+                        .readonly()
+                        .help("How many of the product's stock unit one of the output unit is."),
                 )
                 .field(FieldMeta::new("active", "Active", FieldType::Bool))
                 .field(created())
@@ -138,8 +153,18 @@ impl Module for ManufacturingModule {
                 .field(
                     FieldMeta::new("qty", "Quantity", FieldType::Decimal)
                         .quantity()
-                        .unit_of("item_id", "uom")
+                        .unit_in("uom")
                         .required(),
+                )
+                .field(FieldMeta::new("uom", "Unit", FieldType::Text).help(
+                    "A unit of the component (item_uom) the quantity is in; its stock unit when \
+                     left out.",
+                ))
+                .field(
+                    FieldMeta::new("factor", "Stock units in one", FieldType::Decimal)
+                        .quantity()
+                        .readonly()
+                        .help("How many of the component's stock unit one of the line's unit is."),
                 )
                 .field(created())
                 .order_by(&["bom_id", "created_at", "id"])
@@ -280,14 +305,20 @@ fn validate_bom_line(_: &Registry, data: &Map<String, Value>) -> Result<()> {
 #[serde(deny_unknown_fields)]
 struct Body {
     bom_id: Uuid,
+    /// In the order's unit.
     qty: Decimal,
+    /// A unit of the product (`item_uom`); its stock unit when omitted.
+    uom: Option<String>,
     warehouse_id: Uuid,
 }
 
 #[derive(Debug, sqlx::FromRow)]
 struct Order {
     bom_id: Uuid,
+    /// In stock units.
     qty: Decimal,
+    uom: Option<String>,
+    factor: Decimal,
     warehouse_id: Uuid,
     /// The product, from the bill.
     item_id: Uuid,
@@ -433,7 +464,7 @@ async fn carries_stock(
 
 async fn load_order(conn: &mut PgConnection, document_id: Uuid) -> Result<Order> {
     let order = sqlx::query_as(
-        "SELECT o.bom_id, o.qty, o.warehouse_id, b.item_id
+        "SELECT o.bom_id, o.qty, o.uom, o.factor, o.warehouse_id, b.item_id
          FROM production_order o JOIN bom b ON b.id = o.bom_id
          WHERE o.document_id = $1",
     )
@@ -470,6 +501,14 @@ impl DocumentHandler for ProductionOrder {
                     .quantity()
                     .unit_of("item_id", "uom")
                     .required(),
+                FieldMeta::new("uom", "Unit", FieldType::Text).help(
+                    "A unit of the product (item_uom) the quantity to make is in; its stock unit \
+                     when left out.",
+                ),
+                FieldMeta::new("factor", "Stock units in one", FieldType::Decimal)
+                    .quantity()
+                    .readonly()
+                    .help("How many of the product's stock unit one of the order's unit is."),
                 FieldMeta::new("warehouse_id", "Warehouse", FieldType::link("warehouse"))
                     .required(),
                 FieldMeta::new("item_id", "Product", FieldType::link("item")).readonly(),
@@ -566,15 +605,30 @@ impl DocumentHandler for ProductionOrder {
     async fn save_body(&self, ctx: &mut Ctx<'_>, doc: &Document, body: &Value) -> Result<()> {
         let body: Body = erpcraft_kernel::input::parse(body.clone(), "production order body")?;
         check_qty(body.qty, "the quantity to make").map_err(|e| e.with_field("qty"))?;
-        let known: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM bom WHERE id = $1)")
+        let product: Option<Uuid> = sqlx::query_scalar("SELECT item_id FROM bom WHERE id = $1")
             .bind(body.bom_id)
-            .fetch_one(&mut *ctx.conn)
+            .fetch_optional(&mut *ctx.conn)
             .await?;
-        if !known {
+        let Some(product) = product else {
             return Err(
                 Error::validation("bom_id must be a bill of materials").with_field("bom_id")
             );
-        }
+        };
+        // To make in any unit of the product, kept in stock units.
+        let (uom, factor) = erpcraft_stock::units::unit(
+            &mut *ctx.conn,
+            product,
+            body.uom.as_deref(),
+            erpcraft_stock::units::Purpose::Any,
+        )
+        .await?;
+        let stock_qty = erpcraft_stock::units::to_stock_or(body.qty, factor, &uom)
+            .map_err(|e| e.with_field("qty"))?;
+        let uom = body
+            .uom
+            .as_deref()
+            .filter(|u| !u.trim().is_empty())
+            .map(|_| uom);
         let warehouse = [body.warehouse_id];
         if !company::owns_all(&mut *ctx.conn, "warehouse", &warehouse, doc.company_id).await? {
             return Err(
@@ -584,17 +638,21 @@ impl DocumentHandler for ProductionOrder {
         }
 
         sqlx::query(
-            "INSERT INTO production_order (document_id, bom_id, qty, warehouse_id)
-             VALUES ($1, $2, $3, $4)
+            "INSERT INTO production_order (document_id, bom_id, qty, warehouse_id, uom, factor)
+             VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (document_id) DO UPDATE SET
                 bom_id = EXCLUDED.bom_id,
                 qty = EXCLUDED.qty,
-                warehouse_id = EXCLUDED.warehouse_id",
+                warehouse_id = EXCLUDED.warehouse_id,
+                uom = EXCLUDED.uom,
+                factor = EXCLUDED.factor",
         )
         .bind(doc.id)
         .bind(body.bom_id)
-        .bind(body.qty)
+        .bind(stock_qty)
         .bind(body.warehouse_id)
+        .bind(uom)
+        .bind(factor)
         .execute(&mut *ctx.conn)
         .await?;
         Ok(())
@@ -621,7 +679,9 @@ impl DocumentHandler for ProductionOrder {
         let order = load_order(conn, doc.id).await?;
         Ok(json!({
             "bom_id": order.bom_id,
-            "qty": order.qty,
+            "qty": erpcraft_stock::units::from_stock(order.qty, order.factor),
+            "uom": order.uom,
+            "factor": order.factor,
             "warehouse_id": order.warehouse_id,
             "item_id": order.item_id,
             "components": load_components(conn, doc.id).await?,
@@ -673,11 +733,17 @@ impl Command for Release {
         }
         let order = load_order(&mut *ctx.conn, doc.id).await?;
         // The share lock holds the bill still while its lines are copied.
-        let (code, output_qty, active): (String, Decimal, bool) =
-            sqlx::query_as("SELECT code, output_qty, active FROM bom WHERE id = $1 FOR SHARE")
-                .bind(order.bom_id)
-                .fetch_one(&mut *ctx.conn)
-                .await?;
+        let (code, output_qty, output_factor, active): (String, Decimal, Decimal, bool) =
+            sqlx::query_as(
+                "SELECT code, output_qty, output_factor, active FROM bom WHERE id = $1 FOR SHARE",
+            )
+            .bind(order.bom_id)
+            .fetch_one(&mut *ctx.conn)
+            .await?;
+        // What the order makes in the bill's output unit, and the bill's
+        // lines in stock units: runs of the bill are the one over its
+        // output quantity.
+        let made = erpcraft_stock::units::from_stock(order.qty, output_factor);
         let facts = json!({ "bom_code": code, "active": active });
         let ruling = ctx
             .policy(INACTIVE_BOM, doc.company_id)
@@ -689,7 +755,8 @@ impl Command for Release {
             })));
         }
         let lines: Vec<(Uuid, String, Decimal)> = sqlx::query_as(
-            "SELECT l.item_id, i.code, l.qty FROM bom_line l JOIN item i ON i.id = l.item_id
+            "SELECT l.item_id, i.code, l.qty * l.factor FROM bom_line l
+             JOIN item i ON i.id = l.item_id
              WHERE l.bom_id = $1 ORDER BY l.created_at, l.id",
         )
         .bind(order.bom_id)
@@ -706,7 +773,7 @@ impl Command for Release {
         let mut quantities = Vec::with_capacity(lines.len());
         for (item_id, item, per_run) in &lines {
             let qty = per_run
-                .checked_mul(order.qty)
+                .checked_mul(made)
                 .and_then(|needed| needed.checked_div(output_qty))
                 .ok_or_else(|| Error::validation("the quantity to make is too large"))?
                 .normalize();
@@ -755,7 +822,7 @@ impl Command for Release {
                 )));
             };
             let qty = per_run
-                .checked_mul(order.qty)
+                .checked_mul(made)
                 .and_then(|needed| needed.checked_div(output_qty))
                 .ok_or_else(|| Error::validation("the quantity to make is too large"))?
                 .round_dp(6);
@@ -778,7 +845,7 @@ impl Command for Release {
         }
 
         // Its routing, at the company's work centers and rates now.
-        routing::release(ctx, doc.company_id, doc.id, order.bom_id, order.qty).await?;
+        routing::release(ctx, doc.company_id, doc.id, order.bom_id, made).await?;
         // The components are set aside for it, as far as free stock goes.
         let needs: Vec<erpcraft_stock::Need> = load_components(&mut *ctx.conn, doc.id)
             .await?
