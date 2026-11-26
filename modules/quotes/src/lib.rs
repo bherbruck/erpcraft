@@ -42,11 +42,18 @@ impl Module for QuotesModule {
     }
 
     fn migrations(&self) -> Vec<Migration> {
-        vec![Migration {
-            version: 1,
-            name: "quotes",
-            sql: include_str!("../migrations/0001_quotes.sql"),
-        }]
+        vec![
+            Migration {
+                version: 1,
+                name: "quotes",
+                sql: include_str!("../migrations/0001_quotes.sql"),
+            },
+            Migration {
+                version: 2,
+                name: "outcome_order",
+                sql: include_str!("../migrations/0002_outcome_order.sql"),
+            },
+        ]
     }
 
     fn policies(&self) -> Vec<PolicyPoint> {
@@ -411,6 +418,19 @@ impl DocumentHandler for Quote {
         }))
     }
 
+    /// `expired` as of today, whenever the quote was saved.
+    fn as_read(&self, doc: &Document, summary: &mut Value) {
+        if doc.status != "issued" {
+            return;
+        }
+        if let Some(until) = summary["valid_until"]
+            .as_str()
+            .and_then(|d| d.parse::<NaiveDate>().ok())
+        {
+            summary["expired"] = json!(until < Utc::now().date_naive());
+        }
+    }
+
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
         let header: Option<(Uuid, Option<String>, NaiveDate)> = sqlx::query_as(
             "SELECT customer_id, currency, valid_until FROM sales_quote WHERE document_id = $1",
@@ -554,7 +574,9 @@ impl Command for Accept {
         let (customer, currency, valid_until) = header(&mut *ctx.conn, &doc).await?;
         let date = input.order_date.unwrap_or_else(|| Utc::now().date_naive());
         let lines = lines(&mut *ctx.conn, doc.id).await?;
-        let days_expired = (date - valid_until).num_days();
+        // Expiry is measured on the day the customer accepts, today: an
+        // order dated back into the quote's validity does not revive it.
+        let days_expired = (date.max(Utc::now().date_naive()) - valid_until).num_days();
         if days_expired > 0 {
             let decimals = erpcraft_gl::currency_decimals(&mut *ctx.conn, &currency).await?;
             let total: Decimal = lines

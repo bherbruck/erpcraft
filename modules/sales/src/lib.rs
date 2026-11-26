@@ -2883,6 +2883,18 @@ impl Command for PostInvoice {
             )
             .await?;
             check_customer(ctx, order, SALES_INVOICE).await?;
+        } else {
+            // A direct invoice asks the same of its own customer.
+            let (code, active): (String, bool) = sqlx::query_as(
+                "SELECT c.code, c.active FROM sales_invoice i JOIN customer c ON c.id = i.customer_id
+                 WHERE i.document_id = $1",
+            )
+            .bind(doc.id)
+            .fetch_one(&mut *ctx.conn)
+            .await?;
+            let facts = policy::inactive_customer(SALES_INVOICE, &code, active);
+            ctx.decide(policy::INACTIVE_CUSTOMER, doc.company_id, facts)
+                .await?;
         }
         let lines = invoice_lines(&mut *ctx.conn, doc.id).await?;
         if lines.is_empty() {

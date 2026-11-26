@@ -607,8 +607,8 @@ impl Command for Report {
             return Err(Error::validation("`from` cannot be after `to`"));
         }
         let currency = company::base_currency(&mut *ctx.conn, b.company_id).await?;
-        let budgeted: Vec<(Uuid, NaiveDate, Option<Uuid>, Decimal)> = sqlx::query_as(
-            "SELECT account_id, month, dimension_value_id, amount FROM budget_line
+        let lines: Vec<(Uuid, Uuid, NaiveDate, Option<Uuid>, Decimal)> = sqlx::query_as(
+            "SELECT id, account_id, month, dimension_value_id, amount FROM budget_line
              WHERE budget_id = $1 AND month BETWEEN $2 AND $3",
         )
         .bind(b.id)
@@ -616,6 +616,19 @@ impl Command for Report {
         .bind(to)
         .fetch_all(&mut *ctx.conn)
         .await?;
+        // The lines as the reader may read them: by the rules on budget
+        // lines, and not at all where their amount is withheld.
+        let readable = if ctx.actor.may_withhold("budget_line:read", "amount") {
+            Default::default()
+        } else {
+            let ids: Vec<Uuid> = lines.iter().map(|l| l.0).collect();
+            erpcraft_kernel::entity::readable_ids(ctx, "budget_line", &ids).await?
+        };
+        let budgeted: Vec<(Uuid, NaiveDate, Option<Uuid>, Decimal)> = lines
+            .into_iter()
+            .filter(|l| readable.contains(&l.0))
+            .map(|(_, account, month, value, amount)| (account, month, value, amount))
+            .collect();
         let all_types: Vec<String> = ["asset", "liability", "equity", "income", "expense"]
             .iter()
             .map(|t| t.to_string())

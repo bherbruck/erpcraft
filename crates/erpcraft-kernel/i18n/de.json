@@ -363,6 +363,7 @@
   "a record with the same value already exists ({c})": "ein Datensatz mit demselben Wert existiert bereits ({c})",
   "a referenced record is missing or still in use": "ein referenzierter Datensatz fehlt oder wird noch verwendet",
   "a referenced record is missing or still in use ({c})": "ein referenzierter Datensatz fehlt oder wird noch verwendet ({c})",
+  "a reversal cannot be dated before the posting it reverses ({})": "eine Stornierung kann nicht vor der Buchung datiert sein, die sie storniert ({})",
   "a reversal cannot itself be reversed": "ein Storno kann selbst nicht storniert werden",
   "a reversal must belong to the document it reverses": "ein Storno muss zum stornierten Beleg gehören",
   "a rule cannot be empty": "eine Regel darf nicht leer sein",

@@ -14,7 +14,7 @@
   "Recurring invoice line": "Ligne de facture récurrente",
   "Recurring invoice lines": "Lignes de facture récurrente",
   "Recurring invoices": "Factures récurrentes",
-  "The others are counted from it.": "Les autres sont comptées à partir de celle-ci.",
+  "The others are counted from it; after a change of frequency, from the last invoice made.": "Les suivantes sont comptées à partir d'elle; après un changement de fréquence, à partir de la dernière facture faite.",
   "The template's company; filled in from it.": "L'entreprise du modèle; reprise de celui-ci.",
   "a recurring invoice line is of its template's company": "une ligne de facture récurrente appartient à l'entreprise de son modèle",
   "a recurring invoice that has made invoices keeps its start": "une facture récurrente qui a produit des factures conserve sa date de début",

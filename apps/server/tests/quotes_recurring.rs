@@ -51,14 +51,24 @@ async fn a_quote_is_priced_issued_and_won_into_an_order_or_lost() {
         json!({ "price_list_id": list, "item_id": widget, "unit_price": "10.00" }),
     )
     .await;
-    let quote = |price: Option<&str>| {
+    // Expiry is counted to today, so the dates are today's.
+    let today = erpcraft_kernel::Utc::now().date_naive();
+    let day = |days: i64| {
+        let mut d = today;
+        for _ in 0..days.abs() {
+            d = if days < 0 { d.pred_opt() } else { d.succ_opt() }.unwrap();
+        }
+        d.to_string()
+    };
+    let quote_until = |price: Option<&str>, from: i64, until: i64| {
         let mut line = json!({ "item_id": widget, "warehouse_id": warehouse, "qty": "5" });
         if let Some(p) = price {
             line["unit_price"] = json!(p);
         }
-        json!({ "company_id": c, "doc_date": "2026-03-01", "body": {
-            "customer_id": customer, "valid_until": "2026-03-31", "lines": [line] } })
+        json!({ "company_id": c, "doc_date": day(from), "body": {
+            "customer_id": customer, "valid_until": day(until), "lines": [line] } })
     };
+    let quote = |price: Option<&str>| quote_until(price, -5, 25);
     let (status, draft) = t
         .post(&t.admin, "/api/documents/sales_quote", quote(None))
         .await;
@@ -76,7 +86,7 @@ async fn a_quote_is_priced_issued_and_won_into_an_order_or_lost() {
     let order = run(
         &t,
         "sales_quote.accept",
-        json!({ "id": id(&draft), "reason": "Best delivery time", "order_date": "2026-03-20" }),
+        json!({ "id": id(&draft), "reason": "Best delivery time" }),
     )
     .await;
     assert_eq!(order["doc_type"], "sales_order");
@@ -122,17 +132,18 @@ async fn a_quote_is_priced_issued_and_won_into_an_order_or_lost() {
     assert_eq!(lost["status"], "lost");
     assert_eq!(lost["body"]["reason"], "A competitor was cheaper");
 
-    // Expired: refused by default, allowed for a week by a rule.
+    // Expired three days ago: refused by default, allowed for a week by a
+    // rule.
     let (_, third) = t
-        .post(&t.admin, "/api/documents/sales_quote", quote(None))
+        .post(
+            &t.admin,
+            "/api/documents/sales_quote",
+            quote_until(None, -20, -3),
+        )
         .await;
     run(&t, "sales_quote.issue", json!({ "id": id(&third) })).await;
     let (status, body) = t
-        .command(
-            &t.admin,
-            "sales_quote.accept",
-            json!({ "id": id(&third), "order_date": "2026-04-05" }),
-        )
+        .command(&t.admin, "sales_quote.accept", json!({ "id": id(&third) }))
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert!(body.to_string().contains("expired"), "{body}");
@@ -142,12 +153,7 @@ async fn a_quote_is_priced_issued_and_won_into_an_order_or_lost() {
                 "condition": "facts.days_expired <= 7" }),
     )
     .await;
-    run(
-        &t,
-        "sales_quote.accept",
-        json!({ "id": id(&third), "order_date": "2026-04-05" }),
-    )
-    .await;
+    run(&t, "sales_quote.accept", json!({ "id": id(&third) })).await;
     t.stop().await;
 }
 

@@ -659,9 +659,10 @@ An item line may leave out its price and is proposed one by the price lists, as 
 
 **States:** `draft` → `issued` (locked) → `won` or `lost`.
 - `sales_quote.issue` locks a reviewed draft; it is then printed and sent with `document.send`.
-- `sales_quote.accept` (optionally a `reason` and the order's date) drafts a sales order with the quote's lines, prices and discounts, linked to the quote, and marks it won. The order is an ordinary draft, approved as any other, so `price.override` is asked again then against the price lists. After `valid_until` a quote is refused unless the policy `sales_quote.expired` allows it (facts: `days_expired`, `total`, `currency`; refused by default).
+- `sales_quote.accept` (optionally a `reason` and the order's date) drafts a sales order with the quote's lines, prices and discounts, linked to the quote, and marks it won. The order is an ordinary draft, approved as any other, so `price.override` is asked again then against the price lists. After `valid_until` a quote is refused unless the policy `sales_quote.expired` allows it (facts: `days_expired`, `total`, `currency`; refused by default). Expiry is counted to today, or to the order's date when that is later: an order dated back into the validity does not win an expired quote.
 - `sales_quote.lose` (`reason`, required) marks it lost. The reasons are kept on the quote (`won_reason`, `lost_reason`).
-- A quote won or lost does not change again. Its summary shows `expired` once its date has passed.
+- A quote won or lost does not change again. Its summary shows `expired` once its date has passed, as of the day it is read (`DocumentHandler::as_read`); a list filters by what was stored, so a list of expired quotes filters by `valid_until`.
+- The draft order a won quote made can be deleted like any draft; the quote stays won and names no order (quotes migration 2).
 
 ### Recurring invoices
 
@@ -677,17 +678,17 @@ The module `recurring` (`modules/recurring`, migration 1) invoices a customer on
 
 **The run.** `recurring_invoice.run` (`company_id`, `as_of`, by default today) makes, for every active template whose `next_date` is on or before `as_of`, the invoice of each date due up to `as_of`, so a missed run catches up:
 - each invoice is an ordinary sales invoice without an order, dated its date, with the template's lines. Tax codes left out are proposed by the tax rules as for any invoice;
-- each is drafted, and with `post` the policy `recurring_invoice.post` is asked (facts: `total`, `currency`, `customer`, `template`; allowed by default). Allowed, the invoice is posted with `sales_invoice.post` under the rights of whoever runs it; refused, it stays a draft for a person to post;
-- the template's `next_date` moves on by its frequency (a monthly template started on the 31st falls on the last day of shorter months), its `count` goes up, and once it reaches `max_count` or passes `end_date` it is made inactive;
+- each is drafted, and with `post` the policy `recurring_invoice.post` is asked (facts: `total`, `currency` (the accounting currency's code when the template has none), `customer`, `template`; allowed by default). Allowed, the invoice is posted with `sales_invoice.post` under the rights of whoever runs it; refused, or refused when posted (a closed period, a customer the policy `customer.inactive` refuses), it stays a draft for a person to post, with why in `not_posted`;
+- the template's `next_date` moves on by its frequency (a monthly template started on the 31st falls on the last day of shorter months), its `count` goes up, and once it reaches `max_count` or passes `end_date` it is made inactive. Dates are counted from an anchor, the first invoice; when the frequency or `every` of a template that has made invoices changes, the anchor becomes the date the old schedule would have invoiced next, which stays `next_date` (recurring migration 3): the period the last invoice covered is not invoiced again, and no invoice is dated in the past;
 - each invoice is recorded against its template and date (`recurring_invoice_run`), once only, so a run repeated for the same day makes nothing twice.
 
-The output lists each invoice made and whether it was posted. Nothing runs by itself: a scheduler outside calls the command, as for any other.
+The output lists each invoice made and whether it was posted, and in `failed` each template that could not run (no lines, a date the company refuses for a draft) with why: such a template makes nothing (its part of the run is rolled back to a savepoint, `Ctx::savepoint`) and the others still run. Nothing runs by itself: a scheduler outside calls the command, as for any other.
 
 Limits:
 - Invoices only, not orders or deliveries.
 - No proration for part periods.
 - Prices change by editing the template.
-- A failed posting fails the whole run, so nothing is left half done.
+- A template is done whole or not at all; the run is not.
 
 ### Fixed assets
 
@@ -955,7 +956,7 @@ Its lines (`budget_line`) are an account, a month (the first day of it), a value
 - whether the variance is favourable: more income, or less cost, than planned;
 - totals for income, expense and the result (income minus expense) per month and for the range.
 
-The actual of a dimension value is what the entries carrying it posted, and entries without a value are their own row, as in the other reports. It takes `budget:read` and `gl_entry:read` in the company.
+The actual of a dimension value is what the entries carrying it posted, and entries without a value are their own row, as in the other reports. It takes `budget:read` and `gl_entry:read` in the company. The budgeted amounts are those of the lines the reader may read, by the rules on `budget_line` (and none where its `amount` is withheld).
 
 Limits:
 - Budgets are in the accounting currency.
@@ -967,7 +968,7 @@ Limits:
 `gl.cash_flow` (`company_id`, `from`, `to`, optionally `by_month` and `compare`) is the statement of cash flows by the indirect method, worked out from the general ledger.
 
 **Which flow an account is part of.** An account's `cash_flow` (gl migration 12) is `cash`, `operating`, `investing` or `financing`. When it is not set:
-- a bank or cash account is `cash`;
+- a bank or cash account is `cash`, unless it is an income or expense account (which is part of the net income, also for the cash at the start of a period, so that one month's closing cash is the next month's opening cash);
 - the account of an `asset_cost` account rule (the cost of a class of fixed assets) is `investing`;
 - other assets and liabilities are `operating`;
 - equity is `financing`.
@@ -986,7 +987,7 @@ Every posting balances. So the net income plus the changes of every account that
 
 **Periods.**
 - `by_month` gives a column per month of the range.
-- `compare` adds the same range a year earlier, as columns of its own.
+- `compare` adds the same range a year earlier, as columns of its own; a period that ends on the last of a month ends a year earlier on the last of that month, so a year that ends on 28 February 2025 is compared with one that ends on 29 February 2024.
 - Each row has an amount per column. Each column has its `from` and `to`, its totals, its cash at start and end, and `reconciles`.
 
 Limits:
@@ -1160,7 +1161,7 @@ Each default is what the module did before the point existed, so a company that 
 
 - `vendor.inactive` and `customer.inactive` are asked when an order is approved (`doc_type` is the order's type) and when a receipt, delivery or invoice against it is posted, active party or not. By default only approving an order for an inactive party is refused; what was ordered before can still arrive, go out and be invoiced.
 - `purchase_order.closed` and `sales_order.closed` are asked when a receipt, delivery or invoice is drafted or posted against a closed order; `complete` tells an order that closed by itself from one closed short by hand. A draft or cancelled order is never referred to: its lines can still change, or it never happened. Allowing it keeps the books and the order's progress right: the goods are counted on the order's lines like any others, valued at the order price, and owed for in goods received not invoiced. The order stays closed: posting against an order never reopens it (only a reversal that leaves it with goods not yet invoiced does, as before). By default an invoice is let through for what a closed order holds received and not invoiced, which before these points it never held, so that goods a company let in can always be invoiced.
-- `posting.date` is declared by the kernel and asked by `document::create_posting` and `document::reverse_posting`, so every posting of every module is asked, reversals with `reversal` true. `days_from_today` is the posting date minus today in UTC. It does not replace the closed-period guard, which is an invariant.
+- `posting.date` is declared by the kernel and asked by `document::create_posting` and `document::reverse_posting`, so every posting of every module is asked, reversals with `reversal` true. A reversal is never dated before the posting it reverses (an invariant, in `document::reverse_posting`, under every ledger): the books as of a day between the two would hold the undoing of something not yet done, and the general ledger and the open items as of that day would disagree. `days_from_today` is the posting date minus today in UTC. It does not replace the closed-period guard, which is an invariant.
 - `production_order.inactive_bom` is asked when a production order is released; `tax_code.use` for every invoice line with a tax code when the invoice is posted (`erpcraft_tax::quote`). A draft shows tax with `erpcraft_tax::estimate`, which asks nothing.
 
 Cancelling an order after goods were received or delivered against it stays refused, as an invariant: cancelled means the order never happened, yet the goods would remain in stock and in goods received not invoiced (or out of stock and in cost of sales) with no order left to invoice them against. Closing the order is the way to stop it; with `purchase_order.closed` a company decides what may still follow a closed order.

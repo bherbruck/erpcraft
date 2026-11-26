@@ -133,10 +133,16 @@ impl Command for CashFlow {
             let earlier: Vec<(NaiveDate, NaiveDate)> = periods
                 .iter()
                 .filter_map(|(f, t)| {
-                    Some((
-                        f.checked_sub_months(Months::new(12))?,
-                        t.checked_sub_months(Months::new(12))?,
-                    ))
+                    // A period that ends on the last of a month ends on the
+                    // last of that month a year earlier: the 29th of a
+                    // February too.
+                    let after = t.succ_opt()?;
+                    let to = if after.day() == 1 {
+                        after.checked_sub_months(Months::new(12))?.pred_opt()?
+                    } else {
+                        t.checked_sub_months(Months::new(12))?
+                    };
+                    Some((f.checked_sub_months(Months::new(12))?, to))
                 })
                 .collect();
             periods.extend(earlier);
@@ -179,7 +185,9 @@ impl Command for CashFlow {
                 "SELECT COALESCE(sum(g.debit) - sum(g.credit), 0)
                  FROM gl_entry g JOIN account a ON a.id = g.account_id
                  WHERE g.company_id = $1 AND g.posting_date < $2
-                   AND COALESCE(a.cash_flow, CASE WHEN a.is_bank THEN 'cash' END) = 'cash'",
+                   AND COALESCE(a.cash_flow,
+                           CASE WHEN a.account_type IN ('income', 'expense') THEN NULL
+                                WHEN a.is_bank THEN 'cash' END) = 'cash'",
             )
             .bind(input.company_id)
             .bind(from)

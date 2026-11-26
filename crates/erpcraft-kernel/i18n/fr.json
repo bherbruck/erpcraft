@@ -363,6 +363,7 @@
   "a record with the same value already exists ({c})": "un enregistrement avec la même valeur existe déjà ({c})",
   "a referenced record is missing or still in use": "un enregistrement référencé est manquant ou encore utilisé",
   "a referenced record is missing or still in use ({c})": "un enregistrement référencé est manquant ou encore utilisé ({c})",
+  "a reversal cannot be dated before the posting it reverses ({})": "une contrepassation ne peut pas être datée avant l'écriture qu'elle contrepasse ({})",
   "a reversal cannot itself be reversed": "une contrepassation ne peut pas elle-même être contrepassée",
   "a reversal must belong to the document it reverses": "une contrepassation doit appartenir au document qu'elle contrepasse",
   "a rule cannot be empty": "une règle ne peut pas être vide",

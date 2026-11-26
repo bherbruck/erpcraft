@@ -76,6 +76,56 @@ impl<'a> Ctx<'a> {
 /// The records a command touched, as `(resource, id)`.
 pub(crate) type Subjects = BTreeSet<(String, Uuid)>;
 
+/// A point a command can return to: a part of its work that may fail on
+/// its own, such as one template of a run, without failing the rest. See
+/// [`Ctx::savepoint`].
+#[must_use = "release the savepoint or roll back to it"]
+pub struct Savepoint {
+    name: String,
+    touched: Subjects,
+    changed: bool,
+}
+
+impl Ctx<'_> {
+    /// Mark a point in the command's transaction to roll back to. What the
+    /// context keeps beside the database (the records it touched, the
+    /// bodies it read) is kept with it.
+    pub async fn savepoint(&mut self) -> Result<Savepoint> {
+        let name = format!("part_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!("SAVEPOINT {name}"))
+            .execute(&mut *self.conn)
+            .await?;
+        Ok(Savepoint {
+            name,
+            touched: self.touched.clone(),
+            changed: self.changed,
+        })
+    }
+
+    /// Keep what was done since the savepoint.
+    pub async fn release(&mut self, point: Savepoint) -> Result<()> {
+        sqlx::query(&format!("RELEASE SAVEPOINT {}", point.name))
+            .execute(&mut *self.conn)
+            .await?;
+        Ok(())
+    }
+
+    /// Undo what was done since the savepoint, in the database and in the
+    /// context: a record touched since is no longer named in the audit.
+    pub async fn roll_back_to(&mut self, point: Savepoint) -> Result<()> {
+        sqlx::query(&format!("ROLLBACK TO SAVEPOINT {}", point.name))
+            .execute(&mut *self.conn)
+            .await?;
+        sqlx::query(&format!("RELEASE SAVEPOINT {}", point.name))
+            .execute(&mut *self.conn)
+            .await?;
+        self.touched = point.touched;
+        self.changed = point.changed;
+        self.bodies.clear();
+        Ok(())
+    }
+}
+
 impl Ctx<'_> {
     /// Declare that this run changed nothing, for example because it
     /// repeated a command that had already taken effect. No outbox event is

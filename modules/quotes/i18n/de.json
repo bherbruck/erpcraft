@@ -22,6 +22,7 @@
   "a {} quote cannot be lost": "ein Angebot im Status {} kann nicht verloren gegeben werden",
   "every stock line needs a warehouse of the quote's company": "jede Lagerzeile braucht ein Lager des Mandanten des Angebots",
   "give a unit price: no price list has one for this line": "einen Einzelpreis angeben: keine Preisliste hat einen für diese Zeile",
+  "how a quote ended is written once": "wie ein Angebot ausging, wird einmal festgehalten",
   "say why the quote was lost": "angeben, warum das Angebot verloren ging",
   "the customer does not exist": "der Debitor existiert nicht",
   "the quote has expired": "das Angebot ist abgelaufen",

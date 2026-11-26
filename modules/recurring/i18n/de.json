@@ -14,7 +14,7 @@
   "Recurring invoice line": "Zeile der Abo-Rechnung",
   "Recurring invoice lines": "Zeilen der Abo-Rechnung",
   "Recurring invoices": "Abo-Rechnungen",
-  "The others are counted from it.": "Die weiteren werden ab ihr gezählt.",
+  "The others are counted from it; after a change of frequency, from the last invoice made.": "Die weiteren werden davon an gezählt; nach einer Änderung der Häufigkeit von der zuletzt erstellten Rechnung an.",
   "The template's company; filled in from it.": "Der Mandant der Vorlage; wird aus ihr übernommen.",
   "a recurring invoice line is of its template's company": "eine Zeile einer Abo-Rechnung gehört zum Mandanten ihrer Vorlage",
   "a recurring invoice that has made invoices keeps its start": "eine Abo-Rechnung, die schon Rechnungen erstellt hat, behält ihren Beginn",

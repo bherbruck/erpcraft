@@ -202,6 +202,8 @@ pub(crate) struct ProposalsOutput {
 #[derive(sqlx::FromRow)]
 struct Item {
     id: Uuid,
+    /// The item's date: a line dated before it cannot pay it.
+    doc_date: NaiveDate,
     party_type: String,
     party_id: Uuid,
     open: Decimal,
@@ -272,7 +274,8 @@ impl Command for Proposals {
         let mut names: HashMap<Uuid, String> = HashMap::new();
         if read_items {
             items = sqlx::query_as(
-                "SELECT i.id, i.party_type, i.party_id, i.txn_amount - i.txn_settled AS open,
+                "SELECT i.id, i.doc_date, i.party_type, i.party_id,
+                        i.txn_amount - i.txn_settled AS open,
                         d.number
                  FROM open_item i JOIN posting p ON p.id = i.posting_id
                  JOIN document d ON d.id = p.document_id
@@ -384,6 +387,7 @@ impl Command for Proposals {
                 let candidates: Vec<&Item> = items
                     .iter()
                     .filter(|i| item_kind.get(&i.id).map(String::as_str) == Some(wanted))
+                    .filter(|i| i.doc_date <= line.booking_date)
                     .collect();
                 // Documents the reference names, grouped by party.
                 let mut by_party: HashMap<(String, Uuid), Vec<&Item>> = HashMap::new();

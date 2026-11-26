@@ -106,6 +106,24 @@ async fn a_quote_reads_expired_once_its_date_passes() {
     .execute(&mut *tx)
     .await
     .unwrap();
+    // The summary keeps the date as it was saved, as it would have been.
+    sqlx::query("ALTER TABLE document DISABLE TRIGGER document_guard")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE document SET summary = jsonb_set(summary, '{valid_until}',
+             to_jsonb((SELECT valid_until::text FROM sales_quote WHERE document_id = $1::uuid)))
+         WHERE id = $1::uuid",
+    )
+    .bind(id(&draft))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query("ALTER TABLE document ENABLE TRIGGER document_guard")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     sqlx::query("ALTER TABLE sales_quote ENABLE TRIGGER sales_quote_guard")
         .execute(&mut *tx)
         .await
@@ -133,6 +151,13 @@ async fn a_won_quotes_draft_order_can_be_discarded() {
     let (c, customer, created) = shop(&t).await;
     let revenue = created["roles"]["revenue"]["id"].clone();
     let quote = issued_quote(&t, &c, &customer, &revenue).await;
+    // The quote's date has passed by now: the company still takes it.
+    t.create(
+        "policy_rule",
+        json!({ "company_id": c, "point": "sales_quote.expired", "effect": "allow",
+                "condition": "facts.days_expired > 0" }),
+    )
+    .await;
     let order = run(
         &t,
         "sales_quote.accept",
@@ -365,6 +390,51 @@ async fn a_schedule_does_not_post_to_a_customer_switched_off() {
     assert!(
         status != StatusCode::OK || made["invoices"][0]["posted"] == false,
         "an invoice was posted to a customer the company switched off: {made}"
+    );
+    t.stop().await;
+}
+
+/// One template that cannot run (here: it has no lines) is reported, and
+/// the others still make their invoices.
+#[tokio::test]
+async fn one_template_that_fails_does_not_stop_the_others() {
+    let t = TestApp::start().await;
+    let (c, customer, created) = shop(&t).await;
+    let revenue = created["roles"]["revenue"]["id"].clone();
+    let empty = t
+        .create(
+            "recurring_invoice",
+            json!({ "company_id": c, "code": "AAA", "name": "No lines",
+                    "customer_id": customer, "frequency": "monthly", "starts_on": "2026-01-01" }),
+        )
+        .await;
+    let rent = t
+        .create(
+            "recurring_invoice",
+            json!({ "company_id": c, "code": "RENT", "name": "Rent",
+                    "customer_id": customer, "frequency": "monthly", "starts_on": "2026-01-01" }),
+        )
+        .await;
+    t.create(
+        "recurring_invoice_line",
+        json!({ "recurring_invoice_id": rent, "account_id": revenue, "description": "Rent",
+                "qty": "1", "unit_price": "100.00" }),
+    )
+    .await;
+    let made = run(
+        &t,
+        "recurring_invoice.run",
+        json!({ "company_id": c, "as_of": "2026-02-15" }),
+    )
+    .await;
+    assert_eq!(made["invoices"].as_array().unwrap().len(), 2, "{made}");
+    assert_eq!(made["failed"][0]["recurring_invoice_id"], empty, "{made}");
+    assert!(
+        made["failed"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("no lines"),
+        "{made}"
     );
     t.stop().await;
 }

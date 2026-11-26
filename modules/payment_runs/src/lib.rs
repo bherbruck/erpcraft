@@ -531,6 +531,8 @@ impl Command for Propose {
              WHERE i.company_id = $1 AND i.kind = 'payable' AND i.party_type = 'vendor'
                AND COALESCE(i.currency, $2) = $3
                AND COALESCE(i.txn_amount, i.amount) <> COALESCE(i.txn_settled, i.settled)
+               -- A payment settles what exists by its date.
+               AND i.doc_date <= $5
                AND NOT EXISTS (SELECT 1 FROM payment_hold h WHERE h.company_id = i.company_id
                                AND h.active AND (h.vendor_id = i.party_id OR h.open_item_id = i.id))
                AND NOT EXISTS (SELECT 1 FROM payment_run_line l JOIN document d ON d.id = l.document_id
@@ -542,6 +544,7 @@ impl Command for Propose {
         .bind(&base)
         .bind(&header.currency)
         .bind(doc.id)
+        .bind(doc.doc_date)
         .fetch_all(&mut *ctx.conn)
         .await?;
         let items = erpcraft_openitems::lock(&mut *ctx.conn, doc.company_id, &candidates).await?;

@@ -1291,6 +1291,15 @@ impl Command for DraftPayment {
         let date = input
             .doc_date
             .unwrap_or_else(|| erpcraft_kernel::Utc::now().date_naive());
+        // A payment settles what exists by its date.
+        if let Some(later) = items.iter().find(|i| i.doc_date > date) {
+            return Err(Error::validation(format!(
+                "an item dated {} cannot be settled by a posting dated {}: take the money on \
+                 account and apply it once the item exists",
+                later.doc_date, date
+            ))
+            .with_field("doc_date"));
+        }
         // Paid by its discount date, an item is paid less its discount.
         let allocations: Vec<Value> = items
             .iter()

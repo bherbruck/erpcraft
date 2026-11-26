@@ -22,6 +22,7 @@
   "a {} quote cannot be lost": "impossible de marquer comme perdue une soumission à l'état {}",
   "every stock line needs a warehouse of the quote's company": "chaque ligne de stock exige un entrepôt de l'entreprise de la soumission",
   "give a unit price: no price list has one for this line": "indiquez un prix unitaire : aucune liste de prix n'en a pour cette ligne",
+  "how a quote ended is written once": "l'issue d'une soumission n'est inscrite qu'une fois",
   "say why the quote was lost": "indiquez pourquoi la soumission a été perdue",
   "the customer does not exist": "le client n'existe pas",
   "the quote has expired": "la soumission est expirée",

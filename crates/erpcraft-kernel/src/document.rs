@@ -137,6 +137,11 @@ pub trait DocumentHandler: Send + Sync + 'static {
         Ok(json!({}))
     }
 
+    /// Correct the stored figures of `doc` as it is read, for a figure that
+    /// changes with the date alone (a quote that expires): what is stored
+    /// was true when it was saved. Lists filter and sort by what is stored.
+    fn as_read(&self, _doc: &Document, _summary: &mut Value) {}
+
     /// The same figures, worked out from `body`: the document's body as
     /// [`DocumentHandler::load_body`] returned it a moment ago. The kernel
     /// calls this one; implement it to read the lines from the body instead
@@ -591,11 +596,21 @@ fn clean_memo(memo: Option<String>) -> Option<String> {
 /// reader may not read: a vendor's name on an order, for a reader who may
 /// read the order but not that vendor (or not its name). See
 /// [`FieldMeta::shown_from`](crate::FieldMeta::shown_from).
+///
+/// First each type corrects what changes with the date alone; see
+/// [`DocumentHandler::as_read`].
 pub async fn redact_summaries(ctx: &mut Ctx<'_>, docs: &mut [&mut Document]) -> Result<()> {
+    let kernel = ctx.kernel;
+    for doc in docs.iter_mut() {
+        if let Ok(entry) = kernel.registry().doc_type(&doc.doc_type) {
+            let mut summary = std::mem::take(&mut doc.summary);
+            entry.handler.as_read(doc, &mut summary);
+            doc.summary = summary;
+        }
+    }
     if ctx.actor.is_admin || docs.is_empty() {
         return Ok(());
     }
-    let kernel = ctx.kernel;
     let Ok(entry) = kernel.registry().doc_type(&docs[0].doc_type) else {
         return Ok(());
     };
@@ -1367,6 +1382,14 @@ pub async fn reverse_posting(
         return Err(Error::state("the posting is already reversed"));
     }
     let posting_date = posting_date.unwrap_or(original.posting_date);
+    // A reversal undoes what was; dated before it, the books as of a day
+    // between the two would hold the undoing of something not yet done.
+    if posting_date < original.posting_date {
+        return Err(Error::validation(format!(
+            "a reversal cannot be dated before the posting it reverses ({})",
+            original.posting_date
+        )));
+    }
     let doc_type: String = sqlx::query_scalar("SELECT doc_type FROM document WHERE id = $1")
         .bind(original.document_id)
         .fetch_optional(&mut *ctx.conn)
