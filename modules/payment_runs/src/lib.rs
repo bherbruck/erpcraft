@@ -219,6 +219,47 @@ pub(crate) async fn load_lines(conn: &mut PgConnection, id: Uuid) -> Result<Vec<
     .await?)
 }
 
+/// A payment settles what exists by its date: every line whose item is
+/// dated after the run is named, rather than the first payment of the run
+/// failing on it (the run's date may have changed since it was proposed).
+async fn check_dates(conn: &mut PgConnection, doc: &Document) -> Result<()> {
+    let late: Vec<(i32, Option<String>, NaiveDate)> = sqlx::query_as(
+        "SELECT l.line_no, d.number, i.doc_date FROM payment_run_line l
+         JOIN open_item i ON i.id = l.open_item_id
+         JOIN posting p ON p.id = i.posting_id
+         JOIN document d ON d.id = p.document_id
+         WHERE l.document_id = $1 AND NOT l.hold AND i.doc_date > $2
+         ORDER BY l.line_no",
+    )
+    .bind(doc.id)
+    .bind(doc.doc_date)
+    .fetch_all(&mut *conn)
+    .await?;
+    let Some((first, _, _)) = late.first() else {
+        return Ok(());
+    };
+    let named: Vec<String> = late
+        .iter()
+        .map(|(line, number, date)| {
+            format!(
+                "line {line} ({}, {date})",
+                number.as_deref().unwrap_or("an invoice")
+            )
+        })
+        .collect();
+    Err(Error::line(
+        "lines",
+        *first as usize,
+        Some("open_item_id"),
+        format!(
+            "the run is dated {} and pays what is dated after it: {}; remove those lines or \
+             date the run on or after them",
+            doc.doc_date,
+            named.join(", ")
+        ),
+    ))
+}
+
 /// The currency a run pays in: its bank account's, else the accounting
 /// currency.
 async fn run_currency(conn: &mut PgConnection, company_id: Uuid, account: Uuid) -> Result<String> {
@@ -698,6 +739,7 @@ impl Command for Step {
                     "the run pays nothing: propose it, or take items off hold",
                 ));
             }
+            check_dates(&mut *ctx.conn, &doc).await?;
             let mut total = Decimal::ZERO;
             for lines in vendors.values() {
                 let paid: Decimal = lines.iter().map(|l| l.amount).sum();
@@ -761,6 +803,7 @@ impl Command for Post {
             .await?
             .ok_or_else(|| Error::internal("a payment run without its header"))?;
         check_holds(&mut *ctx.conn, doc.company_id, doc.id).await?;
+        check_dates(&mut *ctx.conn, &doc).await?;
         let lines = load_lines(&mut *ctx.conn, doc.id).await?;
         let post = ctx
             .kernel

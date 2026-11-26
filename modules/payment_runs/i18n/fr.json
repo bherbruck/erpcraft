@@ -38,6 +38,7 @@
   "the bank file shows vendor {code}'s bank account, which you may not read": "le fichier bancaire montre le compte bancaire du fournisseur {code}, que vous n'êtes pas autorisé à consulter",
   "the item is on the run twice": "le poste figure deux fois dans le lot de paiement",
   "the run has no bank account yet": "le lot de paiement n'a pas encore de compte bancaire",
+  "the run is dated {} and pays what is dated after it: {}; remove those lines or date the run on or after them": "le lot est daté du {} et paie ce qui est daté après : {} ; retirez ces lignes ou datez le lot à leur date ou après",
   "the run pays nothing: propose it, or take items off hold": "le lot de paiement ne paie rien : lancez la proposition, ou débloquez des postes",
   "the run's bank account has no ACH company ID on record": "le compte bancaire du lot n'a pas d'identifiant d'entreprise ACH enregistré",
   "the run's bank account has no IBAN on record": "le compte bancaire du lot n'a pas d'IBAN enregistré",

@@ -230,6 +230,59 @@ async fn a_payment_run_proposes_an_invoice_dated_after_the_run_and_cannot_post()
     t.stop().await;
 }
 
+/// A run proposed on one date and then dated earlier: approving names the
+/// lines it can no longer pay, rather than the post failing on the first
+/// payment.
+#[tokio::test]
+async fn a_run_dated_before_its_lines_names_them() {
+    let t = TestApp::start().await;
+    let shop = shop(&t).await;
+    let vendor = t
+        .create("vendor", json!({ "code": "PARTS", "name": "Parts Supply" }))
+        .await;
+    for (date, amount) in [("2026-03-01", "100.00"), ("2026-03-20", "50.00")] {
+        let (status, draft) = t
+            .post(
+                &t.admin,
+                "/api/documents/vendor_invoice",
+                json!({ "company_id": shop.company, "doc_date": date, "body": {
+                    "vendor_id": vendor, "vendor_reference": format!("P-{date}"),
+                    "lines": [{ "account_id": shop.services, "description": "Service",
+                                "qty": "1", "unit_price": amount }] } }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{draft}");
+        run(&t, "vendor_invoice.post", json!({ "id": id(&draft) })).await;
+    }
+    let (status, draft) = t
+        .post(
+            &t.admin,
+            "/api/documents/payment_run",
+            json!({ "company_id": shop.company, "doc_date": "2026-03-25", "body": {
+                "bank_account_id": shop.bank, "due_by": "2026-03-31" } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{draft}");
+    let proposed = run(&t, "payment_run.propose", json!({ "id": id(&draft) })).await;
+    assert_eq!(proposed["body"]["lines"].as_array().unwrap().len(), 2);
+    let (status, body) = t
+        .patch(
+            &t.admin,
+            &format!("/api/documents/payment_run/{}", id(&draft)),
+            json!({ "version": proposed["version"], "doc_date": "2026-03-15" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = t
+        .command(&t.admin, "payment_run.approve", json!({ "id": id(&draft) }))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("2026-03-20"), "{body}");
+    assert_eq!(body["error"]["collection"], "lines", "{body}");
+    t.stop().await;
+}
+
 /// A bank line dated before the invoice it is matched to: bank_statement
 /// match drafts the payment at the line's date, which payment.post refuses.
 /// The match (and the reconciliation's suggestion) should not offer an item
