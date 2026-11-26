@@ -34,12 +34,16 @@ pub struct Partner {
     pub line_breaks: bool,
     pub run_as_user_id: Option<Uuid>,
     pub active: bool,
+    /// EDIFACT: `.` or `,`.
+    pub decimal_mark: String,
+    /// EDIFACT: the character set, such as `UNOC`.
+    pub charset: String,
 }
 
 const COLUMNS: &str = "id, company_id, code, name, customer_id, warehouse_id, syntax, usage, \
     our_qualifier, our_id, their_qualifier, their_id, our_group_id, their_group_id, version, \
     ack_form, ack_hours, element_separator, component_separator, repetition_separator, \
-    segment_terminator, line_breaks, run_as_user_id, active";
+    segment_terminator, line_breaks, run_as_user_id, active, decimal_mark, charset";
 
 pub async fn load(conn: &mut PgConnection, id: Uuid) -> Result<Partner> {
     sqlx::query_as(&format!("SELECT {COLUMNS} FROM edi_partner WHERE id = $1"))
@@ -47,6 +51,48 @@ pub async fn load(conn: &mut PgConnection, id: Uuid) -> Result<Partner> {
         .fetch_optional(&mut *conn)
         .await?
         .ok_or_else(|| Error::not_found("edi_partner"))
+}
+
+/// The partner an EDIFACT interchange is from: as for X12, by the UNB's
+/// sender and recipient with their qualifiers, a partner of the
+/// interchange's usage preferred.
+pub async fn route_edifact(
+    conn: &mut PgConnection,
+    unb: &crate::edifact::Interchange,
+    company_id: Option<Uuid>,
+) -> Result<std::result::Result<Partner, String>> {
+    let usage = if unb.test { "test" } else { "production" };
+    let found: Vec<Partner> = sqlx::query_as(&format!(
+        "SELECT {COLUMNS} FROM edi_partner
+         WHERE active AND syntax = 'edifact' AND their_qualifier = $1 AND their_id = $2
+           AND our_qualifier = $3 AND our_id = $4 AND ($5::uuid IS NULL OR company_id = $5)
+         ORDER BY (usage = $6) DESC, created_at"
+    ))
+    .bind(&unb.sender_qualifier)
+    .bind(&unb.sender)
+    .bind(&unb.receiver_qualifier)
+    .bind(&unb.receiver)
+    .bind(company_id)
+    .bind(usage)
+    .fetch_all(&mut *conn)
+    .await?;
+    let route = format!(
+        "{}:{} to {}:{}",
+        unb.sender, unb.sender_qualifier, unb.receiver, unb.receiver_qualifier
+    );
+    let mut companies: Vec<Uuid> = found.iter().map(|p| p.company_id).collect();
+    companies.sort();
+    companies.dedup();
+    if companies.len() > 1 {
+        return Ok(Err(format!(
+            "partners of more than one company are from {route}: receive it with the \
+             company_id it is for"
+        )));
+    }
+    Ok(found
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("no active partner is from {route}")))
 }
 
 /// The partner an X12 interchange is from: the active partner whose
@@ -172,6 +218,37 @@ impl Partner {
             usage,
             ack_requested: false,
             delimiters: self.delimiters()?,
+        })
+    }
+
+    /// Whether the partner trades in EDIFACT.
+    pub fn is_edifact(&self) -> bool {
+        self.syntax == "edifact"
+    }
+
+    /// The envelope of an EDIFACT interchange to this partner: EDIFACT's
+    /// separators with the partner's decimal mark, in its character set.
+    pub fn edifact_envelope(
+        &self,
+        at: NaiveDateTime,
+        control: u32,
+    ) -> Result<crate::edifact::Envelope> {
+        let syntax = crate::edifact::SyntaxId::parse(&self.charset)
+            .ok_or_else(|| Error::validation("the partner's character set is not known"))?;
+        Ok(crate::edifact::Envelope {
+            delimiters: Delimiters {
+                decimal: if self.decimal_mark == "," { b',' } else { b'.' },
+                ..Delimiters::EDIFACT
+            },
+            syntax,
+            syntax_version: "3".into(),
+            sender: self.our_id.clone(),
+            sender_qualifier: self.our_qualifier.clone(),
+            receiver: self.their_id.clone(),
+            receiver_qualifier: self.their_qualifier.clone(),
+            at,
+            control: format!("{control:08}"),
+            test: self.is_test(),
         })
     }
 

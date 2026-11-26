@@ -242,7 +242,7 @@ pub async fn pack(
     let noticed: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM edi_message
                         WHERE doc_type = 'sales_delivery' AND document_id = $1
-                          AND message = '856' AND superseded_by IS NULL
+                          AND message IN ('856', 'DESADV') AND superseded_by IS NULL
                           AND state NOT IN ('invalid', 'rejected', 'failed'))",
     )
     .bind(delivery_id)

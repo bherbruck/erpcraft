@@ -33,7 +33,8 @@ pub async fn insert_routed(
     Ok(sqlx::query_scalar(
         "INSERT INTO edi_interchange (id, company_id, partner_id, direction, syntax, sha256, size,
              payload, transport, state, received_by)
-         VALUES ($1, $2, $3, 'in', 'x12', $4, $5, $6, 'manual', 'stored', $7)
+         VALUES ($1, $2, $3, 'in', (SELECT syntax FROM edi_partner WHERE id = $3), $4, $5, $6,
+                 'manual', 'stored', $7)
          ON CONFLICT (company_id, sha256) WHERE direction = 'in' AND partner_id IS NOT NULL
          DO NOTHING
          RETURNING id",
@@ -81,7 +82,12 @@ pub async fn insert_unrouted(
          DO NOTHING RETURNING id",
     )
     .bind(new_id())
-    .bind(usage.as_ref().map(|_| "x12"))
+    .bind(usage.as_ref().and_then(|_| {
+        crate::syntax_of(bytes).map(|syntax| match syntax {
+            crate::Syntax::X12 => "x12",
+            crate::Syntax::Edifact => "edifact",
+        })
+    }))
     .bind(&usage)
     .bind(hash)
     .bind(size_of(bytes)?)
@@ -125,7 +131,8 @@ pub async fn store_outgoing(conn: &mut PgConnection, out: Outgoing<'_>) -> Resul
     sqlx::query(
         "INSERT INTO edi_interchange (id, company_id, partner_id, direction, syntax, control,
              usage, sha256, size, payload, transport, state)
-         VALUES ($1, $2, $3, 'out', 'x12', $4, $5, $6, $7, $8, 'manual', 'ready')",
+         VALUES ($1, $2, $3, 'out', (SELECT syntax FROM edi_partner WHERE id = $3), $4, $5, $6,
+                 $7, $8, 'manual', 'ready')",
     )
     .bind(id)
     .bind(out.company_id)

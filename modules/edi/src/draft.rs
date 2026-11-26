@@ -131,7 +131,7 @@ pub async fn draft(ctx: &mut Ctx<'_>, request: Request) -> Result<DocumentView> 
             partner.company_id,
             json!({
                 "partner_code": partner.code,
-                "message": "850",
+                "message": row.message,
                 "notes": notes.len(),
                 "lines": proposal.lines.len(),
                 "total_net": proposal.total_net.unwrap_or_default(),

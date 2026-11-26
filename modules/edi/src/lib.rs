@@ -26,6 +26,7 @@ use erpcraft_kernel::{DynCommand, EntityMeta, Migration, Module, PolicyPoint, co
 pub mod edifact;
 pub mod explain;
 pub mod gs1;
+mod inbound_edifact;
 pub mod segment;
 pub mod x12;
 
@@ -110,6 +111,11 @@ impl Module for EdiModule {
                 version: 4,
                 name: "company_scope",
                 sql: include_str!("../migrations/0004_company_scope.sql"),
+            },
+            Migration {
+                version: 5,
+                name: "edifact",
+                sql: include_str!("../migrations/0005_edifact.sql"),
             },
         ]
     }

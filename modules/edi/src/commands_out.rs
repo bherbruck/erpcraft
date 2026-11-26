@@ -315,7 +315,7 @@ impl Command for Pending {
                AND NOT EXISTS (
                    SELECT 1 FROM edi_message m
                    WHERE m.doc_type = 'sales_delivery' AND m.document_id = d.id
-                     AND m.message = '856' AND m.superseded_by IS NULL
+                     AND m.message IN ('856', 'DESADV') AND m.superseded_by IS NULL
                      AND m.state NOT IN ('invalid', 'rejected', 'failed'))
              ORDER BY d.doc_date, d.id LIMIT 500",
         )

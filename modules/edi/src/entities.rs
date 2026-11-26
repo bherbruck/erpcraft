@@ -134,6 +134,30 @@ fn partner() -> EntityMeta {
             ),
         )
         .field(
+            FieldMeta::new(
+                "decimal_mark",
+                "Decimal mark",
+                FieldType::labelled(&[(".", "Point"), (",", "Comma")]),
+            )
+            .help("EDIFACT: the decimal mark numbers are written with, stated in the UNA."),
+        )
+        .field(
+            FieldMeta::new(
+                "charset",
+                "Character set",
+                FieldType::labelled(&[
+                    ("UNOA", "UNOA: capitals and digits"),
+                    ("UNOB", "UNOB: letters and digits"),
+                    ("UNOC", "UNOC: ISO 8859-1"),
+                    ("UNOY", "UNOY: UTF-8"),
+                ]),
+            )
+            .help(
+                "EDIFACT: the character set interchanges are written in. A text it cannot carry \
+                 makes the message invalid, never a changed text.",
+            ),
+        )
+        .field(
             FieldMeta::new("run_as_user_id", "Runs as", FieldType::link("user")).help(
                 "The user automation acts as for this partner, with that user's permissions.",
             ),

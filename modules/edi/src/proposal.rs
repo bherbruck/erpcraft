@@ -179,9 +179,9 @@ pub async fn message_row(ctx: &mut Ctx<'_>, id: Uuid, lock: bool) -> Result<Mess
 
 /// The typed order of a message received, read again from its bytes.
 pub async fn order_of(ctx: &mut Ctx<'_>, row: &MessageRow) -> Result<PurchaseOrder> {
-    if row.direction != "in" || row.message != "850" {
+    if row.direction != "in" || !matches!(row.message.as_str(), "850" | "ORDERS") {
         return Err(Error::validation(
-            "this message is not an order received: only an 850 is proposed",
+            "this message is not an order received: only an 850 or an ORDERS is proposed",
         ));
     }
     let (Some(interchange), Some(position)) = (row.interchange_id, row.position) else {
@@ -192,6 +192,13 @@ pub async fn order_of(ctx: &mut Ctx<'_>, row: &MessageRow) -> Result<PurchaseOrd
         .fetch_one(&mut *ctx.conn)
         .await?;
     let position = position as usize;
+    if row.message == "ORDERS" {
+        let read = blocking(move || crate::inbound_edifact::order_at(&payload, position))
+            .await
+            .and_then(|r| r)
+            .map_err(Error::internal)?;
+        return read.ok_or_else(|| Error::internal("the message is no longer where it was read"));
+    }
     let read = blocking(
         move || -> std::result::Result<Option<PurchaseOrder>, String> {
             let mut all: Vec<ReadInterchange> = read_file(&payload).map_err(|e| e.to_string())?;

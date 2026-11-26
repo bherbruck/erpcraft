@@ -160,7 +160,11 @@ pub async fn interchange_out(conn: &mut PgConnection, id: Uuid) -> Result<Interc
     .await?)
 }
 
-async fn output(conn: &mut PgConnection, id: Uuid, repeat: bool) -> Result<ReceiveOutput> {
+pub(crate) async fn output(
+    conn: &mut PgConnection,
+    id: Uuid,
+    repeat: bool,
+) -> Result<ReceiveOutput> {
     let interchange = interchange_out(conn, id).await?;
     let messages = sqlx::query_as(&format!(
         "SELECT {MESSAGE_COLUMNS} FROM edi_message WHERE interchange_id = $1 ORDER BY position"
@@ -190,6 +194,9 @@ pub async fn receive(
     bytes: Vec<u8>,
     company_id: Option<Uuid>,
 ) -> Result<ReceiveOutput> {
+    if crate::syntax_of(&bytes) == Some(crate::Syntax::Edifact) {
+        return crate::inbound_edifact::receive(ctx, bytes, company_id).await;
+    }
     if let Some(company) = company_id {
         ctx.require(PERMISSION, company)?;
     }
@@ -526,13 +533,33 @@ async fn unrouted(
     isa: Option<&crate::x12::Isa>,
     why: &str,
 ) -> Result<ReceiveOutput> {
+    unrouted_with(
+        ctx,
+        bytes,
+        hash,
+        state,
+        isa.map(|i| i.usage.to_string()),
+        why,
+    )
+    .await
+}
+
+/// [`unrouted`] with the usage as the envelope gave it, of either syntax.
+pub(crate) async fn unrouted_with(
+    ctx: &mut Ctx<'_>,
+    bytes: &[u8],
+    hash: &str,
+    state: &str,
+    usage: Option<String>,
+    why: &str,
+) -> Result<ReceiveOutput> {
     let (id, repeat) = store::insert_unrouted(
         &mut *ctx.conn,
         bytes,
         hash,
         ctx.actor.user_id,
         state,
-        isa.map(|i| i.usage.to_string()),
+        usage,
         why,
     )
     .await?;

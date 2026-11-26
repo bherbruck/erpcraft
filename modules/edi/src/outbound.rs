@@ -50,10 +50,23 @@ pub enum Message {
 impl Message {
     pub fn parse(text: &str) -> Result<Message> {
         match text {
-            "855" => Ok(Message::Ack855),
-            "856" => Ok(Message::Notice856),
-            "810" => Ok(Message::Invoice810),
-            _ => Err(Error::field("message", "must be 855, 856 or 810")),
+            "855" | "ORDRSP" => Ok(Message::Ack855),
+            "856" | "DESADV" => Ok(Message::Notice856),
+            "810" | "INVOIC" => Ok(Message::Invoice810),
+            _ => Err(Error::field(
+                "message",
+                "must be 855, 856 or 810 (ORDRSP, DESADV or INVOIC for an EDIFACT partner)",
+            )),
+        }
+    }
+
+    /// What the message is called in a partner's syntax.
+    pub fn code_for(self, partner: &Partner) -> &'static str {
+        match (self, partner.is_edifact()) {
+            (Message::Ack855, true) => "ORDRSP",
+            (Message::Notice856, true) => "DESADV",
+            (Message::Invoice810, true) => "INVOIC",
+            (message, false) => message.code(),
         }
     }
 
@@ -227,6 +240,46 @@ impl Typed {
             Typed::Ack(m) => Some(m.body()),
             Typed::Notice(m) => Some(m.body()),
             Typed::Invoice(m) => m.body(),
+        }
+    }
+
+    /// The EDIFACT segments of the message, from after the UNH to before
+    /// the UNT; `None` when it cannot be written (an amount with more than
+    /// two places, a notice of more than one order).
+    fn edifact_body(&self, d: &crate::segment::Delimiters) -> Option<Vec<crate::segment::Segment>> {
+        match self {
+            Typed::Ack(m) => Some(crate::edifact::ordrsp::body(m, d)),
+            Typed::Notice(m) => crate::edifact::desadv::body(m, d),
+            Typed::Invoice(m) => crate::edifact::invoic::body(m, d),
+        }
+    }
+
+    /// Whether the EDIFACT message read back says what this one meant, as
+    /// far as EDIFACT carries it.
+    fn edifact_reads_back(&self, bytes: &[u8]) -> bool {
+        let Some(interchange) = crate::edifact::read(bytes).ok().and_then(|mut i| i.pop()) else {
+            return false;
+        };
+        let d = interchange.delimiters;
+        let Some(message) = interchange.messages.first() else {
+            return false;
+        };
+        if !interchange.errors.is_empty() || !message.errors.is_empty() {
+            return false;
+        }
+        match self {
+            Typed::Ack(meant) => {
+                let (read, verdict) = crate::edifact::ordrsp::read(message, &d);
+                verdict.is_clean() && read == crate::edifact::ordrsp::carried(meant)
+            }
+            Typed::Notice(meant) => {
+                let (read, verdict) = crate::edifact::desadv::read(message, &d);
+                verdict.is_clean() && read == crate::edifact::desadv::carried(meant)
+            }
+            Typed::Invoice(meant) => {
+                let (read, verdict) = crate::edifact::invoic::read(message, &d);
+                verdict.is_clean() && read == crate::edifact::invoic::carried(meant)
+            }
         }
     }
 
@@ -967,7 +1020,7 @@ pub async fn finish(ctx: &mut Ctx<'_>, mut made: Made, preview: bool) -> Result<
     )
     .bind(&doc_type)
     .bind(doc_id)
-    .bind(message.code())
+    .bind(message.code_for(&partner))
     .fetch_optional(&mut *ctx.conn)
     .await?;
     if let Some((_, state)) = &previous
@@ -976,10 +1029,14 @@ pub async fn finish(ctx: &mut Ctx<'_>, mut made: Made, preview: bool) -> Result<
         return Err(Error::state(format!(
             "an {} was made for this document already and is {state}: send the same bytes \
              again with edi_message.resend",
-            message.code()
+            message.code_for(&partner)
         )));
     }
+    let code = message.code_for(&partner);
 
+    if partner.is_edifact() {
+        return finish_edifact(ctx, made, preview, previous).await;
+    }
     let body = made.typed.as_ref().and_then(Typed::body);
     if made.typed.is_some() && body.is_none() {
         made.findings.push(Finding::blocking(
@@ -989,14 +1046,14 @@ pub async fn finish(ctx: &mut Ctx<'_>, mut made: Made, preview: bool) -> Result<
              rounding.",
         ));
     }
-    let mut segments = body
+    let segments = body
         .as_deref()
         .map(|b| explained(b, message.code()))
         .unwrap_or_default();
 
     let usage = if partner.is_test() { 'T' } else { 'P' };
     let at = Utc::now().naive_utc();
-    let mut bytes: Option<(Vec<u8>, u32, u32)> = None;
+    let mut bytes: Option<Fixed> = None;
     if made
         .findings
         .iter()
@@ -1029,20 +1086,7 @@ pub async fn finish(ctx: &mut Ctx<'_>, mut made: Made, preview: bool) -> Result<
             Ok(_) => {
                 // Policies, then the numbers: the last step before the
                 // bytes are fixed.
-                ctx.decide(
-                    SEND,
-                    partner.company_id,
-                    json!({
-                        "partner_code": partner.code,
-                        "message": message.code(),
-                        "total": made.total,
-                        "test": partner.is_test(),
-                    }),
-                )
-                .await?;
-                if message == Message::Invoice810 {
-                    before_asn(ctx, &partner, &made.sent).await?;
-                }
+                decide_send(ctx, &partner, code, &made).await?;
                 let interchange =
                     control::next(&mut *ctx.conn, partner.id, Kind::Interchange).await?;
                 let group = control::next(&mut *ctx.conn, partner.id, Kind::Group).await?;
@@ -1055,10 +1099,160 @@ pub async fn finish(ctx: &mut Ctx<'_>, mut made: Made, preview: bool) -> Result<
                         "the message with its control numbers does not read back",
                     ));
                 }
-                bytes = Some((partner.finish(text), interchange, group));
+                bytes = Some(Fixed {
+                    bytes: partner.finish(text),
+                    interchange: format!("{interchange:09}"),
+                    group: group.to_string(),
+                    set: "0001".into(),
+                });
             }
         }
     }
+    store_made(ctx, made, preview, previous, segments, bytes).await
+}
+
+/// The bytes of a message to send, fixed, with the references they carry.
+struct Fixed {
+    bytes: Vec<u8>,
+    /// ISA13, or UNB 0020.
+    interchange: String,
+    /// GS06, or the UNB's reference again (EDIFACT has no group here).
+    group: String,
+    /// ST02, or UNH 0062.
+    set: String,
+}
+
+/// The policies asked before the bytes of a message are fixed.
+async fn decide_send(ctx: &mut Ctx<'_>, partner: &Partner, code: &str, made: &Made) -> Result<()> {
+    ctx.decide(
+        SEND,
+        partner.company_id,
+        json!({
+            "partner_code": partner.code,
+            "message": code,
+            "total": made.total,
+            "test": partner.is_test(),
+        }),
+    )
+    .await?;
+    if made.message == Message::Invoice810 {
+        before_asn(ctx, partner, &made.sent).await?;
+    }
+    Ok(())
+}
+
+/// Writes an EDIFACT message to an EDIFACT partner: ORDRSP, DESADV or
+/// INVOIC, read back as the partner will read it, then numbered and fixed.
+async fn finish_edifact(
+    ctx: &mut Ctx<'_>,
+    mut made: Made,
+    preview: bool,
+    previous: Option<(Uuid, String)>,
+) -> Result<Generated> {
+    let message = made.message;
+    let partner = made.partner.clone();
+    let code = message.code_for(&partner);
+    if let Some(Typed::Invoice(invoice)) = made.typed.as_mut() {
+        // What an EDIFACT invoice says that the 810 leaves to the order:
+        // its currency, the buyer and seller as the order named them, and
+        // the tax as VAT.
+        invoice.currency = made.view.header.summary["currency"]
+            .as_str()
+            .map(str::to_owned);
+        let named: Vec<Party> =
+            serde_json::from_value(made.sent.header["parties"].clone()).unwrap_or_default();
+        invoice.parties = ["BY", "VN", "BT", "ST"]
+            .iter()
+            .filter_map(|role| named.iter().find(|p| p.role == *role).cloned())
+            .collect();
+        for tax in &mut invoice.taxes {
+            tax.kind = "VA".into();
+        }
+    }
+    let at = Utc::now().naive_utc();
+    let probe = partner.edifact_envelope(at, 0)?;
+    let body = made
+        .typed
+        .as_ref()
+        .and_then(|t| t.edifact_body(&probe.delimiters));
+    if made.typed.is_some() && body.is_none() {
+        made.findings.push(Finding::blocking(
+            "amount",
+            None,
+            "An amount has more than two places, or the notice holds more than one order, \
+             which the message cannot carry.",
+        ));
+    }
+    let segments = body
+        .as_deref()
+        .map(|b| explained(b, code))
+        .unwrap_or_default();
+    let outgoing = |body: Vec<crate::segment::Segment>| crate::edifact::Outgoing {
+        kind: code.into(),
+        version: "D".into(),
+        release: "96A".into(),
+        agency: "UN".into(),
+        association: String::new(),
+        reference: "1".into(),
+        body,
+    };
+    let mut bytes: Option<Fixed> = None;
+    if made
+        .findings
+        .iter()
+        .all(|f| f.severity != Severity::Blocking)
+        && let (Some(typed), Some(body)) = (&made.typed, body)
+    {
+        match crate::edifact::write(&probe, &[outgoing(body.clone())]) {
+            Err(e) => made.findings.push(Finding::blocking(
+                "write",
+                None,
+                format!("The message cannot be written: {}.", e.message),
+            )),
+            Ok(text) if !typed.edifact_reads_back(&text) => made.findings.push(Finding::blocking(
+                "read_back",
+                None,
+                "The message written does not read back as what was meant.",
+            )),
+            Ok(_) if preview => {}
+            Ok(_) => {
+                decide_send(ctx, &partner, code, &made).await?;
+                let interchange =
+                    control::next(&mut *ctx.conn, partner.id, Kind::Interchange).await?;
+                let envelope = partner.edifact_envelope(at, interchange)?;
+                let written = crate::edifact::write(&envelope, &[outgoing(body)])
+                    .map_err(|e| Error::internal(e.message))?;
+                if !typed.edifact_reads_back(&written) {
+                    return Err(Error::internal(
+                        "the message with its control reference does not read back",
+                    ));
+                }
+                bytes = Some(Fixed {
+                    bytes: written,
+                    interchange: envelope.control.clone(),
+                    group: envelope.control,
+                    set: "1".into(),
+                });
+            }
+        }
+    }
+    store_made(ctx, made, preview, previous, segments, bytes).await
+}
+
+/// Keeps a message made: `ready` with its bytes stored, or `invalid` with
+/// what is wrong; a preview keeps nothing.
+async fn store_made(
+    ctx: &mut Ctx<'_>,
+    made: Made,
+    preview: bool,
+    previous: Option<(Uuid, String)>,
+    mut segments: Vec<ExplainedSegment>,
+    bytes: Option<Fixed>,
+) -> Result<Generated> {
+    let message = made.message;
+    let partner = made.partner.clone();
+    let doc_type = made.view.header.doc_type.clone();
+    let doc_id = made.view.header.id;
     let valid = made
         .findings
         .iter()
@@ -1073,23 +1267,24 @@ pub async fn finish(ctx: &mut Ctx<'_>, mut made: Made, preview: bool) -> Result<
         });
     }
 
+    let usage = if partner.is_test() { 'T' } else { 'P' };
     let message_id = new_id();
+    let set_control = bytes.as_ref().map(|f| f.set.clone());
     let (interchange_id, group_control, state) = match bytes {
-        Some((bytes, interchange, group)) => {
-            let control_text = format!("{interchange:09}");
+        Some(fixed) => {
             let id = store::store_outgoing(
                 &mut *ctx.conn,
                 store::Outgoing {
                     company_id: partner.company_id,
                     partner_id: partner.id,
-                    control: &control_text,
+                    control: &fixed.interchange,
                     usage,
-                    bytes: &bytes,
+                    bytes: &fixed.bytes,
                 },
             )
             .await?;
             ctx.touch("edi_interchange", id);
-            (Some(id), Some(group.to_string()), "ready")
+            (Some(id), Some(fixed.group), "ready")
         }
         None => {
             segments.clear();
@@ -1106,9 +1301,9 @@ pub async fn finish(ctx: &mut Ctx<'_>, mut made: Made, preview: bool) -> Result<
     .bind(interchange_id)
     .bind(partner.company_id)
     .bind(partner.id)
-    .bind(message.code())
+    .bind(message.code_for(&partner))
     .bind(&group_control)
-    .bind(interchange_id.map(|_| "0001"))
+    .bind(&set_control)
     .bind(interchange_id.map(|_| 1i32))
     .bind(state)
     .bind(&made.sent.order_number)
@@ -1146,7 +1341,8 @@ pub async fn finish(ctx: &mut Ctx<'_>, mut made: Made, preview: bool) -> Result<
 async fn before_asn(ctx: &mut Ctx<'_>, partner: &Partner, sent: &SentOrder) -> Result<()> {
     let notice: Option<String> = sqlx::query_scalar(
         "SELECT state FROM edi_message
-         WHERE partner_id = $1 AND direction = 'out' AND message = '856' AND business_key = $2
+         WHERE partner_id = $1 AND direction = 'out' AND message IN ('856', 'DESADV')
+           AND business_key = $2
            AND superseded_by IS NULL
          ORDER BY created_at DESC LIMIT 1",
     )
