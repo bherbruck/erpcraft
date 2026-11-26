@@ -837,6 +837,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "erpcraft-analysis"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "erpcraft-gl",
+ "erpcraft-kernel",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
 name = "erpcraft-api"
 version = "0.1.0"
 dependencies = [
@@ -1303,6 +1316,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "erpcraft-accounting",
+ "erpcraft-analysis",
  "erpcraft-api",
  "erpcraft-assets",
  "erpcraft-auth",

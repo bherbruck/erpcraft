@@ -36,6 +36,7 @@ erpcraft-intercompany.workspace = true
 erpcraft-payment-runs.workspace = true
 erpcraft-costing.workspace = true
 erpcraft-collections.workspace = true
+erpcraft-analysis.workspace = true
 erpcraft-budgets.workspace = true
 erpcraft-quotes.workspace = true
 erpcraft-recurring.workspace = true

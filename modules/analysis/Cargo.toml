@@ -1,0 +1,16 @@
+[package]
+name = "erpcraft-analysis"
+description = "erpcraft business analysis: sales and purchase analysis, inventory aging, slow movers, turnover and key figures, from what was posted"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+erpcraft-gl.workspace = true
+erpcraft-kernel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+uuid.workspace = true

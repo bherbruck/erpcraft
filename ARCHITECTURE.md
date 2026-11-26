@@ -995,6 +995,53 @@ Limits:
 - Cash equivalents are what is classified `cash`.
 - Exchange differences on cash in foreign currency are part of operating changes, not shown on their own.
 
+### Business analysis
+
+The module `analysis` (`modules/analysis`, no tables of its own) answers what an owner or a controller asks every week: what sold, to whom, at what margin; what was bought from whom; what stock is old, slow or dead and how fast it turns; and the few ratios that say how the business runs. Every answer is a query command with `.report(...)`, so the interface lists it with the other reports and an agent finds it over MCP; its output is flat rows with the same names in every report (a grid shows them as they come) and a totals row.
+
+**Everything is read from what was posted.** No report works anything out again from prices or current costs:
+- **Amounts** come from the general ledger. The amount of a document line in a posting is what the posting's entries for that line (`gl_entry.source_line_id`) come to, leaving out the line's receivable or payable (the accounts of the posting's open items) and its tax (the accounts of its tax entries): for a sales invoice line its revenue, for a vendor invoice line what it cleared from goods received not invoiced or charged to an expense, with any price variance. They are in the accounting currency, net of discounts, without tax, and carry the dimension set the posting gave them.
+- **Reversals count where they are posted.** A posting and its reversal are two facts, the second with the opposite sign, each on its own date, so a period shows what was posted in it and a reversed invoice nets to zero over both dates.
+- **Cost is the cost posted to the stock ledger**, at standard or at moving average as the item is costed: for a sales invoice line, its quantity times the average cost at which the goods of its order line left stock (the deliveries of that order line less its returns, as their stock entries were valued, reversals included). A credit note takes back the cost of the goods it credits as returned (`returned_qty`), at the same average; a credit for a price only, or a credit without an invoice, takes back none. Charges and account lines have no cost. So a margin is never worked out at today's cost, and a revaluation after the sale does not change it.
+- **Quantities** are in the item's stock unit (the line's quantity times its unit's factor).
+- **The document currency.** `currency` limits a report to documents in that currency and adds what they come to in it (`net_document`, from the lines' own net amounts) beside the accounting amounts.
+
+**Sales analysis** (`analysis.sales`: `company_id`, `from`, `to`; optional `group_by`, `period`, `compare`, `dimension_value_ids`, `group_by_dimension_id`, `customer_id`, `item_id`, `currency`, `sort`, `limit`). The facts are the posted sales invoices, sales credit notes and sales credits.
+- `group_by`: one or more of `customer`, `item`, `item_group` (the item's price group of kind item, see [Price lists](#price-lists)), `period` (by `month`, `quarter` or `year`) and `dimension` (the value of `group_by_dimension_id`, such as the site or cost center). By default `customer`. A line that is not an item (a charge, an account line, a credit without an invoice) has no item and shows under an empty item.
+- Each row: the keys with their codes and names, `qty`, `net`, `cost`, `margin` (net minus cost) and `margin_percent` (of net; none when net is 0).
+- `compare`: `prior_period` (the same number of days just before `from`) or `prior_year` (a year earlier; a range that ends on the last of a month ends on the last of that month, as in the cash flow statement). Each row then also has `compare_qty`, `compare_net`, `compare_margin` and `net_change_percent`. With `period` grouping, a period is matched with the one a year (or a period length) earlier.
+- `sort` (`net` by default, `margin`, `margin_percent`, `qty`) and `limit` make a top list; the totals are of every row, not only those shown.
+- `dimension_value_ids` counts only lines whose entries carry those values, as the general ledger reports do.
+- There is no salesperson on an order or invoice yet; when there is, it is one more key.
+
+**Purchase analysis** (`analysis.purchases`: the same inputs, `vendor_id` for `customer_id`): the posted vendor invoices, vendor credit notes and vendor credits, by `vendor`, `item`, `item_group`, `period` and `dimension`, with `qty`, `net`, the average price paid (`average_price`, net per stock unit) and the comparison.
+
+**Inventory aging** (`analysis.inventory_aging`: `company_id`, optional `warehouse_id`, `item_id`, `by`): the stock on hand today by how long ago it came in.
+- `by: level` (the default) ages each item's level in a warehouse first in, first out: what is on hand is taken to be what came in last, so the receipts are walked from the newest back until the quantity on hand is covered. Receipts are the entries that brought goods into the warehouse (purchase receipts, transfers in, production, returns, positive counts) and were not reversed.
+- `by: lot` ages each lot's quantity in a warehouse from the first day it came into that warehouse.
+- Each row: the item, warehouse (and lot), `qty`, `value` (at the level's cost), `oldest_receipt`, `average_age_days` (weighted by quantity), and the value in the buckets `value_0_30`, `value_31_60`, `value_61_90`, `value_91_180` and `value_over_180` days.
+
+**Slow movers and dead stock** (`analysis.slow_movers`: `company_id`, `days` (90 by default), optional `warehouse_id`, `slow_cover_days` (180), `all`): for each level with stock, the last issue, what was issued in the last `days` days, and the days of cover at that rate. An issue is an entry that took goods out and was not reversed, other than a transfer to another warehouse. A level is `dead` when nothing was issued in the `days`, `slow` when its cover is longer than `slow_cover_days`, else `moving`; only dead and slow levels are listed unless `all`.
+
+**Turnover** (`analysis.inventory_turnover`: `company_id`, `from`, `to`, optional `warehouse_id`, `group_by` `item` or `item_group`): per item, the cost of what was issued in the range (as above, net of reversals), the average stock value (of the value at the start and at the end, from the stock ledger), `turnover` (cost over average value) and `days_in_inventory` (the days of the range over the turnover).
+
+**Key figures** (`analysis.kpis`: `company_id`, optional `as_of` (today) and `days` (365)), each with how it is worked out:
+- `revenue` and `cost_of_sales`: the sales analysis' net and cost over the `days` up to `as_of`; `gross_margin_percent`.
+- `receivables`, `payables`: the balances as of `as_of` of the accounts the company's open receivables and payables are kept on; `inventory`: the stock ledger's value as of `as_of`.
+- `dso` (days sales outstanding): receivables over revenue, times the days; `dpo` (days payables outstanding): payables over cost of sales, times the days; `dio` (days inventory outstanding): inventory over cost of sales, times the days. None when the divisor is 0.
+- `current_ratio`: current assets over current liabilities. The chart says which accounts are current through the cash flow classification (gl migration 12): assets classed as cash or operating, other than accumulated depreciation, and liabilities classed as operating. A long-term loan is classed as financing to be left out.
+- `backlog_to_deliver` and `backlog_to_invoice`: the open sales orders' lines not yet delivered and delivered but not invoiced, at their net price, in the accounting currency at the rate on record on `as_of`; with `open_orders`, how many. The backlog is as the orders stand now, whatever `as_of` says: an order's progress is kept for now only.
+
+**Top lists** (`analysis.top`: `company_id`, `from`, `to`, `of` (`customers`, `items`, `item_groups` or `vendors`), `by` (`net`, `margin` or `qty`), `n` (10), optional `compare`): the first `n` rows of the sales or purchase analysis, sorted by `by`.
+
+**Read rights.** A report takes the right to read the documents it reads in the company (`sales_invoice:read` for sales; `vendor_invoice:read` for purchases; `stock_entry:read` for the stock reports), and counts only the documents the reader may read by their rules: credit notes and credits only with the right to read them, and each document as `document::readable` decides. Cost and margin need `stock_entry:read` as well, else they are left empty. A customer, vendor, item or group the reader may not read is shown by its id without code or name. The key figures need `gl_entry:read`.
+
+Limits:
+- Amounts are those posted; a draft counts for nothing, a cancelled order for nothing.
+- The cost of a sales line is the average of its order line's deliveries: a line invoiced in parts at different delivery costs gets the average of them all. Lines without an order that carry an item are not costed.
+- Aging and slow movers are as of today: stock levels are kept for now, not for a past date.
+- Turnover counts what left stock, not only what was sold: production consumption and scrap count too.
+
 ### Consolidation
 
 `consolidation.report` (module `intercompany`, report "Consolidated financial statements") adds up the books of a group of companies of one database in one reporting currency and takes out what they owe each other and sold each other. It is a report: it posts nothing, and every figure can be traced to the companies' own ledgers.

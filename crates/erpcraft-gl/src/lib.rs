@@ -22,6 +22,7 @@ mod blockers;
 mod cash_flow;
 mod dimensions;
 mod reports;
+pub use reports::check_dimensions;
 mod rules;
 
 pub use dimensions::{

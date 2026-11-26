@@ -47,6 +47,7 @@ pub fn modules(pool: PgPool) -> KernelBuilder {
         .module(erpcraft_quotes::QuotesModule)
         .module(erpcraft_recurring::RecurringModule)
         .module(erpcraft_edi::EdiModule)
+        .module(erpcraft_analysis::AnalysisModule)
 }
 
 /// The kernel with every in-tree module.

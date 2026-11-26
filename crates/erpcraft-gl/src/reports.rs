@@ -744,7 +744,7 @@ pub(crate) fn filter_sql(n: usize) -> String {
 /// Check a report's dimension filter and grouping: the values and the
 /// dimension must be the company's. An unknown value would otherwise
 /// narrow nothing.
-pub(crate) async fn check_dimensions(
+pub async fn check_dimensions(
     conn: &mut PgConnection,
     company_id: Uuid,
     values: &[Uuid],
