@@ -17,6 +17,7 @@
   "Worked out from the item's bill of materials and routing.": "Aus Stückliste und Arbeitsplan des Artikels ermittelt.",
   "a cost is zero or more": "Kosten sind null oder mehr",
   "a cost version needs at least one line": "eine Kostenversion braucht mindestens eine Zeile",
+  "item {code} has {} active bills of materials: deactivate all but the one it is made by, or give its cost in the version": "Artikel {code} hat {} aktive Stücklisten: deaktivieren Sie alle außer der, nach der er gefertigt wird, oder geben Sie seine Kosten in der Version an",
   "only a draft cost version is activated": "nur eine Kostenversion im Entwurf wird aktiviert",
   "only a draft cost version is rolled up": "nur eine Kostenversion im Entwurf wird kalkuliert",
   "the bills of materials lead back to themselves: {path}": "die Stücklisten führen auf sich selbst zurück: {path}",

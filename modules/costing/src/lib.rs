@@ -68,6 +68,115 @@ impl Module for CostingModule {
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
         vec![command(Rollup), command(Activate)]
     }
+
+    fn reversal_hooks(&self) -> Vec<Arc<dyn document::ReversalHook>> {
+        vec![Arc::new(StandardReversal)]
+    }
+}
+
+/// The general ledger lines of a change in the value of stock at
+/// standard, level by level: its inventory account (or the one for goods
+/// in transit) by `amount`, against the account rule
+/// standard_cost_revaluation.
+async fn revaluation_lines(
+    ctx: &mut Ctx<'_>,
+    company_id: Uuid,
+    moved: &[(Uuid, Uuid, Decimal)],
+) -> Result<Vec<GlLine>> {
+    let places =
+        erpcraft_stock::locations(&mut *ctx.conn, moved.iter().map(|(_, w, _)| *w)).await?;
+    let mut gl = vec![];
+    for (item_id, warehouse_id, amount) in moved {
+        let transit: bool = sqlx::query_scalar(
+            "SELECT COALESCE(bool_or(transit), false) FROM warehouse WHERE id = $1",
+        )
+        .bind(warehouse_id)
+        .fetch_one(&mut *ctx.conn)
+        .await?;
+        let about = [("item", *item_id), ("warehouse", *warehouse_id)];
+        let inventory = erpcraft_gl::account_for(
+            &mut *ctx.conn,
+            company_id,
+            if transit {
+                "inventory_in_transit"
+            } else {
+                "inventory"
+            },
+            &about,
+        )
+        .await?;
+        let against =
+            erpcraft_gl::account_for(&mut *ctx.conn, company_id, REVALUATION, &about).await?;
+        // Each line is about its level's place and item.
+        let about = places.scopes(*warehouse_id, Some(*item_id));
+        let (debit, credit) = ((*amount).max(Decimal::ZERO), (-*amount).max(Decimal::ZERO));
+        gl.push(
+            GlLine {
+                account_id: inventory,
+                debit,
+                credit,
+                ..GlLine::default()
+            }
+            .about(&about),
+        );
+        gl.push(
+            GlLine {
+                account_id: against,
+                debit: credit,
+                credit: debit,
+                ..GlLine::default()
+            }
+            .about(&about),
+        );
+    }
+    Ok(gl)
+}
+
+/// A movement of an item now at standard is reversed at its standard (the
+/// stock ledger, stock 15), and a cost adjustment made while it was at
+/// average takes nothing back off its stock (no entry is written for it).
+/// The reversal's general ledger
+/// lines mirror the original's, so they differ from the stock by as much:
+/// that difference is posted beside the reversal, on its document and
+/// date, between the inventory account and standard_cost_revaluation.
+struct StandardReversal;
+
+#[async_trait]
+impl document::ReversalHook for StandardReversal {
+    async fn after_reverse(
+        &self,
+        ctx: &mut Ctx<'_>,
+        original: &erpcraft_kernel::Posting,
+        reversal: &erpcraft_kernel::Posting,
+    ) -> Result<()> {
+        let moved: Vec<(Uuid, Uuid, Decimal)> = sqlx::query_as(
+            "SELECT o.item_id, o.warehouse_id, sum(COALESCE(r.value, 0) + o.value)
+             FROM stock_entry o
+             LEFT JOIN stock_entry r ON r.reverses_id = o.id AND r.posting_id = $2
+             WHERE o.posting_id = $1
+             GROUP BY o.item_id, o.warehouse_id
+             HAVING sum(COALESCE(r.value, 0) + o.value) <> 0
+             ORDER BY o.item_id, o.warehouse_id",
+        )
+        .bind(original.id)
+        .bind(reversal.id)
+        .fetch_all(&mut *ctx.conn)
+        .await?;
+        if moved.is_empty() {
+            return Ok(());
+        }
+        let doc: Document = sqlx::query_as("SELECT * FROM document WHERE id = $1")
+            .bind(reversal.document_id)
+            .fetch_one(&mut *ctx.conn)
+            .await?;
+        let memo = Some(match &doc.number {
+            Some(n) => format!("Standard cost difference of reversing {n}"),
+            None => "Standard cost difference of a reversal".to_owned(),
+        });
+        let posting = document::create_posting(ctx, &doc, reversal.posting_date, memo).await?;
+        let gl = revaluation_lines(ctx, doc.company_id, &moved).await?;
+        erpcraft_gl::post(ctx, &posting, &gl).await
+    }
 }
 
 // ------------------------------------------------------------ the document
@@ -297,14 +406,23 @@ struct Bill {
 }
 
 async fn bill_of(conn: &mut PgConnection, company_id: Uuid, item_id: Uuid) -> Result<Option<Bill>> {
-    let bom: Option<(Uuid, Decimal)> = sqlx::query_as(
-        "SELECT id, output_qty FROM bom WHERE item_id = $1 AND active
-         ORDER BY created_at DESC, id DESC LIMIT 1",
+    // Which bill a made item is made by is not the newest one's to say:
+    // with more than one active, the rollup cannot know and refuses.
+    let boms: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "SELECT id, output_qty FROM bom WHERE item_id = $1 AND active ORDER BY created_at, id",
     )
     .bind(item_id)
-    .fetch_optional(&mut *conn)
+    .fetch_all(&mut *conn)
     .await?;
-    let Some((bom, output_qty)) = bom else {
+    if boms.len() > 1 {
+        let code = item_code(conn, item_id).await?;
+        return Err(Error::validation(format!(
+            "item {code} has {} active bills of materials: deactivate all but the one it is \
+             made by, or give its cost in the version",
+            boms.len()
+        )));
+    }
+    let Some((bom, output_qty)) = boms.into_iter().next() else {
         return Ok(None);
     };
     let components: Vec<(Uuid, Decimal)> = sqlx::query_as(
@@ -406,10 +524,18 @@ impl Roller<'_> {
             None => {
                 let standard = match self.given.get(&item) {
                     Some(given) => *given,
-                    None => match costing::standard(conn, self.company_id, item).await? {
-                        Some(current) => current,
-                        None => {
-                            let average: Option<Decimal> = sqlx::query_scalar(
+                    None => {
+                        // An item at standard costs its standard. One at
+                        // average costs its average, which a standard kept
+                        // from when it was at standard does not replace;
+                        // that is only the fallback when none is on hand.
+                        let at_standard =
+                            costing::method(conn, self.company_id, item).await? == Method::Standard;
+                        let current = costing::standard(conn, self.company_id, item).await?;
+                        let average: Option<Decimal> = if at_standard && current.is_some() {
+                            None
+                        } else {
+                            sqlx::query_scalar(
                                 "SELECT CASE WHEN sum(qty) > 0
                                         THEN round(sum(value) / sum(qty), 6) END
                                  FROM stock_level WHERE company_id = $1 AND item_id = $2",
@@ -417,18 +543,22 @@ impl Roller<'_> {
                             .bind(self.company_id)
                             .bind(item)
                             .fetch_one(&mut *conn)
-                            .await?;
-                            if average.is_none() {
-                                self.unknown.push(item);
-                            }
-                            let unit_cost = average.unwrap_or_default();
-                            Standard {
+                            .await?
+                        };
+                        match (at_standard, current, average) {
+                            (true, Some(current), _) => current,
+                            (_, _, Some(unit_cost)) => Standard {
                                 unit_cost,
                                 material_cost: unit_cost,
                                 ..Standard::default()
+                            },
+                            (_, Some(current), None) => current,
+                            (_, None, None) => {
+                                self.unknown.push(item);
+                                Standard::default()
                             }
                         }
-                    },
+                    }
                 };
                 (standard, false)
             }
@@ -587,6 +717,17 @@ impl Command for Activate {
         }
         let date = input.date.unwrap_or(doc.doc_date);
         let decimals = company::currency_decimals(&mut *ctx.conn, doc.company_id).await?;
+        // Every item of the version, exclusively and in one order: movements
+        // of them wait (they take the item shared, stock 15), so none
+        // commits between the revaluation and the new standard, and two
+        // activations never deadlock over items listed in other orders.
+        let mut items: Vec<Uuid> = rows.iter().map(|l| l.item_id).collect();
+        items.sort();
+        items.dedup();
+        sqlx::query("SELECT 1 FROM item WHERE id = ANY($1) ORDER BY id FOR NO KEY UPDATE")
+            .bind(&items)
+            .execute(&mut *ctx.conn)
+            .await?;
         costing::begin_activation(&mut *ctx.conn).await?;
         let mut revaluations = vec![];
         for line in &rows {
@@ -630,55 +771,11 @@ impl Command for Activate {
                 .map(|n| format!("New standard costs {n}"));
             let posting = document::create_posting(ctx, &doc, date, memo).await?;
             let entries = costing::revalue(&mut *ctx.conn, &posting, &revaluations).await?;
-            let places =
-                erpcraft_stock::locations(&mut *ctx.conn, entries.iter().map(|e| e.warehouse_id))
-                    .await?;
-            let mut gl = vec![];
-            for entry in &entries {
-                let transit: bool = sqlx::query_scalar(
-                    "SELECT COALESCE(bool_or(transit), false) FROM warehouse WHERE id = $1",
-                )
-                .bind(entry.warehouse_id)
-                .fetch_one(&mut *ctx.conn)
-                .await?;
-                let about = [("item", entry.item_id), ("warehouse", entry.warehouse_id)];
-                let inventory = erpcraft_gl::account_for(
-                    &mut *ctx.conn,
-                    doc.company_id,
-                    if transit {
-                        "inventory_in_transit"
-                    } else {
-                        "inventory"
-                    },
-                    &about,
-                )
-                .await?;
-                let against =
-                    erpcraft_gl::account_for(&mut *ctx.conn, doc.company_id, REVALUATION, &about)
-                        .await?;
-                // Each line is about its level's place and item.
-                let about = places.scopes(entry.warehouse_id, Some(entry.item_id));
-                let amount = entry.value;
-                let (debit, credit) = (amount.max(Decimal::ZERO), (-amount).max(Decimal::ZERO));
-                gl.push(
-                    GlLine {
-                        account_id: inventory,
-                        debit,
-                        credit,
-                        ..GlLine::default()
-                    }
-                    .about(&about),
-                );
-                gl.push(
-                    GlLine {
-                        account_id: against,
-                        debit: credit,
-                        credit: debit,
-                        ..GlLine::default()
-                    }
-                    .about(&about),
-                );
-            }
+            let moved: Vec<(Uuid, Uuid, Decimal)> = entries
+                .iter()
+                .map(|e| (e.item_id, e.warehouse_id, e.value))
+                .collect();
+            let gl = revaluation_lines(ctx, doc.company_id, &moved).await?;
             erpcraft_gl::post(ctx, &posting, &gl).await?;
         }
         document::transition(ctx, &mut doc, "active").await?;

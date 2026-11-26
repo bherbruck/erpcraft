@@ -79,6 +79,10 @@ pub enum Reason {
     Duplicate,
     /// Something still refers to the record.
     InUse,
+    /// Another change to the same records was under way at the same
+    /// moment (a deadlock, or a serialization failure) and nothing was
+    /// done: the same request again is expected to go through.
+    Retry,
 }
 
 impl Reason {
@@ -88,6 +92,7 @@ impl Reason {
             Reason::State => "state",
             Reason::Duplicate => "duplicate",
             Reason::InUse => "in_use",
+            Reason::Retry => "retry",
         }
     }
 }
@@ -145,6 +150,17 @@ impl Error {
     /// A conflict because something still refers to the record.
     pub fn in_use(msg: impl Into<String>) -> Self {
         Error::conflict(msg).with_reason(Reason::InUse)
+    }
+
+    /// A conflict with a change made at the same moment; nothing was done
+    /// and the request may be sent again.
+    pub fn retry(msg: impl Into<String>) -> Self {
+        Error::conflict(msg).with_reason(Reason::Retry)
+    }
+
+    /// Whether this is a [`Error::retry`].
+    pub fn is_retry(&self) -> bool {
+        matches!(self, Error::Conflict(m) if m.detail.reason == Some(Reason::Retry))
     }
 
     pub fn forbidden(msg: impl Into<String>) -> Self {
@@ -266,6 +282,11 @@ impl From<sqlx::Error> for Error {
                 // not_null, check, exclusion, raise, and bad input values
                 "23502" | "23514" | "23P01" | "P0001" | "22P02" | "22007" | "22008" | "22003"
                 | "22001" => Error::validation(message),
+                // deadlock_detected, serialization_failure
+                "40P01" | "40001" => Error::retry(
+                    "another change to the same records was made at the same moment, and \
+                     nothing was done: try again",
+                ),
                 _ => Error::Internal(message),
             };
         }

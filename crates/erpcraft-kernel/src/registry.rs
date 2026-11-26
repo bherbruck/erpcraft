@@ -49,6 +49,12 @@ pub trait Module: Send + Sync + 'static {
         vec![]
     }
 
+    /// What runs after every ledger has reversed a posting, as the person
+    /// reversing; see [`crate::document::ReversalHook`].
+    fn reversal_hooks(&self) -> Vec<Arc<dyn crate::document::ReversalHook>> {
+        vec![]
+    }
+
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
         vec![]
     }
@@ -1045,6 +1051,7 @@ pub struct Registry {
     tools: BTreeMap<String, String>,
     policies: BTreeMap<String, PolicyPoint>,
     ledgers: Vec<Arc<dyn Ledger>>,
+    reversal_hooks: Vec<Arc<dyn crate::document::ReversalHook>>,
     subscribers: Vec<Arc<dyn Subscriber>>,
     blocker_checks: Vec<Arc<dyn crate::blockers::BlockerCheck>>,
     authenticator: Option<Arc<dyn Authenticator>>,
@@ -1072,6 +1079,7 @@ impl Registry {
             tools: BTreeMap::new(),
             policies: BTreeMap::new(),
             ledgers: vec![],
+            reversal_hooks: vec![],
             subscribers: vec![],
             blocker_checks: vec![],
             authenticator: None,
@@ -1181,6 +1189,7 @@ impl Registry {
             }
 
             reg.ledgers.extend(module.ledgers());
+            reg.reversal_hooks.extend(module.reversal_hooks());
             reg.blocker_checks.extend(module.blocker_checks());
             for subscriber in module.subscribers() {
                 let subscriber_name = subscriber.name();
@@ -1568,6 +1577,10 @@ impl Registry {
 
     pub fn ledgers(&self) -> &[Arc<dyn Ledger>] {
         &self.ledgers
+    }
+
+    pub fn reversal_hooks(&self) -> &[Arc<dyn crate::document::ReversalHook>] {
+        &self.reversal_hooks
     }
 
     pub fn blocker_checks(&self) -> &[Arc<dyn crate::blockers::BlockerCheck>] {

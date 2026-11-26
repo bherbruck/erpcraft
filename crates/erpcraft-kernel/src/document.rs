@@ -189,6 +189,21 @@ pub mod body {
     }
 }
 
+/// What a module does after every ledger has reversed a posting, in the
+/// same transaction and as the person reversing: such as posting what the
+/// reversal could not take back as it was, because something changed
+/// since (an item's standard cost, for the costing module). It may create
+/// postings on the reversed document; it must not change the reversal.
+#[async_trait]
+pub trait ReversalHook: Send + Sync + 'static {
+    async fn after_reverse(
+        &self,
+        ctx: &mut Ctx<'_>,
+        original: &Posting,
+        reversal: &Posting,
+    ) -> Result<()>;
+}
+
 /// A ledger that hangs entries off postings. The kernel calls every ledger
 /// when a posting is reversed, so no module can forget one.
 #[async_trait]
@@ -1416,6 +1431,9 @@ pub async fn reverse_posting(
     .await?;
     for ledger in kernel.registry().ledgers() {
         ledger.reverse(&mut *ctx.conn, &original, &reversal).await?;
+    }
+    for hook in kernel.registry().reversal_hooks() {
+        hook.after_reverse(ctx, &original, &reversal).await?;
     }
     Ok(reversal)
 }

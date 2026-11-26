@@ -374,6 +374,7 @@
   "a {doc_type} has no summary field '{name}'; it has: {}": "un document {doc_type} n'a pas de champ de sommaire '{name}'; il a : {}",
   "a {} document cannot become {to}": "un document {} ne peut pas devenir {to}",
   "an expression cannot be empty": "une expression ne peut pas être vide",
+  "another change to the same records was made at the same moment, and nothing was done: try again": "une autre modification des mêmes enregistrements a eu lieu au même moment, et rien n'a été fait : réessayez",
   "approval request not found": "demande d'approbation introuvable",
   "approvals are delegated to someone else": "les approbations sont déléguées à quelqu'un d'autre",
   "approve: the command waits until the approvers named here approve it.": "approve : la commande attend que les approbateurs indiqués ici l'approuvent.",

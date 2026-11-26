@@ -374,6 +374,7 @@
   "a {doc_type} has no summary field '{name}'; it has: {}": "{doc_type} hat kein Zusammenfassungsfeld '{name}'; es gibt: {}",
   "a {} document cannot become {to}": "ein Beleg im Status {} kann nicht {to} werden",
   "an expression cannot be empty": "ein Ausdruck darf nicht leer sein",
+  "another change to the same records was made at the same moment, and nothing was done: try again": "eine andere Änderung derselben Datensätze erfolgte im selben Moment, und nichts wurde getan: versuchen Sie es erneut",
   "approval request not found": "Freigabeanfrage nicht gefunden",
   "approvals are delegated to someone else": "Freigaben sind an jemand anderen übertragen",
   "approve: the command waits until the approvers named here approve it.": "approve: der Befehl wartet, bis die hier genannten Freigebenden zustimmen.",

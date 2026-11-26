@@ -400,7 +400,8 @@ async fn production_variance_account(
     let scopes = [("item", item_id)];
     match erpcraft_gl::account_for(conn, company_id, purpose, &scopes).await {
         Ok(account) => Ok(account),
-        Err(_) if purpose != "production_variance" => {
+        // Only a missing rule falls back; a failure to read is a failure.
+        Err(Error::Validation(_)) if purpose != "production_variance" => {
             erpcraft_gl::account_for(conn, company_id, "production_variance", &scopes).await
         }
         Err(e) => Err(e),

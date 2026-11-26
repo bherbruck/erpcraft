@@ -166,6 +166,8 @@ impl IntoResponse for ApiError {
         let status = match &self.0 {
             Error::Validation(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Error::NotFound(_) => StatusCode::NOT_FOUND,
+            // Busy, not wrong: the same request again is expected to work.
+            e @ Error::Conflict(_) if e.is_retry() => StatusCode::SERVICE_UNAVAILABLE,
             Error::Conflict(_) => StatusCode::CONFLICT,
             Error::Forbidden(_) => StatusCode::FORBIDDEN,
             Error::Unauthorized => StatusCode::UNAUTHORIZED,

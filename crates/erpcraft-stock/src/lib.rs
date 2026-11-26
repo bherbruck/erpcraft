@@ -130,6 +130,11 @@ impl Module for StockModule {
                 name: "standard_cost",
                 sql: include_str!("../migrations/0014_standard_cost.sql"),
             },
+            Migration {
+                version: 15,
+                name: "standard_cost_review",
+                sql: include_str!("../migrations/0015_standard_cost_review.sql"),
+            },
         ]
     }
 
@@ -791,6 +796,13 @@ async fn lock_and_read_levels(
     pairs.sort();
     pairs.dedup();
     let (items, warehouses): (Vec<Uuid>, Vec<Uuid>) = pairs.into_iter().unzip();
+    // The items first, shared and in one order: a change of how an item
+    // is costed takes its row exclusively (stock 15), so the two never
+    // deadlock and never cross.
+    sqlx::query("SELECT 1 FROM item WHERE id = ANY($1) ORDER BY id FOR SHARE")
+        .bind(&items)
+        .execute(&mut *conn)
+        .await?;
     sqlx::query(
         "INSERT INTO stock_level (item_id, warehouse_id, company_id)
          SELECT item_id, warehouse_id, $3 FROM unnest($1::uuid[], $2::uuid[]) AS p (item_id, warehouse_id)
@@ -1196,6 +1208,9 @@ impl Ledger for StockLedger {
         if pairs.is_empty() {
             return Ok(());
         }
+        // The levels first, as a post and stock_count.start take them: a
+        // count that starts now waits, and one that started is seen.
+        lock_levels(&mut *ctx.conn, original.company_id, pairs.clone()).await?;
         counts::ask(ctx, original.company_id, &pairs, "reversal").await
     }
 

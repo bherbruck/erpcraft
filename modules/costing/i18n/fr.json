@@ -17,6 +17,7 @@
   "Worked out from the item's bill of materials and routing.": "Calculé à partir de la nomenclature et de la gamme de l'article.",
   "a cost is zero or more": "un coût est égal ou supérieur à zéro",
   "a cost version needs at least one line": "une version de coûts doit avoir au moins une ligne",
+  "item {code} has {} active bills of materials: deactivate all but the one it is made by, or give its cost in the version": "l'article {code} a {} nomenclatures actives : désactivez toutes sauf celle selon laquelle il est fabriqué, ou indiquez son coût dans la version",
   "only a draft cost version is activated": "seule une version de coûts à l'état de brouillon peut être activée",
   "only a draft cost version is rolled up": "seule une version de coûts à l'état de brouillon peut être cumulée",
   "the bills of materials lead back to themselves: {path}": "les nomenclatures renvoient à elles-mêmes : {path}",

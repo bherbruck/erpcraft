@@ -636,7 +636,17 @@ pub async fn execute(
 
     let preview = options.preview;
     let mut touched = Subjects::new();
-    let result = run_action(kernel, actor, entry, &input, options, &mut touched).await;
+    let mut result = run_action(kernel, actor, entry, &input, options.clone(), &mut touched).await;
+    // A deadlock or serialization failure undid everything the command
+    // did: once more, on a fresh transaction, before the caller hears of it.
+    if result.as_ref().is_err_and(Error::is_retry) {
+        tracing::warn!(
+            command = name,
+            "a command met a concurrent change; trying it once more"
+        );
+        touched = Subjects::new();
+        result = run_action(kernel, actor, entry, &input, options, &mut touched).await;
+    }
     // A refused or failed attempt to change something is part of the
     // record. A preview attempts nothing.
     if let (Err(error), false) = (&result, preview) {
