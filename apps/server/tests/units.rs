@@ -400,3 +400,112 @@ async fn a_price_list_kept_per_stock_unit_prices_a_box() {
     assert_eq!(price_of("5").await, 20.0);
     t.stop().await;
 }
+
+async fn level(t: &TestApp, item: &str, warehouse: &str) -> (f64, f64) {
+    let (qty, value): (String, String) = sqlx::query_as(
+        "SELECT qty::text, value::text FROM stock_level
+         WHERE item_id = $1::uuid AND warehouse_id = $2::uuid",
+    )
+    .bind(item)
+    .bind(warehouse)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    (qty.parse().unwrap(), value.parse().unwrap())
+}
+
+#[tokio::test]
+async fn steel_is_adjusted_and_moved_by_the_tonne_and_the_bag() {
+    let t = TestApp::start().await;
+    let s = shop(&t).await;
+    // A bag of 25 kg, neither bought nor sold: adjustments and transfers
+    // take any unit of the item.
+    t.create(
+        "item_uom",
+        json!({ "item_id": s.steel, "uom": "bag", "factor": "25", "purchase": false,
+                "sales": false }),
+    )
+    .await;
+    t.create(
+        "item_uom",
+        json!({ "item_id": s.steel, "uom": "third", "factor": "0.333333", "purchase": false,
+                "sales": false }),
+    )
+    .await;
+    let offset = t
+        .create(
+            "account",
+            json!({ "company_id": s.c, "code": "5190", "name": "Stock found",
+                    "account_type": "expense" }),
+        )
+        .await;
+    let yard = t
+        .create(
+            "warehouse",
+            json!({ "company_id": s.c, "code": "YARD", "name": "Yard" }),
+        )
+        .await;
+
+    // Two tonnes found at 900 a tonne, eight bags gone.
+    let (status, found) = s
+        .draft(
+            &t,
+            "stock_adjustment",
+            json!({ "offset_account_id": offset, "lines": [
+                { "item_id": s.steel, "warehouse_id": s.plant, "qty": "2", "uom": "t",
+                  "unit_cost": "900" }] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{found}");
+    assert_eq!(found["body"]["lines"][0]["qty"], "2");
+    assert_eq!(found["body"]["lines"][0]["uom"], "t");
+    assert_eq!(dec(&found["body"]["lines"][0]["factor"]), 1000.0);
+    s.ok(&t, "stock_adjustment.post", json!({ "id": id(&found) }))
+        .await;
+    assert_eq!(level(&t, &s.steel, &s.plant).await, (2000.0, 1800.0));
+    let (status, gone) = s
+        .draft(
+            &t,
+            "stock_adjustment",
+            json!({ "offset_account_id": offset, "lines": [
+                { "item_id": s.steel, "warehouse_id": s.plant, "qty": "-8", "uom": "bag" }] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{gone}");
+    s.ok(&t, "stock_adjustment.post", json!({ "id": id(&gone) }))
+        .await;
+    // 200 kg at the average of 0.90.
+    assert_eq!(level(&t, &s.steel, &s.plant).await, (1800.0, 1620.0));
+
+    // A tonne to the yard.
+    let (status, transfer) = s
+        .draft(
+            &t,
+            "stock_transfer",
+            json!({ "from_warehouse_id": s.plant, "to_warehouse_id": yard, "lines": [
+                { "item_id": s.steel, "qty": "1", "uom": "t" }] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{transfer}");
+    assert_eq!(transfer["body"]["lines"][0]["qty"], "1");
+    s.ok(&t, "stock_transfer.post", json!({ "id": id(&transfer) }))
+        .await;
+    assert_eq!(level(&t, &s.steel, &yard).await, (1000.0, 900.0));
+    assert_eq!(level(&t, &s.steel, &s.plant).await, (800.0, 720.0));
+
+    // Not exact, refused; a unit the item does not have, refused.
+    for (qty, uom) in [("0.5", "third"), ("1", "drum")] {
+        let (status, body) = s
+            .draft(
+                &t,
+                "stock_adjustment",
+                json!({ "offset_account_id": offset, "lines": [
+                    { "item_id": s.steel, "warehouse_id": s.plant, "qty": qty, "uom": uom,
+                      "unit_cost": "1" }] }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{uom}: {body}");
+        assert_eq!(body["error"]["line"], 1, "{body}");
+    }
+    t.stop().await;
+}

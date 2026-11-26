@@ -193,33 +193,53 @@ pub(crate) async fn start(
     Ok(())
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, sqlx::FromRow)]
 struct LineWithProgress {
     id: Uuid,
     line_no: i32,
     item_id: Uuid,
     qty: Decimal,
+    uom: Option<String>,
+    factor: Decimal,
     qty_received: Option<Decimal>,
     qty_written_off: Option<Decimal>,
 }
 
-/// The lines of a transfer as a reader sees them: with what has arrived of
-/// each, once it was shipped.
+/// The lines of a transfer as a reader sees them: in each line's unit,
+/// with what has arrived of each once it was shipped (received in stock
+/// units, shown in the line's).
 pub(crate) async fn lines_with_progress(
     conn: &mut PgConnection,
     document_id: Uuid,
 ) -> Result<Vec<Value>> {
     let lines: Vec<LineWithProgress> = sqlx::query_as(
-        "SELECT l.id, l.line_no, l.item_id, l.qty, p.qty_received, p.qty_written_off
+        "SELECT l.id, l.line_no, l.item_id, l.qty, l.uom, l.factor, p.qty_received,
+                p.qty_written_off
          FROM stock_transfer_line l LEFT JOIN stock_transfer_progress p ON p.line_id = l.id
          WHERE l.document_id = $1 ORDER BY l.line_no",
     )
     .bind(document_id)
     .fetch_all(&mut *conn)
     .await?;
+    let shown = |qty: Decimal, factor: Decimal| {
+        erpcraft_stock::units::from_stock(qty, factor)
+            .round_dp(6)
+            .normalize()
+    };
     Ok(lines
         .into_iter()
-        .map(|l| serde_json::to_value(l).unwrap_or_default())
+        .map(|l| {
+            json!({
+                "id": l.id,
+                "line_no": l.line_no,
+                "item_id": l.item_id,
+                "qty": shown(l.qty, l.factor),
+                "uom": l.uom,
+                "factor": l.factor,
+                "qty_received": l.qty_received.map(|q| shown(q, l.factor)),
+                "qty_written_off": l.qty_written_off.map(|q| shown(q, l.factor)),
+            })
+        })
         .collect())
 }
 

@@ -14,7 +14,7 @@ use erpcraft_kernel::document::{self, Document, DocumentHandler, DocumentView};
 use erpcraft_kernel::{
     CollectionMeta, Command, CommandSpec, Ctx, Decimal, DocTypeMeta, DynCommand, Error, FieldMeta,
     FieldType, JsonSchema, Migration, Module, PgConnection, Result, StateMeta, Tone, async_trait,
-    command, company, schemars,
+    command, company, round_money, schemars,
 };
 use erpcraft_stock::{Cost, LineLot, LotQty, StockLine, lots};
 use serde::{Deserialize, Serialize};
@@ -78,6 +78,11 @@ impl Module for InventoryModule {
                 version: 6,
                 name: "count",
                 sql: include_str!("../migrations/0006_count.sql"),
+            },
+            Migration {
+                version: 7,
+                name: "units",
+                sql: include_str!("../migrations/0007_units.sql"),
             },
         ]
     }
@@ -148,20 +153,43 @@ struct LineInput {
     id: Option<Uuid>,
     item_id: Uuid,
     warehouse_id: Uuid,
+    /// In the line's unit.
     qty: Decimal,
+    /// Per the line's unit.
     unit_cost: Option<Decimal>,
+    /// A unit of the item (`item_uom`); the stock unit when omitted.
+    uom: Option<String>,
     #[serde(default)]
     lots: Vec<LineLot>,
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, sqlx::FromRow)]
 struct Line {
     id: Uuid,
     line_no: i32,
     item_id: Uuid,
     warehouse_id: Uuid,
+    /// In stock units.
     qty: Decimal,
     unit_cost: Option<Decimal>,
+    uom: Option<String>,
+    factor: Decimal,
+}
+
+impl Line {
+    /// The line as its document shows it: the quantity in its own unit.
+    fn shown(&self) -> Value {
+        json!({
+            "id": self.id,
+            "line_no": self.line_no,
+            "item_id": self.item_id,
+            "warehouse_id": self.warehouse_id,
+            "qty": erpcraft_stock::units::from_stock(self.qty, self.factor),
+            "unit_cost": self.unit_cost,
+            "uom": self.uom,
+            "factor": self.factor,
+        })
+    }
 }
 
 #[derive(Debug, Default, sqlx::FromRow)]
@@ -180,7 +208,7 @@ async fn load_header(conn: &mut PgConnection, document_id: Uuid) -> Result<Heade
 
 async fn load_lines(conn: &mut PgConnection, document_id: Uuid) -> Result<Vec<Line>> {
     let lines = sqlx::query_as(
-        "SELECT id, line_no, item_id, warehouse_id, qty, unit_cost
+        "SELECT id, line_no, item_id, warehouse_id, qty, unit_cost, uom, factor
          FROM stock_adjustment_line WHERE document_id = $1 ORDER BY line_no",
     )
     .bind(document_id)
@@ -218,6 +246,8 @@ impl DocumentHandler for StockAdjustment {
                         .unit_of("item_id", "uom")
                         .required(),
                     FieldMeta::new("unit_cost", "Unit cost", FieldType::Decimal).unit_price(),
+                    uom_field(),
+                    factor_field(),
                     lots::field(),
                 ],
             }],
@@ -267,6 +297,13 @@ impl DocumentHandler for StockAdjustment {
             }
         }
 
+        let units = line_units(
+            &mut *ctx.conn,
+            body.lines
+                .iter()
+                .map(|l| (l.item_id, l.uom.as_deref(), l.qty)),
+        )
+        .await?;
         let warehouses: Vec<Uuid> = body.lines.iter().map(|l| l.warehouse_id).collect();
         if !company::owns_all(&mut *ctx.conn, "warehouse", &warehouses, doc.company_id).await? {
             return Err(Error::validation(
@@ -305,18 +342,23 @@ impl DocumentHandler for StockAdjustment {
         if !body.lines.is_empty() {
             let line_nos: Vec<i32> = (1..=body.lines.len() as i32).collect();
             sqlx::query(
-                "INSERT INTO stock_adjustment_line (id, document_id, line_no, item_id, warehouse_id, qty, unit_cost)
-                 SELECT r.id, $1, r.line_no, r.item_id, r.warehouse_id, r.qty, r.unit_cost
-                 FROM unnest($2::uuid[], $3::int4[], $4::uuid[], $5::uuid[], $6::numeric[], $7::numeric[])
-                    AS r (id, line_no, item_id, warehouse_id, qty, unit_cost)",
+                "INSERT INTO stock_adjustment_line (id, document_id, line_no, item_id, warehouse_id, qty,
+                    unit_cost, uom, factor)
+                 SELECT r.id, $1, r.line_no, r.item_id, r.warehouse_id, r.qty, r.unit_cost, r.uom,
+                    r.factor
+                 FROM unnest($2::uuid[], $3::int4[], $4::uuid[], $5::uuid[], $6::numeric[], $7::numeric[],
+                             $8::text[], $9::numeric[])
+                    AS r (id, line_no, item_id, warehouse_id, qty, unit_cost, uom, factor)",
             )
             .bind(doc.id)
             .bind(&ids)
             .bind(&line_nos)
             .bind(body.lines.iter().map(|line| line.item_id).collect::<Vec<_>>())
             .bind(body.lines.iter().map(|line| line.warehouse_id).collect::<Vec<_>>())
-            .bind(body.lines.iter().map(|line| line.qty).collect::<Vec<_>>())
+            .bind(units.iter().map(|u| u.stock_qty).collect::<Vec<_>>())
             .bind(body.lines.iter().map(|line| line.unit_cost).collect::<Vec<_>>())
+            .bind(units.iter().map(|u| u.uom.clone()).collect::<Vec<_>>())
+            .bind(units.iter().map(|u| u.factor).collect::<Vec<_>>())
             .execute(&mut *ctx.conn)
             .await?;
         }
@@ -338,13 +380,65 @@ impl DocumentHandler for StockAdjustment {
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
         let header = load_header(conn, doc.id).await?;
+        let lines: Vec<Value> = load_lines(conn, doc.id)
+            .await?
+            .iter()
+            .map(Line::shown)
+            .collect();
         let mut body = json!({
             "offset_account_id": header.offset_account_id,
-            "lines": load_lines(conn, doc.id).await?,
+            "lines": lines,
         });
         lots::attach(conn, doc.id, &mut body, "lines").await?;
         Ok(body)
     }
+}
+
+/// The unit field of a line: a unit of its item, the stock unit by default.
+fn uom_field() -> FieldMeta {
+    FieldMeta::new("uom", "Unit", FieldType::Text).help(
+        "A unit of the item (its units, item_uom) the quantity is in; the item's stock unit \
+         when left out.",
+    )
+}
+
+fn factor_field() -> FieldMeta {
+    FieldMeta::new("factor", "Stock units in one", FieldType::Decimal)
+        .quantity()
+        .readonly()
+        .help("How many of the item's stock unit one of the line's unit is.")
+}
+
+/// A line's unit as saved: its code (none for the stock unit), its factor,
+/// and its quantity in stock units.
+struct LineUnit {
+    uom: Option<String>,
+    factor: Decimal,
+    stock_qty: Decimal,
+}
+
+/// The units of lines given as item, unit and quantity: each a unit of its
+/// item, its quantity in stock units exact, or the line is refused.
+async fn line_units<'a>(
+    conn: &mut PgConnection,
+    lines: impl Iterator<Item = (Uuid, Option<&'a str>, Decimal)>,
+) -> Result<Vec<LineUnit>> {
+    let mut out = vec![];
+    for (index, (item, uom, qty)) in lines.enumerate() {
+        let n = index + 1;
+        let (code, factor) =
+            erpcraft_stock::units::unit(&mut *conn, item, uom, erpcraft_stock::units::Purpose::Any)
+                .await
+                .map_err(|e| Error::line("lines", n, Some("uom"), e.to_string()))?;
+        let stock_qty = erpcraft_stock::units::to_stock_or(qty, factor, &code)
+            .map_err(|e| Error::line("lines", n, Some("qty"), e.to_string()))?;
+        out.push(LineUnit {
+            uom: uom.filter(|u| !u.trim().is_empty()).map(|_| code),
+            factor,
+            stock_qty,
+        });
+    }
+    Ok(out)
 }
 
 // ----------------------------------------------------------------- commands
@@ -544,6 +638,7 @@ impl Command for PostAdjustment {
             ));
         }
         let named = lots::of_document(&mut *ctx.conn, doc.id).await?;
+        let decimals = company::currency_decimals(&mut *ctx.conn, doc.company_id).await?;
         let mut movements: Vec<StockLine> = vec![];
         for line in &lines {
             let lots = lots::resolve(
@@ -558,11 +653,21 @@ impl Command for PostAdjustment {
                 },
             )
             .await?;
+            // A cost per another unit: the line's quantity in that unit
+            // times it, rounded once.
+            let cost = line.unit_cost.map(|cost| {
+                if line.factor == Decimal::ONE {
+                    Cost::Unit(cost)
+                } else {
+                    let qty = erpcraft_stock::units::from_stock(line.qty, line.factor);
+                    Cost::Total(round_money(qty * cost, decimals))
+                }
+            });
             movements.push(StockLine {
                 item_id: line.item_id,
                 warehouse_id: line.warehouse_id,
                 qty: line.qty,
-                cost: line.unit_cost.map(Cost::Unit),
+                cost,
                 source_line_id: Some(line.id),
                 lots,
             });
@@ -678,7 +783,10 @@ struct TransferLineInput {
     /// The id of the stored line this one is, when it was read before.
     id: Option<Uuid>,
     item_id: Uuid,
+    /// In the line's unit.
     qty: Decimal,
+    /// A unit of the item (`item_uom`); the stock unit when omitted.
+    uom: Option<String>,
     #[serde(default)]
     lots: Vec<LineLot>,
 }
@@ -775,6 +883,8 @@ impl DocumentHandler for StockTransfer {
                         .unit_of("item_id", "uom")
                         .readonly()
                         .help("Of a transfer closed short: what never arrived."),
+                    uom_field(),
+                    factor_field(),
                     lots::field(),
                 ],
             }],
@@ -844,6 +954,13 @@ impl DocumentHandler for StockTransfer {
             }
             lots::check("lines", index + 1, &line.lots)?;
         }
+        let units = line_units(
+            &mut *ctx.conn,
+            body.lines
+                .iter()
+                .map(|l| (l.item_id, l.uom.as_deref(), l.qty)),
+        )
+        .await?;
         let mut warehouses = vec![body.from_warehouse_id, body.to_warehouse_id];
         warehouses.extend(body.transit_warehouse_id);
         if !company::owns_all(&mut *ctx.conn, "warehouse", &warehouses, doc.company_id).await? {
@@ -889,10 +1006,12 @@ impl DocumentHandler for StockTransfer {
         if !body.lines.is_empty() {
             let line_nos: Vec<i32> = (1..=body.lines.len() as i32).collect();
             sqlx::query(
-                "INSERT INTO stock_transfer_line (id, document_id, line_no, item_id, qty)
-                 SELECT r.id, $1, r.line_no, r.item_id, r.qty
-                 FROM unnest($2::uuid[], $3::int4[], $4::uuid[], $5::numeric[])
-                    AS r (id, line_no, item_id, qty)",
+                "INSERT INTO stock_transfer_line (id, document_id, line_no, item_id, qty, uom,
+                    factor)
+                 SELECT r.id, $1, r.line_no, r.item_id, r.qty, r.uom, r.factor
+                 FROM unnest($2::uuid[], $3::int4[], $4::uuid[], $5::numeric[], $6::text[],
+                             $7::numeric[])
+                    AS r (id, line_no, item_id, qty, uom, factor)",
             )
             .bind(doc.id)
             .bind(&ids)
@@ -903,7 +1022,9 @@ impl DocumentHandler for StockTransfer {
                     .map(|line| line.item_id)
                     .collect::<Vec<_>>(),
             )
-            .bind(body.lines.iter().map(|line| line.qty).collect::<Vec<_>>())
+            .bind(units.iter().map(|u| u.stock_qty).collect::<Vec<_>>())
+            .bind(units.iter().map(|u| u.uom.clone()).collect::<Vec<_>>())
+            .bind(units.iter().map(|u| u.factor).collect::<Vec<_>>())
             .execute(&mut *ctx.conn)
             .await?;
         }

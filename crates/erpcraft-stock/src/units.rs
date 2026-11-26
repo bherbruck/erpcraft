@@ -10,6 +10,10 @@ use uuid::Uuid;
 pub enum Purpose {
     Purchase,
     Sales,
+    /// Moved within the company (an adjustment, a transfer) or made and
+    /// consumed (a bill of materials, a production order): any unit of
+    /// the item.
+    Any,
 }
 
 /// The places of a stock quantity.
@@ -44,13 +48,14 @@ pub async fn unit(
             let allowed = match purpose {
                 Purpose::Purchase => purchase,
                 Purpose::Sales => sales,
+                Purpose::Any => true,
             };
             if !allowed {
                 return Err(Error::validation(format!(
                     "item {code} is not {} in {uom}",
                     match purpose {
                         Purpose::Purchase => "bought",
-                        Purpose::Sales => "sold",
+                        Purpose::Sales | Purpose::Any => "sold",
                     }
                 ))
                 .with_field("uom"));
@@ -90,4 +95,13 @@ pub fn price_per_stock_unit(price: Decimal, factor: Decimal) -> Decimal {
         return price;
     }
     (price / factor).round_dp(6).normalize()
+}
+
+/// A quantity kept in stock units, in a unit of `factor`: what a line in
+/// that unit says. Exact whenever the stock quantity came from that unit.
+pub fn from_stock(stock: Decimal, factor: Decimal) -> Decimal {
+    if factor.is_zero() {
+        return stock;
+    }
+    (stock / factor).normalize()
 }
