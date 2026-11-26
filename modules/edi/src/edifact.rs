@@ -16,6 +16,21 @@ use std::str::FromStr;
 
 use rust_decimal::Decimal;
 
+/// Shorthand for the components of an element, for the message modules.
+macro_rules! comps {
+    ($($c:expr),* $(,)?) => { vec![$(String::from($c)),*] };
+}
+
+pub mod common;
+pub mod contrl;
+pub mod desadv;
+pub mod invoic;
+pub mod orders;
+pub mod ordrsp;
+mod write;
+
+pub use write::{Envelope, Outgoing, SyntaxId, write};
+
 use crate::segment::{
     Budget, Charset, Delimiters, EdiError, MAX_BYTES, Segment, Tokenizer, skip_filler,
 };
