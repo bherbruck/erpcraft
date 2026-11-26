@@ -76,6 +76,11 @@ impl Module for PartyModule {
                 name: "quebec_france_ids",
                 sql: include_str!("../migrations/0005_quebec_france_ids.sql"),
             },
+            Migration {
+                version: 6,
+                name: "us_ca_individuals",
+                sql: include_str!("../migrations/0006_us_ca_individuals.sql"),
+            },
         ]
     }
 
@@ -903,7 +908,8 @@ pub struct TaxIdRecord {
     /// `eu_vat`, `tax_number` (a national tax number, such as the German
     /// Steuernummer), `us_ein`, `ca_bn` (the Canadian business number, which
     /// carries the GST/HST account), `ca_qst` (the Quebec sales tax number),
-    /// `fr_siren` (nine digits) or `other`. One of each.
+    /// `ca_sin` (a Canadian Social Insurance Number), `us_ssn` (a US Social
+    /// Security Number), `fr_siren` (nine digits) or `other`. One of each.
     pub scheme: String,
     /// As the authority writes it, such as DE123456789.
     pub value: String,

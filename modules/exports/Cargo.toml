@@ -1,0 +1,18 @@
+[package]
+name = "erpcraft-exports"
+description = "erpcraft accountant exports: DATEV, 1099 and T5018 information returns, the general ledger as CSV"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+base64.workspace = true
+chrono.workspace = true
+erpcraft-kernel.workspace = true
+erpcraft-party.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+uuid.workspace = true

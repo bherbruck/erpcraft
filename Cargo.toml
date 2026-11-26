@@ -46,6 +46,7 @@ erpcraft-recurring = { path = "modules/recurring" }
 erpcraft-mail = { path = "modules/mail" }
 erpcraft-edi = { path = "modules/edi" }
 erpcraft-analysis = { path = "modules/analysis" }
+erpcraft-exports = { path = "modules/exports" }
 
 # Used only by erpcraft-printing: every rendered page and every saved
 # template goes through it. Built on html5ever, a spec-compliant parser.
