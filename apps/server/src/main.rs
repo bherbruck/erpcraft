@@ -25,6 +25,8 @@ const USAGE: &str = "usage: erpcraft [--migrate-only | --check-migrations]
 /// Exit codes of `--check-migrations`.
 const PENDING: u8 = 10;
 const DOWNGRADE: u8 = 20;
+/// The database records migrations under other names than this binary's.
+const RENAMED: u8 = 30;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -88,7 +90,16 @@ async fn check_migrations() -> Result<ExitCode, Box<dyn Error>> {
             m.module, m.version, m.name
         );
     }
-    Ok(if !status.unknown.is_empty() {
+    for (m, ours) in &status.renamed {
+        println!(
+            "another migration: {} {} is {} in the database and {ours} in this binary",
+            m.module, m.version, m.name
+        );
+    }
+    Ok(if !status.renamed.is_empty() {
+        println!("the database's migrations are not this binary's: this binary refuses to run");
+        ExitCode::from(RENAMED)
+    } else if !status.unknown.is_empty() {
         println!("the database was migrated by a newer erpcraft: this binary refuses to run");
         ExitCode::from(DOWNGRADE)
     } else if !status.pending.is_empty() {
@@ -118,6 +129,9 @@ async fn verify(args: &[String]) -> Result<ExitCode, Box<dyn Error>> {
     let status = kernel.migration_status().await?;
     if !status.unknown.is_empty() {
         return Err(erpcraft_db::downgrade_error(&status.unknown).into());
+    }
+    if !status.renamed.is_empty() {
+        return Err(erpcraft_db::renamed_error(&status.renamed).into());
     }
     if !status.pending.is_empty() {
         return Err(format!(

@@ -7,11 +7,17 @@
 //! - the stock ledger equals its own entries (levels and lot levels are the
 //!   sums of what was recorded), and the inventory accounts (the account
 //!   rules for `inventory` and `inventory_in_transit`) carry exactly the
-//!   value of the stock;
+//!   value of the stock; an item kept at standard cost is worth its
+//!   quantity at its standard (to within the rounding of its entries,
+//!   each of which rounds to four places);
 //! - open items: each item is settled by exactly its settlements, and every
 //!   account that carries open items has the balance they are carried at
 //!   (receivables as debits, payables as credits, with revaluations
-//!   standing);
+//!   standing), the receivables and payables accounts the settings name
+//!   included when no open item is on them; no settlement is dated before
+//!   the item it settles;
+//! - a company code asked for that matches no company is a failure, not
+//!   an empty green report;
 //! - tax: on every tax account, what the postings that recorded tax put
 //!   there is exactly the tax recorded (the tax report). Payments to the
 //!   tax authority, which record no tax, are left out.
@@ -44,6 +50,8 @@ pub struct CompanyReport {
 pub struct Report {
     pub ok: bool,
     pub companies: Vec<CompanyReport>,
+    /// The company code asked for, when no company has it.
+    pub missing: Option<String>,
 }
 
 fn check(name: &'static str, expected: Decimal, actual: Decimal, what: &str) -> Check {
@@ -176,6 +184,50 @@ pub async fn verify(pool: &PgPool, company_code: Option<&str>) -> Result<Report>
             "the inventory accounts carry the value of the stock",
         ));
 
+        // An item at standard is worth its quantity at its standard. Each
+        // entry's value rounds to four places, so the level may differ by
+        // that much per entry and no more.
+        let off_standard: Vec<(String, String, Decimal, Decimal)> = sqlx::query_as(
+            "SELECT i.code, w.code, l.value,
+                    COALESCE(round(l.qty * s.unit_cost, 4), -1)
+             FROM stock_level l
+             JOIN item i ON i.id = l.item_id
+             JOIN warehouse w ON w.id = l.warehouse_id
+             LEFT JOIN item_standard s ON s.company_id = l.company_id AND s.item_id = l.item_id
+             WHERE l.company_id = $1 AND (l.qty <> 0 OR l.value <> 0)
+               AND stock_costing_method(l.company_id, l.item_id) = 'standard'
+               AND (s.id IS NULL
+                    OR abs(l.value - l.qty * s.unit_cost) > 0.00005 * (
+                        SELECT count(*) FROM stock_entry e
+                        WHERE e.company_id = l.company_id AND e.item_id = l.item_id
+                          AND e.warehouse_id = l.warehouse_id) + 0.00005)
+             ORDER BY i.code, w.code",
+        )
+        .bind(id)
+        .fetch_all(&mut *c)
+        .await?;
+        checks.push(Check {
+            name: "standard_cost",
+            ok: off_standard.is_empty(),
+            expected: None,
+            actual: None,
+            detail: if off_standard.is_empty() {
+                "stock at standard is worth its standard".to_owned()
+            } else {
+                off_standard
+                    .iter()
+                    .map(|(item, warehouse, value, at)| {
+                        if *at < Decimal::ZERO {
+                            format!("{item} in {warehouse}: at standard with stock and no standard")
+                        } else {
+                            format!("{item} in {warehouse}: worth {value}, at standard {at}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            },
+        });
+
         // Open items against their settlements, and against their accounts.
         let settled: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM open_item i
@@ -190,7 +242,43 @@ pub async fn verify(pool: &PgPool, company_code: Option<&str>) -> Result<Report>
             settled,
             "open items not settled by exactly their settlements",
         ));
-        let accounts: Vec<(String, Decimal, Decimal)> = sqlx::query_as(
+        let early: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM settlement s
+             JOIN open_item i ON i.id = s.open_item_id
+             JOIN posting p ON p.id = s.posting_id
+             WHERE s.company_id = $1 AND p.posting_date < i.doc_date",
+        )
+        .bind(id)
+        .fetch_one(&mut *c)
+        .await?;
+        checks.push(count(
+            "settlement_dates",
+            early,
+            "settlements dated before the item they settle",
+        ));
+        // The accounts the settings name carry open items, whether or not
+        // any item is on them now.
+        let mut named = vec![];
+        for (table, column) in [
+            ("sales_settings", "receivable_account_id"),
+            ("purchasing_settings", "payable_account_id"),
+        ] {
+            let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+                .bind(table)
+                .fetch_one(&mut *c)
+                .await?;
+            if exists {
+                named.push(format!(
+                    "SELECT {column} AS account_id FROM {table} WHERE company_id = $1"
+                ));
+            }
+        }
+        let named = if named.is_empty() {
+            "SELECT NULL::uuid AS account_id WHERE false".to_owned()
+        } else {
+            named.join(" UNION ")
+        };
+        let accounts: Vec<(String, Decimal, Decimal)> = sqlx::query_as(&format!(
             "WITH carried AS (
                  SELECT i.account_id,
                         sum(CASE WHEN i.kind = 'receivable' THEN 1 ELSE -1 END
@@ -198,12 +286,16 @@ pub async fn verify(pool: &PgPool, company_code: Option<&str>) -> Result<Report>
                                 (SELECT sum(v.amount) FROM open_item_revaluation v
                                  WHERE v.open_item_id = i.id), 0))) AS carried
                  FROM open_item i WHERE i.company_id = $1 GROUP BY i.account_id
+             ), accounts AS (
+                 SELECT account_id FROM carried UNION {named}
              )
-             SELECT a.code, c.carried,
+             SELECT a.code, COALESCE(c.carried, 0),
                     COALESCE((SELECT sum(g.debit - g.credit) FROM gl_entry g
-                              WHERE g.account_id = c.account_id), 0)
-             FROM carried c JOIN account a ON a.id = c.account_id ORDER BY a.code",
-        )
+                              WHERE g.account_id = x.account_id), 0)
+             FROM accounts x JOIN account a ON a.id = x.account_id
+             LEFT JOIN carried c ON c.account_id = x.account_id
+             ORDER BY a.code"
+        ))
         .bind(id)
         .fetch_all(&mut *c)
         .await?;
@@ -283,9 +375,11 @@ pub async fn verify(pool: &PgPool, company_code: Option<&str>) -> Result<Report>
         });
     }
     sqlx::query("COMMIT").execute(&mut *conn).await?;
+    let missing = company_code.filter(|_| out.is_empty()).map(str::to_owned);
     Ok(Report {
-        ok: out.iter().all(|c| c.checks.iter().all(|k| k.ok)),
+        ok: missing.is_none() && out.iter().all(|c| c.checks.iter().all(|k| k.ok)),
         companies: out,
+        missing,
     })
 }
 
@@ -304,7 +398,11 @@ impl Report {
                 ));
             }
         }
-        if self.companies.is_empty() {
+        if let Some(code) = &self.missing {
+            out.push_str(&format!(
+                "no company has the code {code}: nothing was checked\n"
+            ));
+        } else if self.companies.is_empty() {
             out.push_str("no companies\n");
         }
         out.push_str(if self.ok {

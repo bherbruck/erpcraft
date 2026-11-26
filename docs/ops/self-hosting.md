@@ -16,7 +16,7 @@ The binary does what an operator needs beside serving:
 |---|---|
 | `erpcraft` | Applies pending migrations, then serves. |
 | `erpcraft --migrate-only` | Applies pending migrations and exits. |
-| `erpcraft --check-migrations` | Reports where the database stands and changes nothing. Exits 0 when up to date, 10 when migrations are pending, 20 when a newer erpcraft migrated the database. |
+| `erpcraft --check-migrations` | Reports where the database stands and changes nothing. Exits 0 when up to date, 10 when migrations are pending, 20 when a newer erpcraft migrated the database, 30 when it records a migration under another name than the binary's for the same module and number (renumbered or replaced on another branch: its script here never ran). |
 | `erpcraft verify [--company CODE] [--json]` | Checks that the books agree. Exits 1 if they do not (see [backup.md](backup.md)). |
 | `erpcraft healthcheck` | Asks the running server's `/healthz`. The container's health check uses it. |
 | `erpcraft --version` | Prints the version. |

@@ -66,13 +66,18 @@ pub struct Status {
     /// was migrated by a newer binary (or one with other modules). Running
     /// against it is refused.
     pub unknown: Vec<Recorded>,
+    /// Applied under a module and version the binary knows, but recorded
+    /// with another name (as the database has it, and the binary's name):
+    /// a migration renumbered or replaced, whose script in this binary
+    /// never ran. Running against it is refused until a person looks.
+    pub renamed: Vec<(Recorded, String)>,
     /// Applied and known.
     pub applied: usize,
 }
 
 impl Status {
     pub fn is_current(&self) -> bool {
-        self.pending.is_empty() && self.unknown.is_empty()
+        self.pending.is_empty() && self.unknown.is_empty() && self.renamed.is_empty()
     }
 }
 
@@ -98,12 +103,26 @@ async fn status_on(conn: &mut PgConnection, sets: &[MigrationSet]) -> Result<Sta
     };
     let known = |module: &str, version: i32| {
         sets.iter()
-            .any(|s| s.module == module && s.migrations.iter().any(|m| m.version == version))
+            .filter(|s| s.module == module)
+            .flat_map(|s| s.migrations.iter())
+            .find(|m| m.version == version)
+            .map(|m| m.name)
     };
     let mut status = Status::default();
     for (module, version, name) in &recorded {
-        if known(module, *version) {
-            status.applied += 1;
+        if let Some(ours) = known(module, *version) {
+            if ours == name {
+                status.applied += 1;
+            } else {
+                status.renamed.push((
+                    Recorded {
+                        module: module.clone(),
+                        version: *version,
+                        name: name.clone(),
+                    },
+                    ours.to_owned(),
+                ));
+            }
         } else {
             status.unknown.push(Recorded {
                 module: module.clone(),
@@ -148,11 +167,38 @@ pub fn downgrade_error(unknown: &[Recorded]) -> Error {
     ))
 }
 
+/// The refusal for a database whose migrations are recorded under other
+/// names than the binary's for the same module and version.
+pub fn renamed_error(renamed: &[(Recorded, String)]) -> Error {
+    let listed: Vec<String> = renamed
+        .iter()
+        .take(10)
+        .map(|(r, ours)| {
+            format!(
+                "{} {} is {} here, {} in the database",
+                r.module, r.version, ours, r.name
+            )
+        })
+        .collect();
+    Error::state(format!(
+        "the database records {} migration(s) under another name than this binary's: {}{}. \
+         The binary's migration of that number never ran there: it was renumbered or replaced \
+         on another branch. Find out which schema the database has before running against it.",
+        renamed.len(),
+        listed.join(", "),
+        if renamed.len() > 10 { ", ..." } else { "" }
+    ))
+}
+
 async fn run(conn: &mut PgConnection, sets: &[MigrationSet]) -> Result<usize> {
-    // Never apply anything to a database a newer binary has migrated.
+    // Never apply anything to a database a newer binary has migrated, or
+    // one whose migrations are not this binary's.
     let status = status_on(conn, sets).await?;
     if !status.unknown.is_empty() {
         return Err(downgrade_error(&status.unknown));
+    }
+    if !status.renamed.is_empty() {
+        return Err(renamed_error(&status.renamed));
     }
     sqlx::raw_sql(
         "CREATE TABLE IF NOT EXISTS erpcraft_migration (

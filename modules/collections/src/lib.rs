@@ -55,6 +55,11 @@ impl Module for CollectionsModule {
                 name: "fee_decimals",
                 sql: include_str!("../migrations/0002_fee_decimals.sql"),
             },
+            Migration {
+                version: 3,
+                name: "fee_on_change",
+                sql: include_str!("../migrations/0003_fee_on_change.sql"),
+            },
         ]
     }
 

@@ -33,7 +33,7 @@ docker compose -f deploy/compose.prod.yml --env-file deploy/erpcraft.env \
 
 Step 3 can also be just `up -d`, since the server migrates as it starts. Migrating first while nothing runs has two advantages: a failing migration shows its error in your terminal, not in a restart loop, and nobody uses the old server against a half-migrated schema. A migration that fails is rolled back whole, and the database stays at the version before it. Fix the cause, or restore the backup and stay on the old image.
 
-`--check-migrations` exits 0 when there is nothing to do, 10 when migrations are pending (it lists them), and 20 when the database is newer than the image.
+`--check-migrations` exits 0 when there is nothing to do, 10 when migrations are pending (it lists them), 20 when the database is newer than the image, and 30 when it records a migration under another name than the image's for the same module and number; the server refuses to start on such a database.
 
 ## Going back
 
