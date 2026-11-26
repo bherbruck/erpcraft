@@ -259,7 +259,9 @@ impl Catalogues {
                             .iter()
                             .filter_map(|(e, t)| Template::new(e, t))
                             .collect();
-                        messages.templates.sort_by_key(|t| std::cmp::Reverse(t.weight));
+                        messages
+                            .templates
+                            .sort_by_key(|t| std::cmp::Reverse(t.weight));
                         (locale.clone(), messages)
                     })
                     .collect()

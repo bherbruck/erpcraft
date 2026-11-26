@@ -373,9 +373,9 @@ impl Roller<'_> {
             for id in self.path.iter().skip_while(|i| **i != item).chain([&item]) {
                 codes.push(item_code(conn, *id).await?);
             }
+            let path = codes.join(" -> ");
             return Err(Error::validation(format!(
-                "the bills of materials lead back to themselves: {}",
-                codes.join(" -> ")
+                "the bills of materials lead back to themselves: {path}"
             )));
         }
         let result = match bill_of(conn, self.company_id, item).await? {
