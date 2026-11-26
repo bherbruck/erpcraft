@@ -31,9 +31,12 @@ pub(crate) enum AgeBy {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AgingInput {
+    /// The company to report on.
     company_id: Uuid,
+    /// Only this warehouse.
     #[schemars(extend("x-field-type" = { "kind": "link", "entity": "warehouse", "key": "id" }))]
     warehouse_id: Option<Uuid>,
+    /// Only this item.
     #[schemars(extend("x-field-type" = { "kind": "link", "entity": "item", "key": "id" }))]
     item_id: Option<Uuid>,
     /// level (the default) or lot.
@@ -302,11 +305,13 @@ pub(crate) enum Movement {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SlowInput {
+    /// The company to report on.
     company_id: Uuid,
     /// The days looked back over; 90 when omitted.
     days: Option<u32>,
     /// Longer cover than this is slow; 180 days when omitted.
     slow_cover_days: Option<u32>,
+    /// Only this warehouse.
     #[schemars(extend("x-field-type" = { "kind": "link", "entity": "warehouse", "key": "id" }))]
     warehouse_id: Option<Uuid>,
     /// Every level with stock, the moving ones too.
@@ -470,9 +475,13 @@ pub(crate) enum TurnoverBy {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TurnoverInput {
+    /// The company to report on.
     company_id: Uuid,
+    /// The first posting date counted.
     from: NaiveDate,
+    /// The last posting date counted.
     to: NaiveDate,
+    /// Only this warehouse.
     #[schemars(extend("x-field-type" = { "kind": "link", "entity": "warehouse", "key": "id" }))]
     warehouse_id: Option<Uuid>,
     /// item (the default) or item_group.

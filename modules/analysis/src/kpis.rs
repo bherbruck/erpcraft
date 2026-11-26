@@ -13,6 +13,7 @@ use crate::sales;
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct KpiInput {
+    /// The company to report on.
     company_id: Uuid,
     /// Today when omitted.
     as_of: Option<NaiveDate>,

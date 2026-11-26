@@ -522,6 +522,7 @@ async fn analyse(ctx: &mut Ctx<'_>, side: Side, ask: Ask) -> Result<AnalysisOutp
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SalesInput {
+    /// The company to report on.
     company_id: Uuid,
     /// The first posting date counted.
     from: NaiveDate,
@@ -543,8 +544,10 @@ pub(crate) struct SalesInput {
     /// With group_by dimension: the dimension.
     #[schemars(extend("x-field-type" = { "kind": "link", "entity": "dimension", "key": "id" }))]
     group_by_dimension_id: Option<Uuid>,
+    /// Only this customer.
     #[schemars(extend("x-field-type" = { "kind": "link", "entity": "customer", "key": "id" }))]
     customer_id: Option<Uuid>,
+    /// Only this item.
     #[schemars(extend("x-field-type" = { "kind": "link", "entity": "item", "key": "id" }))]
     item_id: Option<Uuid>,
     /// Only documents in this currency, with what they came to in it.
@@ -614,6 +617,7 @@ impl Command for SalesAnalysis {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PurchaseInput {
+    /// The company to report on.
     company_id: Uuid,
     /// The first posting date counted.
     from: NaiveDate,
@@ -634,8 +638,10 @@ pub(crate) struct PurchaseInput {
     /// With group_by dimension: the dimension.
     #[schemars(extend("x-field-type" = { "kind": "link", "entity": "dimension", "key": "id" }))]
     group_by_dimension_id: Option<Uuid>,
+    /// Only this vendor.
     #[schemars(extend("x-field-type" = { "kind": "link", "entity": "vendor", "key": "id" }))]
     vendor_id: Option<Uuid>,
+    /// Only this item.
     #[schemars(extend("x-field-type" = { "kind": "link", "entity": "item", "key": "id" }))]
     item_id: Option<Uuid>,
     /// Only documents in this currency, with what they came to in it.
@@ -718,8 +724,11 @@ pub(crate) enum Of {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TopInput {
+    /// The company to report on.
     company_id: Uuid,
+    /// The first posting date counted.
     from: NaiveDate,
+    /// The last posting date counted.
     to: NaiveDate,
     /// customers, items, item_groups (by sales) or vendors (by purchases).
     of: Of,
