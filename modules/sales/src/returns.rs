@@ -930,6 +930,9 @@ impl DocumentHandler for SalesCreditNote {
                     .money()
                     .currency_in("currency")
                     .readonly(),
+                crate::salesperson_field()
+                    .readonly()
+                    .help("The credited invoice's salesperson."),
             ]
             .into_iter()
             .chain(erpcraft_tax::lines::discount_and_charge_fields())
@@ -937,7 +940,8 @@ impl DocumentHandler for SalesCreditNote {
             .collect(),
             // 1: currency, accounting totals and their declarations.
             // 2: discounts and charges.
-            summary_version: 2,
+            // 3: the salesperson.
+            summary_version: 3,
             ..DocTypeMeta::default()
         }
     }
@@ -1175,6 +1179,17 @@ impl DocumentHandler for SalesCreditNote {
             tax = tax.zip(on_line).map(|(tax, on_line)| tax + on_line);
         }
         summary["sales_invoice_id"] = body["sales_invoice_id"].clone();
+        let salesperson: Option<Uuid> = match uuid(&body["sales_invoice_id"]) {
+            Some(invoice) => sqlx::query_scalar(
+                "SELECT salesperson_id FROM sales_invoice WHERE document_id = $1",
+            )
+            .bind(invoice)
+            .fetch_optional(&mut *conn)
+            .await?
+            .flatten(),
+            None => None,
+        };
+        summary["salesperson_id"] = json!(salesperson);
         summary["total_net"] = json!(net);
         summary["total_tax"] = json!(tax);
         summary["total_gross"] = json!(tax.map(|tax| net + tax));

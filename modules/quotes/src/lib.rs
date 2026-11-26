@@ -53,6 +53,11 @@ impl Module for QuotesModule {
                 name: "outcome_order",
                 sql: include_str!("../migrations/0002_outcome_order.sql"),
             },
+            Migration {
+                version: 3,
+                name: "salesperson",
+                sql: include_str!("../migrations/0003_salesperson.sql"),
+            },
         ]
     }
 
@@ -88,6 +93,8 @@ struct Body {
     customer_id: Uuid,
     currency: Option<String>,
     valid_until: NaiveDate,
+    /// Who sells it; the customer's salesperson when omitted.
+    salesperson_id: Option<Uuid>,
     #[serde(default)]
     lines: Vec<LineInput>,
 }
@@ -172,6 +179,14 @@ impl DocumentHandler for Quote {
                 FieldMeta::new("valid_until", "Valid until", FieldType::Date)
                     .required()
                     .help("After it, accepting asks the policy sales_quote.expired."),
+                FieldMeta::new(
+                    "salesperson_id",
+                    "Salesperson",
+                    FieldType::link("sales_rep"),
+                )
+                .help(
+                    "Who sells it. Left out, the customer's; the order a won quote makes takes it.",
+                ),
                 FieldMeta::new("outcome", "Outcome", FieldType::Text).readonly(),
                 FieldMeta::new("reason", "Reason", FieldType::Text)
                     .readonly()
@@ -241,8 +256,15 @@ impl DocumentHandler for Quote {
                 FieldMeta::new("expired", "Expired", FieldType::Bool)
                     .readonly()
                     .help("Its valid-until date has passed."),
+                FieldMeta::new(
+                    "salesperson_id",
+                    "Salesperson",
+                    FieldType::link("sales_rep"),
+                )
+                .readonly(),
             ],
-            ..DocTypeMeta::default()
+            // 1: the salesperson.
+            summary_version: 1,
         }
     }
 
@@ -337,15 +359,19 @@ impl DocumentHandler for Quote {
             ));
         }
         sqlx::query(
-            "INSERT INTO sales_quote (document_id, customer_id, currency, valid_until)
-             VALUES ($1, $2, $3, $4)
+            "INSERT INTO sales_quote (document_id, customer_id, currency, valid_until,
+                 salesperson_id)
+             VALUES ($1, $2, $3, $4, COALESCE($5, (SELECT salesperson_id FROM customer
+                                                  WHERE id = $2)))
              ON CONFLICT (document_id) DO UPDATE SET customer_id = EXCLUDED.customer_id,
-                 currency = EXCLUDED.currency, valid_until = EXCLUDED.valid_until",
+                 currency = EXCLUDED.currency, valid_until = EXCLUDED.valid_until,
+                 salesperson_id = EXCLUDED.salesperson_id",
         )
         .bind(doc.id)
         .bind(body.customer_id)
         .bind(&currency)
         .bind(body.valid_until)
+        .bind(body.salesperson_id)
         .execute(&mut *ctx.conn)
         .await?;
         let line_ids = document::line_ids(
@@ -415,6 +441,7 @@ impl DocumentHandler for Quote {
             "total_net": total,
             "valid_until": body["valid_until"],
             "expired": expired && doc.status == "issued",
+            "salesperson_id": body["salesperson_id"],
         }))
     }
 
@@ -432,8 +459,9 @@ impl DocumentHandler for Quote {
     }
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
-        let header: Option<(Uuid, Option<String>, NaiveDate)> = sqlx::query_as(
-            "SELECT customer_id, currency, valid_until FROM sales_quote WHERE document_id = $1",
+        let header: Option<(Uuid, Option<String>, NaiveDate, Option<Uuid>)> = sqlx::query_as(
+            "SELECT customer_id, currency, valid_until, salesperson_id FROM sales_quote
+             WHERE document_id = $1",
         )
         .bind(doc.id)
         .fetch_optional(&mut *conn)
@@ -448,6 +476,7 @@ impl DocumentHandler for Quote {
             "customer_id": header.as_ref().map(|h| h.0),
             "currency": header.as_ref().and_then(|h| h.1.clone()),
             "valid_until": header.as_ref().map(|h| h.2),
+            "salesperson_id": header.as_ref().and_then(|h| h.3),
             "outcome": outcome.as_ref().map(|o| o.0.clone()),
             "reason": outcome.as_ref().and_then(|o| o.1.clone()),
             "order_id": outcome.as_ref().and_then(|o| o.2),
@@ -574,6 +603,11 @@ impl Command for Accept {
         let (customer, currency, valid_until) = header(&mut *ctx.conn, &doc).await?;
         let date = input.order_date.unwrap_or_else(|| Utc::now().date_naive());
         let lines = lines(&mut *ctx.conn, doc.id).await?;
+        let salesperson: Option<Uuid> =
+            sqlx::query_scalar("SELECT salesperson_id FROM sales_quote WHERE document_id = $1")
+                .bind(doc.id)
+                .fetch_one(&mut *ctx.conn)
+                .await?;
         // Expiry is measured on the day the customer accepts, today: an
         // order dated back into the quote's validity does not revive it.
         let days_expired = (date.max(Utc::now().date_naive()) - valid_until).num_days();
@@ -617,7 +651,8 @@ impl Command for Accept {
                 company_id: doc.company_id,
                 doc_date: date,
                 memo: doc.number.as_ref().map(|n| format!("Quote {n}")),
-                body: json!({ "customer_id": customer, "currency": currency, "lines": rows }),
+                body: json!({ "customer_id": customer, "currency": currency, "lines": rows,
+                              "salesperson_id": salesperson }),
             },
         )
         .await?;

@@ -136,6 +136,11 @@ impl Module for SalesModule {
                 name: "units",
                 sql: include_str!("../migrations/0015_units.sql"),
             },
+            Migration {
+                version: 16,
+                name: "salespeople",
+                sql: include_str!("../migrations/0016_salespeople.sql"),
+            },
         ]
     }
 
@@ -157,9 +162,29 @@ impl Module for SalesModule {
                     )
                     .help("The customer's usual terms: what its orders and invoices start with."),
                 )
+                .field(
+                    FieldMeta::new("salesperson_id", "Salesperson", FieldType::link("sales_rep"))
+                        .help("Who sells to the customer: what its quotes, orders and invoices start with."),
+                )
                 .field(created())
                 .order_by(&["code"])
                 .search(&["code", "name"]),
+            EntityMeta::new("sales_rep", "Salesperson")
+                .plural("Salespeople")
+                .field(FieldMeta::new("code", "Code", FieldType::Text).required())
+                .field(FieldMeta::new("name", "Name", FieldType::Text).required())
+                .field(FieldMeta::new("email", "Email", FieldType::Text))
+                .field(
+                    FieldMeta::new("user_id", "User", FieldType::link("user")).help(
+                        "The user the salesperson is, if any. Rules limit a user to their own \
+                         customers and documents through the attribute user.sales_rep_id.",
+                    ),
+                )
+                .field(FieldMeta::new("active", "Active", FieldType::Bool))
+                .field(created())
+                .order_by(&["code"])
+                .search(&["code", "name"])
+                .active_field("active"),
             EntityMeta::new("sales_settings", "Sales settings")
                 .field(
                     FieldMeta::new("company_id", "Company", FieldType::link("company"))
@@ -939,6 +964,8 @@ struct OrderBody {
     customer_reference: Option<String>,
     /// The day the customer asks for the goods.
     requested_date: Option<NaiveDate>,
+    /// Who sells it; the customer's salesperson when omitted.
+    salesperson_id: Option<Uuid>,
     #[serde(default)]
     lines: Vec<OrderLineInput>,
 }
@@ -1042,6 +1069,7 @@ impl DocumentHandler for SalesOrder {
                 ),
                 FieldMeta::new("requested_date", "Requested date", FieldType::Date)
                     .help("The day the customer asks for the goods."),
+                salesperson_field(),
             ],
             collections: vec![CollectionMeta {
                 name: "lines".into(),
@@ -1134,6 +1162,7 @@ impl DocumentHandler for SalesOrder {
                 FieldMeta::new("customer_reference", "Customer reference", FieldType::Text)
                     .readonly(),
                 FieldMeta::new("requested_date", "Requested date", FieldType::Date).readonly(),
+                salesperson_field().readonly(),
             ]
             .into_iter()
             .chain(erpcraft_tax::lines::discount_and_charge_fields())
@@ -1141,7 +1170,8 @@ impl DocumentHandler for SalesOrder {
             // 1: currency, accounting totals and their declarations.
             // 2: discounts and charges.
             // 3: the customer's reference and requested date.
-            summary_version: 3,
+            // 4: the salesperson.
+            summary_version: 4,
             ..DocTypeMeta::default()
         }
     }
@@ -1269,16 +1299,18 @@ impl DocumentHandler for SalesOrder {
         // The customer's terms unless the order names others.
         sqlx::query(
             "INSERT INTO sales_order (document_id, customer_id, currency, payment_terms_id,
-                 billing_address_id, shipping_address_id, customer_reference, requested_date)
+                 billing_address_id, shipping_address_id, customer_reference, requested_date,
+                 salesperson_id)
              VALUES ($1, $2, $3,
                      COALESCE($4, (SELECT payment_terms_id FROM customer WHERE id = $2)), $5, $6,
-                     $7, $8)
+                     $7, $8, COALESCE($9, (SELECT salesperson_id FROM customer WHERE id = $2)))
              ON CONFLICT (document_id) DO UPDATE SET customer_id = EXCLUDED.customer_id,
                 currency = EXCLUDED.currency, payment_terms_id = EXCLUDED.payment_terms_id,
                 billing_address_id = EXCLUDED.billing_address_id,
                 shipping_address_id = EXCLUDED.shipping_address_id,
                 customer_reference = EXCLUDED.customer_reference,
-                requested_date = EXCLUDED.requested_date",
+                requested_date = EXCLUDED.requested_date,
+                salesperson_id = EXCLUDED.salesperson_id",
         )
         .bind(doc.id)
         .bind(body.customer_id)
@@ -1288,6 +1320,7 @@ impl DocumentHandler for SalesOrder {
         .bind(body.shipping_address_id)
         .bind(reference)
         .bind(body.requested_date)
+        .bind(body.salesperson_id)
         .execute(&mut *ctx.conn)
         .await?;
         let line_ids = document::line_ids(
@@ -1381,12 +1414,13 @@ impl DocumentHandler for SalesOrder {
             "customer_reference": body["customer_reference"].as_str()
                 .map(str::trim).filter(|r| !r.is_empty()),
             "requested_date": body["requested_date"].as_str(),
+            "salesperson_id": body["salesperson_id"],
         }))
     }
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
         #[allow(clippy::type_complexity)]
-        let (customer, currency, terms, billing, shipping, reference, requested): (
+        let (customer, currency, terms, billing, shipping, reference, requested, salesperson): (
             Uuid,
             String,
             Option<Uuid>,
@@ -1394,10 +1428,11 @@ impl DocumentHandler for SalesOrder {
             Option<Uuid>,
             Option<String>,
             Option<NaiveDate>,
+            Option<Uuid>,
         ) = sqlx::query_as(
             "SELECT o.customer_id, COALESCE(o.currency, c.base_currency), o.payment_terms_id,
                     o.billing_address_id, o.shipping_address_id, o.customer_reference,
-                    o.requested_date
+                    o.requested_date, o.salesperson_id
              FROM sales_order o
              JOIN company c ON c.id = $2 WHERE o.document_id = $1",
         )
@@ -1424,9 +1459,20 @@ impl DocumentHandler for SalesOrder {
             "shipping_address_id": shipping,
             "customer_reference": reference,
             "requested_date": requested,
+            "salesperson_id": salesperson,
             "lines": lines,
         }))
     }
+}
+
+/// Who sells a document, by default the customer's salesperson.
+pub(crate) fn salesperson_field() -> FieldMeta {
+    FieldMeta::new(
+        "salesperson_id",
+        "Salesperson",
+        FieldType::link("sales_rep"),
+    )
+    .help("Who sells it. Left out, the one it follows, else the customer's.")
 }
 
 /// A customer's reference trimmed, `None` when blank; refused when longer
@@ -2221,6 +2267,9 @@ struct InvoiceBody {
     /// One of the customer's addresses; the order's, else the customer's
     /// default shipping address, when omitted.
     shipping_address_id: Option<Uuid>,
+    /// Who sold it; the order's salesperson, else the customer's, when
+    /// omitted.
+    salesperson_id: Option<Uuid>,
     #[serde(default)]
     lines: Vec<InvoiceLineInput>,
 }
@@ -2301,6 +2350,7 @@ impl DocumentHandler for SalesInvoice {
                      accounting currency when left out.",
                 ),
                 rate_field(),
+                salesperson_field(),
                 terms_field(
                     "The order's terms when left out. They set when the invoice is due and the \
                      discount for paying it early.",
@@ -2382,6 +2432,7 @@ impl DocumentHandler for SalesInvoice {
                     .money()
                     .currency_in("currency")
                     .readonly(),
+                salesperson_field().readonly(),
             ]
             .into_iter()
             .chain(erpcraft_tax::lines::discount_and_charge_fields())
@@ -2389,7 +2440,8 @@ impl DocumentHandler for SalesInvoice {
             .collect(),
             // 1: currency, accounting totals and their declarations.
             // 2: discounts and charges.
-            summary_version: 2,
+            // 3: the salesperson.
+            summary_version: 3,
             ..DocTypeMeta::default()
         }
     }
@@ -2561,7 +2613,11 @@ impl DocumentHandler for SalesInvoice {
                                                    WHERE o.document_id = i.sales_order_id)),
                 shipping_address_id = COALESCE($5, $6, (SELECT o.shipping_address_id
                                                         FROM sales_order o
-                                                        WHERE o.document_id = i.sales_order_id))
+                                                        WHERE o.document_id = i.sales_order_id)),
+                salesperson_id = COALESCE($7, (SELECT o.salesperson_id FROM sales_order o
+                                               WHERE o.document_id = i.sales_order_id),
+                                          (SELECT c.salesperson_id FROM customer c
+                                           WHERE c.id = $8))
              WHERE i.document_id = $1",
         )
         .bind(doc.id)
@@ -2570,6 +2626,8 @@ impl DocumentHandler for SalesInvoice {
         .bind(body.billing_address_id)
         .bind(body.shipping_address_id)
         .bind(delivered_to)
+        .bind(body.salesperson_id)
+        .bind(customer)
         .execute(&mut *ctx.conn)
         .await?;
         let ids: Vec<Uuid> = body.lines.iter().filter_map(|l| l.order_line_id).collect();
@@ -2713,6 +2771,7 @@ impl DocumentHandler for SalesInvoice {
             });
         summary["total_discount"] = json!(discount);
         summary["total_charges"] = json!(charges);
+        summary["salesperson_id"] = body["salesperson_id"].clone();
         let totals = accounting_totals(conn, doc, conversion.is_some(), net, tax).await?;
         add_totals(&mut summary, totals);
         Ok(summary)
@@ -2726,14 +2785,18 @@ impl DocumentHandler for SalesInvoice {
         .fetch_one(&mut *conn)
         .await?;
         let (currency, fx_rate) = currency_of(conn, "sales_invoice", doc).await?;
-        let (terms, billing, shipping): (Option<Uuid>, Option<Uuid>, Option<Uuid>) =
-            sqlx::query_as(
-                "SELECT payment_terms_id, billing_address_id, shipping_address_id
+        let (terms, billing, shipping, salesperson): (
+            Option<Uuid>,
+            Option<Uuid>,
+            Option<Uuid>,
+            Option<Uuid>,
+        ) = sqlx::query_as(
+            "SELECT payment_terms_id, billing_address_id, shipping_address_id, salesperson_id
                  FROM sales_invoice WHERE document_id = $1",
-            )
-            .bind(doc.id)
-            .fetch_one(&mut *conn)
-            .await?;
+        )
+        .bind(doc.id)
+        .fetch_one(&mut *conn)
+        .await?;
         let mut body = json!({
             "sales_order_id": order,
             "customer_id": customer,
@@ -2742,6 +2805,7 @@ impl DocumentHandler for SalesInvoice {
             "payment_terms_id": terms,
             "billing_address_id": billing,
             "shipping_address_id": shipping,
+            "salesperson_id": salesperson,
             "lines": invoice_lines(conn, doc.id).await?,
         });
         fill_draft_lines(conn, doc, &mut body, Some(Direction::Collected)).await?;

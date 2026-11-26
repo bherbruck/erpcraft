@@ -943,6 +943,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "erpcraft-commissions"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "erpcraft-analysis",
+ "erpcraft-gl",
+ "erpcraft-kernel",
+ "erpcraft-openitems",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
 name = "erpcraft-core"
 version = "0.1.0"
 dependencies = [
@@ -1338,6 +1353,7 @@ dependencies = [
  "erpcraft-banking",
  "erpcraft-budgets",
  "erpcraft-collections",
+ "erpcraft-commissions",
  "erpcraft-costing",
  "erpcraft-db",
  "erpcraft-edi",

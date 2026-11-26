@@ -46,6 +46,7 @@ erpcraft-recurring = { path = "modules/recurring" }
 erpcraft-mail = { path = "modules/mail" }
 erpcraft-edi = { path = "modules/edi" }
 erpcraft-analysis = { path = "modules/analysis" }
+erpcraft-commissions = { path = "modules/commissions" }
 erpcraft-exports = { path = "modules/exports" }
 
 # Used only by erpcraft-printing: every rendered page and every saved

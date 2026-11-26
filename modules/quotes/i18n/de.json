@@ -12,6 +12,7 @@
   "Sales quotes": "Angebote",
   "The lines at their prices, without tax.": "Die Zeilen zu ihren Preisen, ohne Steuer.",
   "Valid until": "Gültig bis",
+  "Who sells it. Left out, the customer's; the order a won quote makes takes it.": "Wer es verkauft. Leer: der Verkäufer des Debitors; der Auftrag aus einem gewonnenen Angebot übernimmt ihn.",
   "Why it was won or lost.": "Warum es gewonnen oder verloren wurde.",
   "Won": "Gewonnen",
   "a quote is valid at least until its own date": "ein Angebot gilt mindestens bis zu seinem eigenen Datum",

@@ -249,3 +249,12 @@ pub(crate) fn label(
         None => (None, None),
     }
 }
+
+/// The item group (a price group of kind item) of each of `items`, for
+/// other modules.
+pub async fn groups_of_items(
+    ctx: &mut Ctx<'_>,
+    items: &BTreeSet<Uuid>,
+) -> Result<HashMap<Uuid, Uuid>> {
+    groups_of(ctx, items).await
+}

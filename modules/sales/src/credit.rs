@@ -39,6 +39,8 @@ struct Body {
     /// For a credit in a foreign currency: the rate to state. The rate on
     /// record for the credit's date when omitted.
     fx_rate: Option<Decimal>,
+    /// Who the credit is for; the customer's salesperson when omitted.
+    salesperson_id: Option<Uuid>,
     #[serde(default)]
     lines: Vec<LineInput>,
 }
@@ -122,6 +124,7 @@ impl DocumentHandler for SalesCredit {
                          rate on record for the document's date when left out; once posted, \
                          the rate it was posted at.",
                     ),
+                crate::salesperson_field(),
             ],
             collections: vec![CollectionMeta {
                 name: "lines".into(),
@@ -184,10 +187,13 @@ impl DocumentHandler for SalesCredit {
                     .currency_in("currency")
                     .readonly()
                     .help("What the customer is credited, tax included."),
+                crate::salesperson_field().readonly(),
             ]
             .into_iter()
             .chain(accounting_fields())
             .collect(),
+            // 1: the salesperson.
+            summary_version: 1,
             ..DocTypeMeta::default()
         }
     }
@@ -267,15 +273,18 @@ impl DocumentHandler for SalesCredit {
             }
         }
         sqlx::query(
-            "INSERT INTO sales_credit (document_id, customer_id, currency, fx_rate)
-             VALUES ($1, $2, $3, $4)
+            "INSERT INTO sales_credit (document_id, customer_id, currency, fx_rate, salesperson_id)
+             VALUES ($1, $2, $3, $4, COALESCE($5, (SELECT salesperson_id FROM customer
+                                                  WHERE id = $2)))
              ON CONFLICT (document_id) DO UPDATE SET customer_id = EXCLUDED.customer_id,
-                currency = EXCLUDED.currency, fx_rate = EXCLUDED.fx_rate",
+                currency = EXCLUDED.currency, fx_rate = EXCLUDED.fx_rate,
+                salesperson_id = EXCLUDED.salesperson_id",
         )
         .bind(doc.id)
         .bind(body.customer_id)
         .bind(currency)
         .bind(body.fx_rate)
+        .bind(body.salesperson_id)
         .execute(&mut *ctx.conn)
         .await?;
         let ids = document::line_ids(
@@ -363,6 +372,7 @@ impl DocumentHandler for SalesCredit {
             "total_net": net,
             "total_tax": tax,
             "total_gross": net + tax,
+            "salesperson_id": body["salesperson_id"],
         });
         let totals = accounting_totals(conn, doc, currency != base, net, Some(tax)).await?;
         add_totals(&mut summary, totals);
@@ -371,10 +381,16 @@ impl DocumentHandler for SalesCredit {
 
     async fn load_body(&self, conn: &mut PgConnection, doc: &Document) -> Result<Value> {
         let (customer, currency, fx_rate) = header(conn, doc).await?;
+        let salesperson: Option<Uuid> =
+            sqlx::query_scalar("SELECT salesperson_id FROM sales_credit WHERE document_id = $1")
+                .bind(doc.id)
+                .fetch_one(&mut *conn)
+                .await?;
         let mut body = json!({
             "customer_id": customer,
             "currency": currency,
             "fx_rate": fx_rate,
+            "salesperson_id": salesperson,
             "lines": lines(conn, doc.id).await?,
         });
         crate::fill_draft_lines(conn, doc, &mut body, Some(Direction::Collected)).await?;

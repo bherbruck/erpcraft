@@ -10,6 +10,9 @@ use erpcraft_kernel::{DynCommand, Module, command};
 mod common;
 mod kpis;
 mod sales;
+
+pub use common::groups_of_items;
+pub use sales::{SalesLine, sales_lines};
 mod stock;
 
 pub struct AnalysisModule;

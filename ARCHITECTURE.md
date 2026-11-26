@@ -1008,12 +1008,11 @@ The module `analysis` (`modules/analysis`, no tables of its own) answers what an
 - **The document currency.** `currency` limits a report to documents in that currency and adds what they come to in it (`net_document`, from the lines' own net amounts) beside the accounting amounts.
 
 **Sales analysis** (`analysis.sales`: `company_id`, `from`, `to`; optional `group_by`, `period`, `compare`, `dimension_value_ids`, `group_by_dimension_id`, `customer_id`, `item_id`, `currency`, `sort`, `limit`). The facts are the posted sales invoices, sales credit notes and sales credits.
-- `group_by`: one or more of `customer`, `item`, `item_group` (the item's price group of kind item, see [Price lists](#price-lists)), `period` (by `month`, `quarter` or `year`) and `dimension` (the value of `group_by_dimension_id`, such as the site or cost center). By default `customer`. A line that is not an item (a charge, an account line, a credit without an invoice) has no item and shows under an empty item.
+- `group_by`: one or more of `customer`, `salesperson` (the document's, see [Salespeople and commissions](#salespeople-and-commissions)), `item`, `item_group` (the item's price group of kind item, see [Price lists](#price-lists)), `period` (by `month`, `quarter` or `year`) and `dimension` (the value of `group_by_dimension_id`, such as the site or cost center). By default `customer`. A line that is not an item (a charge, an account line, a credit without an invoice) has no item and shows under an empty item.
 - Each row: the keys with their codes and names, `qty`, `net`, `cost`, `margin` (net minus cost) and `margin_percent` (of net; none when net is 0).
 - `compare`: `prior_period` (the same number of days just before `from`) or `prior_year` (a year earlier; a range that ends on the last of a month ends on the last of that month, as in the cash flow statement). Each row then also has `compare_qty`, `compare_net`, `compare_margin` and `net_change_percent`. With `period` grouping, a period is matched with the one a year (or a period length) earlier.
 - `sort` (`net` by default, `margin`, `margin_percent`, `qty`) and `limit` make a top list; the totals are of every row, not only those shown.
 - `dimension_value_ids` counts only lines whose entries carry those values, as the general ledger reports do.
-- There is no salesperson on an order or invoice yet; when there is, it is one more key.
 
 **Purchase analysis** (`analysis.purchases`: the same inputs, `vendor_id` for `customer_id`): the posted vendor invoices, vendor credit notes and vendor credits, by `vendor`, `item`, `item_group`, `period` and `dimension`, with `qty`, `net`, the average price paid (`average_price`, net per stock unit) and the comparison.
 
@@ -1042,6 +1041,31 @@ Limits:
 - The cost of a sales line is the average of its order line's deliveries: a line invoiced in parts at different delivery costs gets the average of them all. Lines without an order that carry an item are not costed.
 - Aging and slow movers are as of today: stock levels are kept for now, not for a past date.
 - Turnover counts what left stock, not only what was sold: production consumption and scrap count too.
+
+### Salespeople and commissions
+
+**Salespeople** (sales migration 16, quotes migration 3). A salesperson is a record of its own, `sales_rep` (code, name, email, active), not a user: an outside agent paid commission may never sign in, and a user may sell under more than one name. It may name the user it is (`user_id`), for the permission rules, and the vendor it is paid as (`vendor_id`), for an agent invoiced or paid through payables.
+- A customer has a default salesperson (`customer.salesperson_id`). A quote, sales order, sales invoice and credit carry one (`salesperson_id` in the body and the summary); a credit note carries its invoice's in its summary. Left out, a quote and a direct invoice or credit take the customer's; an order takes its quote's when a quote is won, else the customer's; an invoice of an order takes the order's, a credit note its invoice's. On a draft it can be changed; once the document is locked it stays as it was.
+- *A salesperson sees their own.* The summary carries `salesperson_id`, so a permission rule can limit a role to it. A user's attribute names the salesperson they are (`user.sales_rep_id`, set with `user.set_attributes`), and the rule reads: allow `sales_invoice:read` where `record.summary.salesperson_id == user.sales_rep_id`, and the same for orders, quotes and credit notes; for customers, where `record.salesperson_id == user.sales_rep_id`. An attribute rather than the user's id, because the salesperson is not the user, and because a manager's attribute can name the rep they stand in for.
+- The analysis reports group and filter by it (`group_by` `salesperson`, `salesperson_id`).
+
+**Commission plans** (module `commissions`, `modules/commissions`, migration 1), per company (`commission_plan`), with the accounts in `commission_settings` and, for a salesperson paid as a vendor, `commission_payee`:
+- `basis`: `net` (the net sales, as the sales analysis has them: the revenue the general ledger posted for the line, without tax) or `margin` (net minus the cost the stock ledger posted, see [Business analysis](#business-analysis)).
+- `trigger`: `invoice` (earned when the invoice is posted) or `payment` (earned as the invoice is paid: each payment that settles the invoice's open item earns the share of the invoice's basis that it pays, on its date). Either way a credit note or a credit takes back what its lines take back, when it is posted: a claw-back, also for a plan on payment, so a credit applied to an unpaid invoice earns and takes back the same amount.
+- *For whom and what*: a plan may be for one salesperson (`sales_rep_id`) and one item group (`item_group_id`, a price group of kind item); empty means every one. A line earns under the most specific plan active on its date (valid from, valid to): the salesperson's and its item group's, then the salesperson's, then the item group's, then the company's. A line without a salesperson earns nothing.
+- *Tiers* (`commission_tier`: `from_amount`, `percent`): the salesperson's basis under the plan in one run is cut into bands at each tier's start, and each band earns its tier's percent, as income tax brackets do (above 10,000 at 5 % and above 50,000 at 7 %: 60,000 earns 2,000 + 700). Basis below the first tier earns nothing; a plan with one tier from 0 is a flat rate. A run whose claw-backs exceed its sales for a salesperson takes back at the first tier's rate.
+
+**The commission run** (`commission_run`, `CR-`, a document): a company, `from` and `to`.
+- `commission_run.propose` works out what each salesperson earned in the range and writes it as lines (per salesperson and plan: the basis and the commission) and as items (each invoice, credit or payment line that earned or took back: the document, its date, the basis, the commission). What an earlier run that is not cancelled or reversed holds is left out, so every line earns once; a sale invoiced before a period was run and posted late is in the next run.
+- The lines can be reviewed and changed on the draft: a commission edited by hand keeps the basis and says so (`adjusted`).
+- `commission_run.post` asks the policy `commission_run.post` (facts `total`, `currency`, `salespeople`; allowed by default), so a company can ask for approval (a rule with effect `approve` and its approvers, see [Approvals](#approvals)) above a total or for everything. Posted, it accrues the commission: commission expense debited (`commission_settings.expense_account_id`), with the dimension set of the sales that earned it, and the commission payable credited (`payable_account_id`); a salesperson paid as a vendor gets an open payable item for its commission, which a payment run pays.
+- It makes a **commission statement** per salesperson (`commission_statement`, `CS-`): the run's items of that salesperson with their totals. It prints like any document and is sent with `document.send`, to the vendor's contact address for a salesperson paid as a vendor, else to the addresses given (which the policy `document.send` must allow: by default a document goes only to its party's addresses).
+- `commission_run.reverse` takes the accrual back, cancels the statements, and frees the items for another run. `commission_run.cancel` drops a draft.
+
+Limits:
+- Commission is in the accounting currency.
+- One salesperson per document: no split commission.
+- Tiers are per run: a quarterly target is a quarterly run.
 
 ### Accountant exports
 

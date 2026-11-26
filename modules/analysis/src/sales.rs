@@ -17,6 +17,8 @@ use crate::common::{self, Compare, Period};
 pub(crate) enum Key {
     Customer,
     Vendor,
+    /// The document's salesperson.
+    Salesperson,
     Item,
     /// The item's price group of kind item.
     ItemGroup,
@@ -49,9 +51,12 @@ enum Side {
 #[derive(Debug, sqlx::FromRow)]
 struct Fact {
     document_id: Uuid,
+    posting_id: Uuid,
+    line_id: Uuid,
     posting_date: NaiveDate,
     party_id: Option<Uuid>,
     item_id: Option<Uuid>,
+    salesperson_id: Option<Uuid>,
     qty: Decimal,
     net: Decimal,
     net_document: Decimal,
@@ -68,6 +73,7 @@ WITH p AS (
            CASE WHEN p.reverses_id IS NULL THEN 1 ELSE -1 END AS dir
     FROM posting p JOIN document d ON d.id = p.document_id
     WHERE p.company_id = $1 AND p.posting_date BETWEEN $2 AND $3 AND d.doc_type = ANY ($4)
+      AND ($5::uuid[] IS NULL OR p.document_id = ANY ($5))
 ),
 l AS (
     SELECT il.document_id, il.id AS line_id, ol.item_id,
@@ -75,7 +81,7 @@ l AS (
            CASE WHEN ol.item_id IS NULL THEN 0 ELSE il.qty * COALESCE(ol.factor, 1) END AS qty,
            COALESCE(il.net_amount, 0) AS net_document,
            COALESCE(o.currency, si.currency, co.base_currency) AS currency,
-           il.order_line_id, 1 AS sign
+           il.order_line_id, 1 AS sign, si.salesperson_id
     FROM sales_invoice_line il
     JOIN sales_invoice si ON si.document_id = il.document_id
     JOIN (SELECT DISTINCT document_id FROM p) pd ON pd.document_id = il.document_id
@@ -87,7 +93,7 @@ l AS (
            CASE WHEN ol.item_id IS NULL THEN 0
                 ELSE COALESCE(cl.returned_qty, 0) * COALESCE(ol.factor, 1) END,
            COALESCE(cl.net_amount, 0), COALESCE(o.currency, si.currency, co.base_currency),
-           il.order_line_id, -1
+           il.order_line_id, -1, si.salesperson_id
     FROM sales_credit_note_line cl
     JOIN (SELECT DISTINCT document_id FROM p) pd ON pd.document_id = cl.document_id
     JOIN sales_invoice_line il ON il.id = cl.invoice_line_id
@@ -97,7 +103,7 @@ l AS (
     LEFT JOIN sales_order o ON o.document_id = COALESCE(si.sales_order_id, ol.document_id)
     UNION ALL
     SELECT cl.document_id, cl.id, NULL, sc.customer_id, 0, COALESCE(cl.net_amount, 0),
-           COALESCE(sc.currency, co.base_currency), NULL, -1
+           COALESCE(sc.currency, co.base_currency), NULL, -1, sc.salesperson_id
     FROM sales_credit_line cl
     JOIN (SELECT DISTINCT document_id FROM p) pd ON pd.document_id = cl.document_id
     JOIN sales_credit sc ON sc.document_id = cl.document_id
@@ -121,7 +127,8 @@ u AS (
     WHERE x.order_line_id IN (SELECT order_line_id FROM l WHERE order_line_id IS NOT NULL)
     GROUP BY x.order_line_id
 )
-SELECT p.document_id, p.posting_date, l.party_id, l.item_id,
+SELECT p.document_id, p.id AS posting_id, l.line_id, p.posting_date, l.party_id, l.item_id,
+       l.salesperson_id,
        l.qty * l.sign * p.dir AS qty,
        COALESCE(a.net, 0) AS net,
        l.net_document * l.sign * p.dir AS net_document,
@@ -139,6 +146,7 @@ WITH p AS (
            CASE WHEN p.reverses_id IS NULL THEN 1 ELSE -1 END AS dir
     FROM posting p JOIN document d ON d.id = p.document_id
     WHERE p.company_id = $1 AND p.posting_date BETWEEN $2 AND $3 AND d.doc_type = ANY ($4)
+      AND ($5::uuid[] IS NULL OR p.document_id = ANY ($5))
 ),
 l AS (
     SELECT vl.document_id, vl.id AS line_id, pl.item_id,
@@ -182,7 +190,8 @@ a AS (
                                WHERE t.posting_id = p.original AND t.account_id IS NOT NULL)
     GROUP BY g.posting_id, g.source_line_id
 )
-SELECT p.document_id, p.posting_date, l.party_id, l.item_id,
+SELECT p.document_id, p.id AS posting_id, l.line_id, p.posting_date, l.party_id, l.item_id,
+       NULL::uuid AS salesperson_id,
        l.qty * l.sign * p.dir AS qty,
        COALESCE(a.net, 0) AS net,
        l.net_document * l.sign * p.dir AS net_document,
@@ -204,6 +213,7 @@ pub(crate) struct Ask {
     group_by_dimension_id: Option<Uuid>,
     party_id: Option<Uuid>,
     item_id: Option<Uuid>,
+    salesperson_id: Option<Uuid>,
     currency: Option<String>,
     sort: Sort,
     limit: Option<usize>,
@@ -229,6 +239,7 @@ impl Sums {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 struct RowKey {
     party: Option<Uuid>,
+    salesperson: Option<Uuid>,
     item: Option<Uuid>,
     group: Option<Uuid>,
     period: Option<NaiveDate>,
@@ -243,6 +254,9 @@ pub(crate) struct Row {
     party_id: Option<Uuid>,
     party_code: Option<String>,
     party_name: Option<String>,
+    salesperson_id: Option<Uuid>,
+    salesperson_code: Option<String>,
+    salesperson_name: Option<String>,
     item_id: Option<Uuid>,
     item_code: Option<String>,
     item_name: Option<String>,
@@ -301,6 +315,18 @@ async fn facts(
     from: NaiveDate,
     to: NaiveDate,
 ) -> Result<Vec<Fact>> {
+    facts_of(ctx, side, ask, types, from, to, None).await
+}
+
+async fn facts_of(
+    ctx: &mut Ctx<'_>,
+    side: Side,
+    ask: &Ask,
+    types: &[&str],
+    from: NaiveDate,
+    to: NaiveDate,
+    documents: Option<&[Uuid]>,
+) -> Result<Vec<Fact>> {
     let sql = match side {
         Side::Sales => SALES_FACTS,
         Side::Purchases => PURCHASE_FACTS,
@@ -311,6 +337,7 @@ async fn facts(
         .bind(from)
         .bind(to)
         .bind(&types)
+        .bind(documents)
         .fetch_all(&mut *ctx.conn)
         .await?;
     let readable =
@@ -318,6 +345,9 @@ async fn facts(
     facts.retain(|f| readable.contains(&f.document_id));
     facts.retain(|f| {
         ask.party_id.is_none_or(|p| f.party_id == Some(p))
+            && ask
+                .salesperson_id
+                .is_none_or(|p| f.salesperson_id == Some(p))
             && ask.item_id.is_none_or(|i| f.item_id == Some(i))
             && ask.currency.as_ref().is_none_or(|c| &f.currency == c)
     });
@@ -394,6 +424,7 @@ async fn analyse(ctx: &mut Ctx<'_>, side: Side, ask: Ask) -> Result<AnalysisOutp
     let by = |k: Key| ask.group_by.contains(&k);
     let key = |f: &Fact| RowKey {
         party: f.party_id.filter(|_| by(Key::Customer) || by(Key::Vendor)),
+        salesperson: f.salesperson_id.filter(|_| by(Key::Salesperson)),
         item: f.item_id.filter(|_| by(Key::Item)),
         group: f
             .item_id
@@ -434,6 +465,13 @@ async fn analyse(ctx: &mut Ctx<'_>, side: Side, ask: Ask) -> Result<AnalysisOutp
         "item",
         "item",
         &keys.iter().filter_map(|k| k.item).collect(),
+    )
+    .await?;
+    let rep_labels = common::labels(
+        ctx,
+        "sales_rep",
+        "sales_rep",
+        &keys.iter().filter_map(|k| k.salesperson).collect(),
     )
     .await?;
     let group_labels = common::labels(
@@ -483,6 +521,9 @@ async fn analyse(ctx: &mut Ctx<'_>, side: Side, ask: Ask) -> Result<AnalysisOutp
                 row.dimension_value_id,
             ) = (k.party, k.item, k.group, k.period, k.value);
             (row.party_code, row.party_name) = common::label(&parties, k.party);
+            row.salesperson_id = k.salesperson;
+            (row.salesperson_code, row.salesperson_name) =
+                common::label(&rep_labels, k.salesperson);
             (row.item_code, row.item_name) = common::label(&item_labels, k.item);
             (row.item_group_code, row.item_group_name) = common::label(&group_labels, k.group);
             (row.dimension_value_code, row.dimension_value_name) =
@@ -528,8 +569,8 @@ pub(crate) struct SalesInput {
     from: NaiveDate,
     /// The last posting date counted.
     to: NaiveDate,
-    /// What the rows are per: customer, item, item_group, period,
-    /// dimension; customer when empty.
+    /// What the rows are per: customer, salesperson, item, item_group,
+    /// period, dimension; customer when empty.
     #[serde(default)]
     group_by: Vec<Key>,
     /// With group_by period: month (the default), quarter or year.
@@ -547,6 +588,9 @@ pub(crate) struct SalesInput {
     /// Only this customer.
     #[schemars(extend("x-field-type" = { "kind": "link", "entity": "customer", "key": "id" }))]
     customer_id: Option<Uuid>,
+    /// Only this salesperson's documents.
+    #[schemars(extend("x-field-type" = { "kind": "link", "entity": "sales_rep", "key": "id" }))]
+    salesperson_id: Option<Uuid>,
     /// Only this item.
     #[schemars(extend("x-field-type" = { "kind": "link", "entity": "item", "key": "id" }))]
     item_id: Option<Uuid>,
@@ -604,6 +648,7 @@ impl Command for SalesAnalysis {
                 dimension_value_ids: input.dimension_value_ids,
                 group_by_dimension_id: input.group_by_dimension_id,
                 party_id: input.customer_id,
+                salesperson_id: input.salesperson_id,
                 item_id: input.item_id,
                 currency: input.currency,
                 sort: input.sort,
@@ -701,6 +746,7 @@ impl Command for PurchaseAnalysis {
                 dimension_value_ids: input.dimension_value_ids,
                 group_by_dimension_id: input.group_by_dimension_id,
                 party_id: input.vendor_id,
+                salesperson_id: None,
                 item_id: input.item_id,
                 currency: input.currency,
                 sort,
@@ -716,6 +762,7 @@ impl Command for PurchaseAnalysis {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Of {
     Customers,
+    Salespeople,
     Items,
     ItemGroups,
     Vendors,
@@ -730,7 +777,8 @@ pub(crate) struct TopInput {
     from: NaiveDate,
     /// The last posting date counted.
     to: NaiveDate,
-    /// customers, items, item_groups (by sales) or vendors (by purchases).
+    /// customers, salespeople, items, item_groups (by sales) or vendors
+    /// (by purchases).
     of: Of,
     /// net (the default), margin or qty.
     #[serde(default)]
@@ -761,6 +809,7 @@ impl Command for Top {
     async fn run(&self, ctx: &mut Ctx<'_>, input: TopInput) -> Result<AnalysisOutput> {
         let (side, key) = match input.of {
             Of::Customers => (Side::Sales, Key::Customer),
+            Of::Salespeople => (Side::Sales, Key::Salesperson),
             Of::Items => (Side::Sales, Key::Item),
             Of::ItemGroups => (Side::Sales, Key::ItemGroup),
             Of::Vendors => (Side::Purchases, Key::Vendor),
@@ -782,6 +831,7 @@ impl Command for Top {
                 dimension_value_ids: vec![],
                 group_by_dimension_id: None,
                 party_id: None,
+                salesperson_id: None,
                 item_id: None,
                 currency: None,
                 sort,
@@ -809,6 +859,7 @@ pub(crate) async fn sales_totals(
         dimension_value_ids: vec![],
         group_by_dimension_id: None,
         party_id: None,
+        salesperson_id: None,
         item_id: None,
         currency: None,
         sort: Sort::Net,
@@ -821,4 +872,69 @@ pub(crate) async fn sales_totals(
         .fold((Decimal::ZERO, Decimal::ZERO), |(n, c), f| {
             (n + f.net, c + f.cost.unwrap_or_default())
         }))
+}
+
+/// A posted sales line, as the sales analysis counts it: one line of a
+/// sales invoice, credit note or credit in one posting (a reversal is a
+/// line of its own, with the opposite sign, on its date).
+#[derive(Debug, Clone)]
+pub struct SalesLine {
+    pub document_id: Uuid,
+    pub posting_id: Uuid,
+    pub line_id: Uuid,
+    pub posting_date: NaiveDate,
+    pub customer_id: Option<Uuid>,
+    pub item_id: Option<Uuid>,
+    pub salesperson_id: Option<Uuid>,
+    /// The revenue the line posted, in the accounting currency.
+    pub net: Decimal,
+    /// The cost of its goods, as the stock ledger posted it.
+    pub cost: Decimal,
+    pub dimension_set_id: Option<Uuid>,
+}
+
+/// The posted sales lines dated `from..=to` (of `documents` only, when
+/// given) that the reader may read.
+pub async fn sales_lines(
+    ctx: &mut Ctx<'_>,
+    company_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+    documents: Option<&[Uuid]>,
+) -> Result<Vec<SalesLine>> {
+    let ask = Ask {
+        company_id,
+        from,
+        to,
+        group_by: vec![],
+        period: Period::Month,
+        compare: None,
+        dimension_value_ids: vec![],
+        group_by_dimension_id: None,
+        party_id: None,
+        salesperson_id: None,
+        item_id: None,
+        currency: None,
+        sort: Sort::Net,
+        limit: None,
+    };
+    let types = types(ctx, Side::Sales)?;
+    Ok(
+        facts_of(ctx, Side::Sales, &ask, &types, from, to, documents)
+            .await?
+            .into_iter()
+            .map(|f| SalesLine {
+                document_id: f.document_id,
+                posting_id: f.posting_id,
+                line_id: f.line_id,
+                posting_date: f.posting_date,
+                customer_id: f.party_id,
+                item_id: f.item_id,
+                salesperson_id: f.salesperson_id,
+                net: f.net,
+                cost: f.cost.unwrap_or_default(),
+                dimension_set_id: f.set_id,
+            })
+            .collect(),
+    )
 }
