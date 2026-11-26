@@ -32,15 +32,18 @@ Run it every night from cron, and copy the directory off the machine (restic, rc
 deploy/restore.sh backups/erpcraft-20261125T021500Z.dump
 ```
 
-Restoring replaces the database: everything recorded since the backup is lost, so the script asks first (`--yes` skips the question). Then it:
+Restoring replaces the database: everything recorded since the backup is lost, so the script asks first (`--yes` skips the question). The database in use is not touched until the backup is known to be sound:
 
-1. stops erpcraft (PostgreSQL keeps running), drops the database and creates it empty;
-2. restores the backup with `pg_restore`. Tables and their data come first, then indexes, constraints and the ledgers' triggers, so restoring does not trip the ledgers' rules;
-3. compares the restored migrations with the image's (`erpcraft --check-migrations`). A backup from an older erpcraft is migrated (`--migrate-only`). A backup from a newer one is refused: run the image it came from;
-4. runs `erpcraft verify` and stops if the books do not agree;
-5. starts erpcraft again.
+1. the backup is restored with `pg_restore` into a new database beside the live one. Tables and their data come first, then indexes, constraints and the ledgers' triggers, so restoring does not trip the ledgers' rules. A file that is not a whole backup fails here, and nothing has changed;
+2. the restored migrations are compared with the image's (`erpcraft --check-migrations`). A backup from an older erpcraft is migrated (`--migrate-only`). A backup from a newer one is refused: run the image it came from;
+3. `erpcraft verify` runs on it, and the restore stops if the books do not agree;
+4. only then is erpcraft stopped, the live database renamed `<name>_before_<time>` and the restored one given its name, and erpcraft started again. If it does not come up, the two are swapped back. The replaced database is kept: drop it once the restore is known to be right (the script prints the command).
 
-Restore to a second installation now and then to prove the backups work: a copy of `deploy/` with its own `COMPOSE_PROJECT_NAME` and port runs beside the first.
+On any failure before step 4 the restored copy is dropped and the database in use is as it was.
+
+The compose project must be named (`COMPOSE_PROJECT_NAME` in the env file or the environment); `backup.sh` and `restore.sh` refuse otherwise, and so does `compose.prod.yml`. The project names the volume, so a copy of `deploy/` with a name of its own never acts on another installation's data. A project whose server is running is restored only when it is named again: `deploy/restore.sh --project erpcraft backups/...`.
+
+Restore to a second installation now and then to prove the backups work: a copy of `deploy/` with its own `COMPOSE_PROJECT_NAME`, env file and port runs beside the first.
 
 ## Checking the books: `erpcraft verify`
 

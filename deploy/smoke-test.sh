@@ -47,6 +47,7 @@ ERPCRAFT_IMAGE=$image
 ERPCRAFT_PUBLISH=127.0.0.1:$port
 RUST_LOG=info
 EOF
+grep -v '^COMPOSE_PROJECT_NAME=' "$ENV_FILE" > "$work/unnamed.env"
 compose up -d
 
 step "waiting for the health check"
@@ -93,7 +94,29 @@ compose run --rm --no-deps erpcraft verify || fail "verify"
 step "backing up, and restoring"
 KEEP_DAYS=14 "$here/backup.sh" "$work/backups"
 backup=$(ls -1 "$work"/backups/erpcraft-*.dump | head -1)
-"$here/restore.sh" --yes "$backup" || fail "restore"
+# What must never touch the data: a restore into a running project that
+# is not named, and a file that is not a whole backup.
+if "$here/restore.sh" --yes "$backup" 2> "$work/refused"; then
+    fail "a restore into the running project without --project went ahead"
+fi
+grep -q -- "--project" "$work/refused" || fail "the refusal said: $(cat "$work/refused")"
+head -c 4096 "$backup" > "$work/cut.dump"
+if "$here/restore.sh" --yes --project erpcraft-smoke "$work/cut.dump"; then
+    fail "a backup cut short was restored"
+fi
+echo "this is not a backup" > "$work/garbage.dump"
+if "$here/restore.sh" --yes --project erpcraft-smoke "$work/garbage.dump"; then
+    fail "a file that is no backup was restored"
+fi
+api "$base/api/documents/journal_entry/$entry" | grep -q '"status":"posted"' \
+    || fail "a refused restore changed the database"
+if KEEP_DAYS=14 COMPOSE_PROJECT_NAME= ENV_FILE="$work/unnamed.env" "$here/backup.sh" "$work/backups" 2> /dev/null; then
+    fail "a backup ran without a project name"
+fi
+"$here/restore.sh" --yes --project erpcraft-smoke "$backup" || fail "restore"
+compose exec -T postgres psql -U erpcraft -d postgres -Atc \
+    "SELECT datname FROM pg_database WHERE datname LIKE 'erpcraft_before_%'" | grep -q . \
+    || fail "the database the restore replaced is not kept"
 for _ in $(seq 1 60); do
     curl -fsS "$base/healthz" > /dev/null 2>&1 && break
     sleep 2

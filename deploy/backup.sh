@@ -23,27 +23,44 @@ env_file=${ENV_FILE:-$here/erpcraft.env}
 compose_file=${COMPOSE_FILE:-$here/compose.prod.yml}
 keep_days=${KEEP_DAYS:-14}
 keep_months=${KEEP_MONTHS:-12}
+# The compose project must be named, so a copy of deploy/ never backs up
+# (or prunes the backups of) another installation by accident.
+project=${COMPOSE_PROJECT_NAME:-$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "$env_file" | tail -n 1)}
+if [ -z "$project" ]; then
+    echo "name the compose project: set COMPOSE_PROJECT_NAME in $env_file" >&2
+    exit 2
+fi
+export COMPOSE_PROJECT_NAME="$project"
 
 compose() { docker compose -f "$compose_file" --env-file "$env_file" "$@"; }
 
 mkdir -p "$dir"
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 file="$dir/erpcraft-$stamp.dump"
+# A backup that did not finish leaves nothing behind.
+trap 'rm -f -- "$file.partial"' EXIT INT TERM
+# Nor did any earlier one that was cut off (a day old: not one running now).
+find "$dir" -maxdepth 1 -name 'erpcraft-*.dump.partial' -mtime +0 -exec rm -f -- {} +
 
 # shellcheck disable=SC2016 # expanded inside the container
 compose exec -T postgres sh -c \
     'pg_dump --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --format=custom --no-owner' \
     > "$file.partial"
-# A backup that cannot be read is no backup.
-compose exec -T postgres pg_restore --list < "$file.partial" > /dev/null
-mv "$file.partial" "$file"
+# A backup that cannot be read is no backup. Its table of contents is at
+# the start, so listing it says nothing of a file cut short: read it all,
+# every table's data included, as a restore would.
+compose exec -T postgres pg_restore --file=/dev/null < "$file.partial" \
+    || { echo "the backup cannot be read back whole; nothing kept" >&2; exit 3; }
+mv -- "$file.partial" "$file"
 echo "backed up to $file ($(wc -c < "$file") bytes)"
 
 # Retention: every backup of the last KEEP_DAYS days, and the first of each
-# month for KEEP_MONTHS months.
+# month for KEEP_MONTHS months. The names sort by time; a glob keeps paths
+# with spaces whole.
 today=$(date -u +%s)
 seen_months=" "
-for backup in $(ls -1 "$dir"/erpcraft-*.dump 2>/dev/null | sort); do
+for backup in "$dir"/erpcraft-*.dump; do
+    [ -e "$backup" ] || continue
     name=$(basename "$backup" .dump)
     day=$(echo "$name" | sed -n 's/^erpcraft-\([0-9]\{8\}\)T.*/\1/p')
     [ -n "$day" ] || continue

@@ -2,6 +2,10 @@
 
 An upgrade is a new image and a database migrated forward. Migrations belong to modules: each module numbers its own (`stock` 12, `sales` 15, ...), and the table `erpcraft_migration` records which have run. The server applies whatever is pending when it starts, one migration per transaction, under a lock, so two servers starting together do not both run one. What changed between versions is in [CHANGELOG.md](../../CHANGELOG.md).
 
+## Before the first upgrade from 0.1.0: name the project
+
+`compose.prod.yml` no longer falls back to the project name `erpcraft`. Add `COMPOSE_PROJECT_NAME=erpcraft` to `deploy/erpcraft.env` (the name the installation has had, so its volume `erpcraft_pgdata` is found again). A test copy of `deploy/` gets a name of its own. Without it compose, `backup.sh` and `restore.sh` refuse to run.
+
 ## The steps
 
 ```sh

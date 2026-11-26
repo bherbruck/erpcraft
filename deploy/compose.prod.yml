@@ -6,7 +6,9 @@
 #
 # The server is published on 127.0.0.1:8600 only: put a reverse proxy with
 # TLS in front of it (deploy/Caddyfile.example).
-name: ${COMPOSE_PROJECT_NAME:-erpcraft}
+# The project names the volume: each installation names its own, so a copy
+# of deploy/ for a test never acts on production's data.
+name: ${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME in the env file, such as erpcraft}
 
 services:
   postgres:
