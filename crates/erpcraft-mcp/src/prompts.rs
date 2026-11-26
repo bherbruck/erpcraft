@@ -111,9 +111,9 @@ what you looked at, and whether it is clean.\n\
 1. Find the company and the period: {tool:entity.list} with `entity` `company`, then with \
 `entity` `fiscal_period` filtered to the company. The period must be `open`. Note its start and \
 end date.\n\
-2. Nothing should be left half done. For each document type the company uses, call \
-{tool:document.list} with `status` `draft` and a `where` on `record.doc_date` between the \
-period's dates. List every draft you find: each should be posted, deleted, or moved to a later \
+2. Nothing should be left half done. Preview {tool:fiscal_period.close} with `preview: true`: it \
+saves nothing, and its `drafts` are the documents dated in the period that are still in their \
+first state, of every type. List every draft: each should be posted, deleted, or moved to a later \
 date before the period closes. Ask me what to do with them; do not post or delete any yourself.\n\
 3. The books balance: {tool:gl.trial_balance} with `as_of` the period's end date. Total debit \
 must equal total credit.\n\

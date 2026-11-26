@@ -988,6 +988,9 @@ impl Command for Import {
         .resource(BANK_STATEMENT)
         .target(false)
         .creates(BANK_STATEMENT)
+        // A 5 MiB file as JSON text, with its escapes.
+        .redact(&["content"])
+        .max_input_bytes(3 * parse::MAX_BYTES)
     }
 
     async fn run(&self, ctx: &mut Ctx<'_>, input: ImportInput) -> Result<DocumentView> {

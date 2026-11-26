@@ -1148,3 +1148,35 @@ async fn a_reversal_is_listed_after_what_was_recorded_before_it() {
 
     t.stop().await;
 }
+
+/// Closing a period says what is left in it in a first state, of every
+/// type, in one answer (from the MCP trial: an agent checked each document
+/// type in turn).
+#[tokio::test]
+async fn closing_a_period_lists_the_drafts_left_in_it() {
+    let t = TestApp::start().await;
+    let c = t.company("ACME", "USD").await;
+    let left = t.draft(&t.admin, &c, "10.00").await;
+    let posted = t.draft(&t.admin, &c, "20.00").await;
+    let (status, body) = t
+        .command(
+            &t.admin,
+            "journal_entry.post",
+            json!({ "id": posted["id"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, preview) = t
+        .post(
+            &t.admin,
+            "/api/commands/fiscal_period.close?preview=true",
+            json!({ "id": c.period }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    let drafts = preview["result"]["drafts"].as_array().unwrap();
+    assert_eq!(drafts.len(), 1, "{preview}");
+    assert_eq!(drafts[0]["doc_type"], "journal_entry");
+    assert_eq!(drafts[0]["id"], left["id"]);
+    t.stop().await;
+}

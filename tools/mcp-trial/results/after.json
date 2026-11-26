@@ -1,0 +1,114 @@
+{
+  "base": "http://127.0.0.1:8611",
+  "fullList": {
+    "tools": 213,
+    "tokens": 159172
+  },
+  "results": [
+    {
+      "task": "create a customer and a sales order for 3 widgets",
+      "outcome": "customer GLOBEX (code, name required), order 01a21550-1698-7026-8eed-8a74480c2b65 for 37.5000",
+      "requests": 10,
+      "toolCalls": 10,
+      "errors": 1,
+      "descriptionTokens": 20211,
+      "resultTokens": 4090,
+      "stuck": [],
+      "steps": [
+        "tools/call erpcraft_modules d=0 r=2585",
+        "tools/call erpcraft_tools d=5129 r=2",
+        "tools/call erpcraft_tools d=2003 r=109",
+        "tools/call entity_create d=0 r=49",
+        "tools/call erpcraft_tools d=13079 r=617",
+        "tools/call search_records d=0 r=170",
+        "tools/call entity_list d=0 r=50",
+        "tools/call entity_list d=0 r=301",
+        "tools/call document_create (error) d=0 r=40",
+        "tools/call document_create d=0 r=167"
+      ]
+    },
+    {
+      "task": "what's overdue for Acme",
+      "outcome": "0 overdue item(s), ",
+      "requests": 6,
+      "toolCalls": 6,
+      "errors": 0,
+      "descriptionTokens": 8372,
+      "resultTokens": 2717,
+      "stuck": [],
+      "steps": [
+        "tools/call erpcraft_modules d=0 r=2585",
+        "tools/call erpcraft_tools d=5129 r=2",
+        "tools/call erpcraft_tools d=3243 r=3",
+        "tools/call search_records d=0 r=62",
+        "tools/call entity_list d=0 r=50",
+        "tools/call open_item_list d=0 r=15"
+      ]
+    },
+    {
+      "task": "post this vendor invoice from an e-invoice file",
+      "outcome": "posted VI-2026-00005",
+      "requests": 13,
+      "toolCalls": 13,
+      "errors": 2,
+      "descriptionTokens": 14041,
+      "resultTokens": 8511,
+      "stuck": [],
+      "steps": [
+        "tools/call erpcraft_modules d=0 r=2585",
+        "tools/call erpcraft_tools d=5129 r=2",
+        "tools/call erpcraft_tools d=6291 r=2",
+        "tools/call entity_list d=0 r=50",
+        "tools/call einvoice_read d=0 r=712",
+        "tools/call einvoice_import (error) d=0 r=43",
+        "tools/call entity_list d=0 r=2270",
+        "tools/call einvoice_import (error) d=0 r=40",
+        "tools/call erpcraft_tools d=2003 r=277",
+        "tools/call entity_list d=0 r=2105",
+        "tools/call einvoice_import d=0 r=208",
+        "tools/call erpcraft_tools d=618 r=2",
+        "tools/call vendor_invoice_post d=0 r=215"
+      ]
+    },
+    {
+      "task": "why didn't order SO-2026-00004 ship",
+      "outcome": "status open; 0 delivery(ies); ordered 500.000000, delivered 0, on hand 22",
+      "requests": 8,
+      "toolCalls": 8,
+      "errors": 0,
+      "descriptionTokens": 22771,
+      "resultTokens": 6310,
+      "stuck": [],
+      "steps": [
+        "tools/call erpcraft_modules d=0 r=2585",
+        "tools/call erpcraft_tools d=5129 r=2",
+        "tools/call search_records d=0 r=74",
+        "tools/call erpcraft_tools d=13079 r=617",
+        "tools/call document_get d=0 r=339",
+        "tools/call erpcraft_modules d=0 r=2585",
+        "tools/call erpcraft_tools d=4563 r=3",
+        "tools/call stock_on_hand d=0 r=105"
+      ]
+    },
+    {
+      "task": "close March",
+      "outcome": "1 draft(s) in March (journal_entry); the close would go through",
+      "requests": 8,
+      "toolCalls": 6,
+      "errors": 0,
+      "descriptionTokens": 6687,
+      "resultTokens": 7331,
+      "stuck": [],
+      "steps": [
+        "prompts/list d=406 r=0",
+        "prompts/get close_month d=435 r=0",
+        "tools/call erpcraft_tools d=5846 r=20",
+        "tools/call entity_list d=0 r=50",
+        "tools/call entity_list d=0 r=68",
+        "tools/call gl_trial_balance d=0 r=3570",
+        "tools/call fiscal_period_close d=0 r=53",
+        "tools/call gl_trial_balance d=0 r=3570"
+      ]
+    }
+  ]
+}

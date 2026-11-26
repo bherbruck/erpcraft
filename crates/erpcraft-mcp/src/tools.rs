@@ -20,7 +20,7 @@ const PAGE_SIZE: usize = 50;
 pub(crate) fn list(request: &Request<'_>) -> Answer {
     let mut tools = discover::definitions(request.speaking);
     let mut commands: Vec<Value> = visible(request.kernel, request.actor)
-        .map(|meta| definition(meta, request.speaking))
+        .map(|meta| definition(request.kernel, meta, request.speaking))
         .collect();
     // By the tool's own name: the registry orders by the command's, where
     // `asset.take_over` comes before `asset_disposal.post`.
@@ -116,11 +116,13 @@ pub(crate) fn output_schema(output: &Value, read_only: bool) -> Value {
     let mut schema = if read_only {
         plain
     } else {
+        // The result of a preview has the shape described above; it is
+        // not described twice.
         let preview = json!({
             "type": "object",
-            "description": "What a call with `preview: true` returns: what the command would have \
-                            returned, and nothing was saved.",
-            "properties": { "preview": { "const": true }, "result": output },
+            "description": "What a call with `preview: true` returns: under `result`, what the \
+                            command would have returned; nothing was saved.",
+            "properties": { "preview": { "const": true }, "result": {} },
             "required": ["preview", "result"],
         });
         json!({ "type": "object", "anyOf": [plain, preview] })
@@ -143,6 +145,39 @@ pub(crate) fn structured(output: Value, preview: bool) -> Value {
     }
 }
 
+/// The output schema of every tool that returns a document. The full
+/// schema of a document view is some 3,500 tokens and the same for a
+/// hundred tools; an agent pays for it with every tool it loads. What is
+/// particular to a document type, its body and summary, is not in it
+/// anyway: erpcraft_tools with the type as `resource` gives those fields.
+fn document_schema() -> Value {
+    json!({
+        "type": "object",
+        "title": "Document",
+        "description": "A document: its header (id, company_id, doc_type, number once it has \
+                        one, status, version, doc_date, memo, who made it and when), `summary` \
+                        (the figures its type keeps), `body` (its type's fields and lines; null \
+                        with view header), `postings` (ledger entries it posted) and `links` \
+                        (documents it came from or led to, each with doc_type, id and number). \
+                        Send `version` back to update it.",
+        "properties": {
+            "id": { "type": "string", "format": "uuid" },
+            "company_id": { "type": "string", "format": "uuid" },
+            "doc_type": { "type": "string" },
+            "number": { "type": ["string", "null"] },
+            "status": { "type": "string" },
+            "version": { "type": "integer" },
+            "doc_date": { "type": "string", "format": "date" },
+            "memo": { "type": ["string", "null"] },
+            "summary": {},
+            "body": {},
+            "postings": { "type": "array" },
+            "links": { "type": "array" },
+        },
+        "required": ["id", "company_id", "doc_type", "number", "status", "version", "doc_date"],
+    })
+}
+
 /// Whether a command returns a document view, which `view` can shorten.
 fn returns_document(meta: &CommandMeta) -> bool {
     let properties = &meta.output_schema["properties"];
@@ -150,7 +185,28 @@ fn returns_document(meta: &CommandMeta) -> bool {
 }
 
 /// A tool definition, with what the client's revision knows.
-pub(crate) fn definition(meta: &CommandMeta, speaking: Speaking) -> Value {
+/// For a command that creates a document: the tools that take it from
+/// the state it is created in, so an agent knows the next step without
+/// another lookup.
+fn next_steps(kernel: &Kernel, meta: &CommandMeta) -> Option<String> {
+    let created = meta.creates.as_deref()?;
+    let registry = kernel.registry();
+    let initial = registry.doc_type(created).ok()?.meta.initial_state.clone();
+    let next: Vec<String> = registry
+        .commands()
+        .map(|c| &c.meta)
+        .filter(|c| c.resource == created && !c.destructive && c.from_states.contains(&initial))
+        .map(|c| c.tool_name())
+        .collect();
+    (!next.is_empty()).then(|| {
+        format!(
+            " It returns a {created} in `{initial}`; next: {} (with its id).",
+            next.join(", ")
+        )
+    })
+}
+
+pub(crate) fn definition(kernel: &Kernel, meta: &CommandMeta, speaking: Speaking) -> Value {
     let mut input = meta.input_schema.clone();
     if let Some(object) = input.as_object_mut() {
         // Without it the schema is JSON Schema 2020-12, which it is.
@@ -165,11 +221,9 @@ pub(crate) fn definition(meta: &CommandMeta, speaking: Speaking) -> Value {
                         "type": "string",
                         "enum": ["full", "header"],
                         "title": "View",
-                        "description": "How much of the document to return. `full` (the \
-                            default): header, summary, body, postings with their ledger entries, \
-                            and links. `header`: the header and summary only; body is null and \
-                            postings and links are empty. Use `header` when you only need to \
-                            know the outcome, as when importing many documents.",
+                        "description": "`header`: return the header and summary only, \
+                            when the outcome is all you need. `full` (the default) adds body, \
+                            postings and links.",
                     }),
                 );
             }
@@ -178,10 +232,9 @@ pub(crate) fn definition(meta: &CommandMeta, speaking: Speaking) -> Value {
             let properties = object.entry("properties").or_insert_with(|| json!({}));
             if let Some(properties) = properties.as_object_mut() {
                 let what = if meta.destructive {
-                    "This tool cannot simply be undone: always preview it first."
+                    " This tool cannot simply be undone: always preview it first."
                 } else {
-                    "Use it before anything that posts or cannot be taken back, and whenever \
-                     you are not sure of the outcome."
+                    ""
                 };
                 properties.insert(
                     "preview".into(),
@@ -189,9 +242,8 @@ pub(crate) fn definition(meta: &CommandMeta, speaking: Speaking) -> Value {
                         "type": "boolean",
                         "title": "Preview",
                         "description": format!(
-                            "Set to true to run the command and get back what it would do, as \
-                             {{\"preview\": true, \"result\": ...}}, without saving anything. {what} \
-                             A preview reserves nothing: the real call checks everything again."
+                            "true: return what the call would do, as {{\"preview\": true, \
+                             \"result\": ...}}, and save nothing.{what}"
                         ),
                     }),
                 );
@@ -200,19 +252,21 @@ pub(crate) fn definition(meta: &CommandMeta, speaking: Speaking) -> Value {
                     json!({
                         "type": "string",
                         "title": "Idempotency key",
-                        "description": "Give every change a value of its own, such as a UUID, and \
-                                        send the same value again if you have to retry: after a \
-                                        timeout or a lost answer the call then returns the first \
-                                        result instead of applying the change twice. The same key \
-                                        with different input is refused.",
+                        "description": "A value of your own, such as a UUID; send it again \
+                                        on a retry and the first result comes back instead of a \
+                                        second change.",
                     }),
                 );
             }
         }
     }
+    let description = match next_steps(kernel, meta) {
+        Some(next) => format!("{}{next}", meta.description),
+        None => meta.description.clone(),
+    };
     let mut tool = json!({
         "name": meta.tool_name(),
-        "description": meta.description,
+        "description": description,
         "inputSchema": input,
     });
     if speaking.has("2025-03-26") {
@@ -220,7 +274,12 @@ pub(crate) fn definition(meta: &CommandMeta, speaking: Speaking) -> Value {
     }
     if speaking.has("2025-06-18") {
         tool["title"] = json!(title(meta));
-        tool["outputSchema"] = output_schema(&meta.output_schema, meta.read_only);
+        let output = if returns_document(meta) {
+            document_schema()
+        } else {
+            meta.output_schema.clone()
+        };
+        tool["outputSchema"] = output_schema(&output, meta.read_only);
     }
     tool
 }

@@ -409,9 +409,21 @@ pub async fn list(ctx: &mut Ctx<'_>, entity: &str, query: &ListQuery) -> Result<
     let mut conditions = String::from("true");
     for (name, value) in &query.filters {
         if field(name).is_none() {
-            return Err(
-                Error::validation(format!("unknown filter field '{name}'")).with_field(name)
-            );
+            // Say what can be filtered on, so the caller can correct
+            // itself; a company field that is not there means the records
+            // belong to no company.
+            let names: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
+            let whose = if name == "company_id" && meta.company_field.is_none() {
+                format!(" ({} records belong to no company)", meta.name)
+            } else {
+                String::new()
+            };
+            return Err(Error::validation(format!(
+                "unknown filter field '{name}'{whose}; the fields of {} are {}",
+                meta.name,
+                names.join(", ")
+            ))
+            .with_field(name));
         }
         // Filtering by a field would reveal its values.
         if actor.may_withhold(&permission, name) {

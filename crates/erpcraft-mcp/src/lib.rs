@@ -60,7 +60,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
-use erpcraft_kernel::{Actor, Error, Kernel};
+use erpcraft_kernel::{Actor, Error, Kernel, command};
 use serde_json::{Value, json};
 
 pub use prompts::prompt_commands;
@@ -77,6 +77,10 @@ const LEGACY_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "20
 /// What a legacy request without a version header is taken to speak, as
 /// the specification says.
 const ASSUMED_LEGACY_VERSION: &str = "2025-03-26";
+
+/// What a JSON-RPC request adds around a tool's input: the envelope, the
+/// tool's name and `_meta`.
+const RPC_OVERHEAD_BYTES: usize = 64 * 1024;
 
 const META_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
 const META_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
@@ -101,9 +105,11 @@ const LIST_TTL_MS: u64 = 5 * 60 * 1000;
 const INSTRUCTIONS: &str = "erpcraft is an ERP. Every tool is a business command and runs with the \
 permissions of the signed-in user, capped by the scopes of the token; a tool the user can never run \
 is not listed.\n\
-Finding your way: call erpcraft_modules to see the modules, then erpcraft_tools with a module or a \
-resource (an entity or document type such as purchase_order) to get the tools for it. meta_describe \
-gives the fields, states and policies of a module. The resources under erpcraft://guide explain how \
+Finding your way: call erpcraft_modules to see the modules, their records and document types by \
+name, and the core tools that work on any of them (search_records finds anything by a code, name or \
+number). Then call erpcraft_tools with a resource (an entity or document type such as customer or \
+sales_order) to get the tools for it and the fields to write; with a module for all its tools; or \
+with `names` for tools you already know of. The resources under erpcraft://guide explain how \
 commands, documents, postings and reversals work.\n\
 Changing data: money and quantities are decimal strings, never numbers. Pass `preview: true` first \
 on anything that posts, reverses, cancels or deletes: it returns what would happen and saves \
@@ -170,8 +176,20 @@ pub fn router(kernel: Kernel) -> Router {
 /// revisions used for streams and sessions, are answered with `405 Method
 /// Not Allowed`, as the specification asks of a server that has neither.
 pub fn router_with(kernel: Kernel, config: Config) -> Router {
+    // Each tool's own limit is checked in `handle`; the route takes the
+    // largest any tool declares.
+    let largest = kernel
+        .registry()
+        .commands()
+        .map(|c| c.meta.max_input_bytes)
+        .max()
+        .unwrap_or(command::DEFAULT_MAX_INPUT_BYTES)
+        + RPC_OVERHEAD_BYTES;
     Router::new()
-        .route("/mcp", post(handle))
+        .route(
+            "/mcp",
+            post(handle).layer(axum::extract::DefaultBodyLimit::max(largest)),
+        )
         .with_state(Arc::new(Server { kernel, config }))
 }
 
@@ -405,6 +423,25 @@ async fn handle(State(server): State<Arc<Server>>, headers: HeaderMap, body: Byt
         return StatusCode::ACCEPTED.into_response();
     };
     let params = message.get("params").cloned().unwrap_or(Value::Null);
+    // A tool that takes a file takes a larger request, as over HTTP.
+    let limit = match method {
+        "tools/call" => params
+            .get("name")
+            .and_then(Value::as_str)
+            .and_then(|name| server.kernel.registry().command_by_tool(name))
+            .map_or(command::DEFAULT_MAX_INPUT_BYTES, |c| c.meta.max_input_bytes),
+        _ => command::DEFAULT_MAX_INPUT_BYTES,
+    } + RPC_OVERHEAD_BYTES;
+    if body.len() > limit {
+        return RpcError::new(
+            INVALID_REQUEST,
+            format!(
+                "the request is {} bytes; at most {limit} are taken",
+                body.len()
+            ),
+        )
+        .respond(StatusCode::PAYLOAD_TOO_LARGE, Some(&id));
+    }
 
     let header_version = header(&headers, "mcp-protocol-version").map(str::trim);
     let body_version = params

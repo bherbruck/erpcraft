@@ -330,7 +330,12 @@ impl Module for GlModule {
             command(cash_flow::CashFlow),
             command(SetPeriodStatus {
                 name: "fiscal_period.close",
-                description: "Close a fiscal period. Nothing can be posted into a closed period.",
+                description: "Close a fiscal period. Nothing can be posted into a closed period. \
+                              Returns `drafts`: the documents dated in the period that are still \
+                              in the first state of their workflow (each doc_type, id, number, \
+                              doc_date), of the types you may read, at most 100. They do not stop \
+                              the close but cannot be posted into it after; preview the close to \
+                              see them first.",
                 permission: "fiscal_period:close",
                 status: "closed",
                 from: &["open"],
@@ -1230,6 +1235,40 @@ impl Command for SetPeriodStatus {
             .bind(self.status)
             .execute(&mut *ctx.conn)
             .await?;
-        Ok(json!({ "id": input.id, "status": self.status }))
+        if self.status != "closed" {
+            return Ok(json!({ "id": input.id, "status": self.status }));
+        }
+        // What is left half done in the period, in one answer, instead of
+        // a list per document type.
+        let (types, firsts): (Vec<String>, Vec<String>) = ctx
+            .kernel
+            .registry()
+            .describe(None)
+            .doc_types
+            .into_iter()
+            .filter(|d| ctx.require(&format!("{}:read", d.name), company).is_ok())
+            .map(|d| (d.name, d.initial_state))
+            .unzip();
+        let drafts: Vec<(String, Uuid, Option<String>, chrono::NaiveDate)> = sqlx::query_as(
+            "SELECT d.doc_type, d.id, d.number, d.doc_date
+             FROM document d
+             JOIN fiscal_period p ON p.id = $1 AND d.company_id = p.company_id
+             JOIN unnest($2::text[], $3::text[]) AS f (doc_type, status)
+               ON f.doc_type = d.doc_type AND f.status = d.status
+             WHERE d.doc_date BETWEEN p.start_date AND p.end_date
+             ORDER BY d.doc_date, d.doc_type, d.id LIMIT 100",
+        )
+        .bind(input.id)
+        .bind(&types)
+        .bind(&firsts)
+        .fetch_all(&mut *ctx.conn)
+        .await?;
+        let drafts: Vec<Value> = drafts
+            .into_iter()
+            .map(|(doc_type, id, number, doc_date)| {
+                json!({ "doc_type": doc_type, "id": id, "number": number, "doc_date": doc_date })
+            })
+            .collect();
+        Ok(json!({ "id": input.id, "status": self.status, "drafts": drafts }))
     }
 }

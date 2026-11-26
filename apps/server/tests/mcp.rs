@@ -674,16 +674,17 @@ async fn tools_describe_themselves_from_their_commands() {
         }
     }
 
-    // What the injected arguments are for is said where they are defined.
+    // What the injected arguments are for is said where they are defined,
+    // in a line: they are in every tool an agent loads, and the server's
+    // instructions say when to use them.
     let post = &named(&tools, "journal_entry_post")["inputSchema"]["properties"];
     let preview = post["preview"]["description"].as_str().unwrap();
-    assert!(preview.contains("without saving anything"), "{preview}");
-    assert!(
-        preview.contains("Use it before anything that posts"),
-        "{preview}"
-    );
+    assert!(preview.contains("save nothing"), "{preview}");
     let key = post["idempotency_key"]["description"].as_str().unwrap();
-    assert!(key.contains("retry") && key.contains("twice"), "{key}");
+    assert!(
+        key.contains("retry") && key.contains("second change"),
+        "{key}"
+    );
     let reverse = &named(&tools, "journal_entry_reverse")["inputSchema"]["properties"];
     assert!(
         reverse["preview"]["description"]
@@ -875,22 +876,30 @@ async fn an_agent_finds_the_tools_it_needs_without_reading_them_all() {
     };
     let purchasing = module("purchasing");
     assert_eq!(purchasing["label"], "Purchasing");
+    // By name, to pass on, and label, to show.
+    let documents: Vec<&str> = purchasing["documents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap())
+        .collect();
     assert_eq!(
-        purchasing["documents"],
-        json!([
-            "Purchase order",
-            "Purchase receipt",
-            "Purchase return",
-            "Vendor credit",
-            "Vendor credit note",
-            "Vendor invoice"
-        ])
+        documents,
+        [
+            "purchase_order",
+            "purchase_receipt",
+            "purchase_return",
+            "vendor_credit",
+            "vendor_credit_note",
+            "vendor_invoice"
+        ]
     );
+    assert_eq!(purchasing["documents"][0]["label"], "Purchase order");
     assert!(
         purchasing["records"]
             .as_array()
             .unwrap()
-            .contains(&json!("Vendor"))
+            .contains(&json!({ "name": "vendor", "label": "Vendor" }))
     );
     assert!(
         purchasing["depends_on"]
@@ -957,6 +966,12 @@ async fn an_agent_finds_the_tools_it_needs_without_reading_them_all() {
     assert_eq!(
         names(&for_invoices),
         [
+            // The generic tools that read and write it come first.
+            "document_create",
+            "document_delete",
+            "document_get",
+            "document_list",
+            "document_update",
             "einvoice_import",
             "intercompany_mirror",
             "purchase_order_invoice",
@@ -979,10 +994,11 @@ async fn an_agent_finds_the_tools_it_needs_without_reading_them_all() {
             .await
             .is_empty()
     );
-    assert!(
-        found(&clerk, json!({ "resource": "journal_entry" }))
-            .await
-            .is_empty()
+    // For journal entries, the clerk may draft and read them: the
+    // generic tools for that, and not posting.
+    assert_eq!(
+        names(&found(&clerk, json!({ "resource": "journal_entry" })).await),
+        ["document_create", "document_get", "document_list"]
     );
     let kernel_tools = found(&clerk, json!({ "module": "kernel" })).await;
     assert!(names(&kernel_tools).contains(&"document_create"));
@@ -997,7 +1013,16 @@ async fn an_agent_finds_the_tools_it_needs_without_reading_them_all() {
 
     // Asked wrongly, it says how to ask.
     for (arguments, field, why) in [
-        (json!({}), Value::Null, "give a module, a resource, or both"),
+        (
+            json!({}),
+            Value::Null,
+            "give a module, a resource, or names",
+        ),
+        (
+            json!({ "resource": "invoice" }),
+            json!("resource"),
+            "names no entity or document type",
+        ),
         (
             json!({ "module": "buying" }),
             json!("module"),
@@ -1590,5 +1615,149 @@ async fn tools_are_listed_in_a_fixed_order_across_pages() {
     assert_eq!(commands, sorted.as_slice());
     assert!(names.contains(&"journal_entry_post"));
     assert_eq!(names, self::names(&t.all_tools(&t.admin).await));
+    t.stop().await;
+}
+
+/// From the MCP trial (tools/mcp-trial): what an agent needs to write a
+/// record or document comes with erpcraft_tools, the core tools are named
+/// by erpcraft_modules, tools can be fetched by name, and a tool that
+/// creates a document says what comes next.
+#[tokio::test]
+async fn an_agent_learns_what_to_write_and_what_comes_next() {
+    let t = TestApp::start().await;
+    let _c = t.company("ACME", "USD").await;
+
+    let modules = call(&t, &t.admin, "erpcraft_modules", json!({})).await;
+    let core: Vec<&str> = modules["structuredContent"]["core_tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(core[0], "search_records");
+    assert!(core.contains(&"entity_create") && core.contains(&"document_create"));
+
+    // A resource: the tools to write it, and its fields.
+    let got = call(
+        &t,
+        &t.admin,
+        "erpcraft_tools",
+        json!({ "resource": "sales_order" }),
+    )
+    .await;
+    let structured = &got["structuredContent"];
+    let tools: Vec<&str> = structured["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(tools[0], "document_create", "{tools:?}");
+    assert!(tools.contains(&"sales_order_approve"));
+    let resource = &structured["resource"];
+    assert_eq!(resource["kind"], "document");
+    let customer = resource["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "customer_id")
+        .unwrap();
+    assert_eq!(customer["type"], "link to customer (id)");
+    assert_eq!(customer["required"], true);
+    let lines = &resource["collections"][0];
+    assert_eq!(lines["name"], "lines");
+    let qty = lines["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "qty")
+        .unwrap();
+    assert_eq!(qty["type"], "decimal string");
+    assert!(
+        resource["states"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("draft"))
+    );
+
+    let customer = call(
+        &t,
+        &t.admin,
+        "erpcraft_tools",
+        json!({ "resource": "customer" }),
+    )
+    .await;
+    let customer = &customer["structuredContent"];
+    assert_eq!(customer["resource"]["kind"], "entity");
+    assert!(
+        customer["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "entity_create")
+    );
+
+    // By name, whatever the module; a name that is no tool is said.
+    let by_name = call(
+        &t,
+        &t.admin,
+        "erpcraft_tools",
+        json!({ "names": ["gl_trial_balance", "vendor_invoice_post", "no_such_tool"] }),
+    )
+    .await;
+    let by_name = &by_name["structuredContent"];
+    assert_eq!(by_name["tools"].as_array().unwrap().len(), 2);
+    assert_eq!(by_name["unknown"], json!(["no_such_tool"]));
+
+    // A tool that makes a document names the tools that take it on.
+    let listed = all_tools(&t, &t.admin).await;
+    let import = named(&listed, "einvoice_import");
+    let description = import["description"].as_str().unwrap();
+    assert!(
+        description.contains("next: vendor_invoice_post"),
+        "{description}"
+    );
+
+    // A document's output schema is the same short one for every tool.
+    let schema =
+        serde_json::to_string(&named(&listed, "sales_order_approve")["outputSchema"]).unwrap();
+    assert!(schema.len() < 2_500, "{} bytes", schema.len());
+
+    // A list filter that names no field says which fields there are.
+    let failed = call(
+        &t,
+        &t.admin,
+        "entity_list",
+        json!({ "entity": "currency", "filters": { "company_id": "x" } }),
+    )
+    .await;
+    let message = failed["structuredContent"]["error"]["message"]
+        .as_str()
+        .unwrap();
+    assert!(message.contains("belong to no company"), "{message}");
+    assert!(
+        message.contains("the fields of currency are id, code"),
+        "{message}"
+    );
+
+    t.stop().await;
+}
+
+/// A tool that takes a file takes a larger request over MCP too; others
+/// keep the default.
+#[tokio::test]
+async fn a_file_tool_takes_a_large_request_and_others_do_not() {
+    let t = TestApp::start().await;
+    let big = "X".repeat(3 * 1024 * 1024);
+    let file = call(&t, &t.admin, "edi_receive", json!({ "content": big })).await;
+    assert!(file.get("structuredContent").is_some(), "{file}");
+    let (status, body) = modern(
+        &t,
+        &t.admin,
+        "tools/call",
+        json!({ "name": "search_records", "arguments": { "q": big } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
     t.stop().await;
 }

@@ -1,0 +1,170 @@
+{
+  "base": "http://127.0.0.1:8611",
+  "fullList": {
+    "tools": 213,
+    "tokens": 456662
+  },
+  "results": [
+    {
+      "task": "create a customer and a sales order for 3 widgets",
+      "outcome": "customer GLOBEX (code, name required), order 01a21556-838a-74b2-a7df-49107dc81050 for 37.5000",
+      "requests": 12,
+      "toolCalls": 12,
+      "errors": 1,
+      "descriptionTokens": 73495,
+      "resultTokens": 155319,
+      "stuck": [
+        "no tool to create a customer for resource customer; loaded the kernel's tools",
+        "erpcraft_tools(resource: customer) did not say its fields; read meta_describe(sales)",
+        "erpcraft_tools(resource: sales_order) did not say its fields; read meta_describe(sales)"
+      ],
+      "steps": [
+        "tools/call erpcraft_modules d=0 r=1468",
+        "tools/call erpcraft_tools d=1 r=2",
+        "tools/call erpcraft_tools d=36917 r=2",
+        "tools/call meta_describe d=0 r=76534",
+        "tools/call entity_create d=0 r=49",
+        "tools/call erpcraft_tools d=36577 r=2",
+        "tools/call meta_describe d=0 r=76534",
+        "tools/call search_records d=0 r=170",
+        "tools/call entity_list d=0 r=50",
+        "tools/call entity_list d=0 r=301",
+        "tools/call document_create (error) d=0 r=40",
+        "tools/call document_create d=0 r=167"
+      ]
+    },
+    {
+      "task": "what's overdue for Acme",
+      "outcome": "0 overdue item(s), ",
+      "requests": 5,
+      "toolCalls": 5,
+      "errors": 0,
+      "descriptionTokens": 3243,
+      "resultTokens": 1598,
+      "stuck": [
+        "called search_records without having its definition",
+        "called entity_list without having its definition"
+      ],
+      "steps": [
+        "tools/call erpcraft_modules d=0 r=1468",
+        "tools/call erpcraft_tools d=3243 r=3",
+        "tools/call search_records d=0 r=62",
+        "tools/call entity_list d=0 r=50",
+        "tools/call open_item_list d=0 r=15"
+      ]
+    },
+    {
+      "task": "post this vendor invoice from an e-invoice file",
+      "outcome": "import refused: line 1: account 5000 is a group account and cannot be posted to",
+      "requests": 8,
+      "toolCalls": 8,
+      "errors": 2,
+      "descriptionTokens": 9623,
+      "resultTokens": 4587,
+      "stuck": [
+        "called entity_list without having its definition",
+        "called entity_list without having its definition",
+        "could not tell which accounts may be posted to"
+      ],
+      "steps": [
+        "tools/call erpcraft_modules d=0 r=1468",
+        "tools/call erpcraft_tools d=9622 r=2",
+        "tools/call entity_list d=0 r=50",
+        "tools/call einvoice_read d=0 r=712",
+        "tools/call einvoice_import (error) d=0 r=43",
+        "tools/call entity_list d=0 r=2270",
+        "tools/call einvoice_import (error) d=0 r=40",
+        "tools/call erpcraft_tools d=1 r=2"
+      ]
+    },
+    {
+      "task": "why didn't order SO-2026-00004 ship",
+      "outcome": "status open; 0 delivery(ies); ordered 500.000000, delivered 0, on hand 22",
+      "requests": 7,
+      "toolCalls": 7,
+      "errors": 0,
+      "descriptionTokens": 41326,
+      "resultTokens": 3459,
+      "stuck": [
+        "called search_records without having its definition",
+        "called document_get without having its definition",
+        "document_get is not among the sales order's tools"
+      ],
+      "steps": [
+        "tools/call erpcraft_modules d=0 r=1468",
+        "tools/call search_records d=0 r=74",
+        "tools/call erpcraft_tools d=36577 r=2",
+        "tools/call document_get d=0 r=339",
+        "tools/call erpcraft_modules d=0 r=1468",
+        "tools/call erpcraft_tools d=4749 r=3",
+        "tools/call stock_on_hand d=0 r=105"
+      ]
+    },
+    {
+      "task": "close March",
+      "outcome": "1 draft(s) in March; the close would go through",
+      "requests": 50,
+      "toolCalls": 48,
+      "errors": 5,
+      "descriptionTokens": 29732,
+      "resultTokens": 5579,
+      "stuck": [
+        "erpcraft_tools cannot fetch tools by name; loaded them resource by resource",
+        "called gl_trial_balance without having its definition",
+        "erpcraft_modules gives document types as labels, not names"
+      ],
+      "steps": [
+        "prompts/list d=406 r=0",
+        "prompts/get close_month d=430 r=0",
+        "tools/call erpcraft_tools (error) d=0 r=30",
+        "tools/call erpcraft_tools d=2240 r=2",
+        "tools/call erpcraft_tools d=1 r=2",
+        "tools/call erpcraft_tools d=16744 r=3",
+        "tools/call erpcraft_tools d=1 r=2",
+        "tools/call erpcraft_tools d=1 r=2",
+        "tools/call erpcraft_tools d=1 r=2",
+        "tools/call erpcraft_tools d=7378 r=2",
+        "tools/call erpcraft_tools d=1 r=2",
+        "tools/call erpcraft_tools d=1 r=2",
+        "tools/call erpcraft_tools d=1263 r=2",
+        "tools/call erpcraft_tools d=1 r=2",
+        "tools/call erpcraft_tools d=1263 r=2",
+        "tools/call erpcraft_tools d=1 r=2",
+        "tools/call entity_list d=0 r=50",
+        "tools/call entity_list d=0 r=68",
+        "tools/call gl_trial_balance d=0 r=3570",
+        "tools/call erpcraft_modules d=0 r=1468",
+        "tools/call document_list d=0 r=112",
+        "tools/call document_list (error) d=0 r=21",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list (error) d=0 r=22",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list (error) d=0 r=21",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list (error) d=0 r=23",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call document_list d=0 r=6",
+        "tools/call fiscal_period_close d=0 r=23"
+      ]
+    }
+  ]
+}
